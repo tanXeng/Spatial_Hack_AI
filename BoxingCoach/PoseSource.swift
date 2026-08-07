@@ -123,6 +123,11 @@ final class PoseTrackingModel {
     private let source: PoseSource = HandTrackingPoseSource()
     // ---------------------
 
+    // Debug-only: prints tracked joints to the Xcode console so you can
+    // verify tracking works even with no on-device visual yet.
+    // Safe to delete once you have a real visual indicator.
+    private var lastLogTime: Date = .distantPast
+
     func start() async {
         guard !isRunning else { return }
         isRunning = true
@@ -130,6 +135,7 @@ final class PoseTrackingModel {
             try await source.start { [weak self] newFrame in
                 Task { @MainActor in
                     self?.frame = newFrame
+                    self?.logIfNeeded(newFrame)
                 }
             }
         } catch {
@@ -141,6 +147,22 @@ final class PoseTrackingModel {
     func stop() {
         source.stop()
         isRunning = false
+    }
+
+    private func logIfNeeded(_ frame: PoseFrame) {
+        let now = Date()
+        guard now.timeIntervalSince(lastLogTime) > 0.5 else { return }
+        lastLogTime = now
+
+        let tracked = frame.filter { $0.value.isTracked }
+        guard !tracked.isEmpty else {
+            print("[Pose] no joints tracked yet")
+            return
+        }
+        for (id, joint) in tracked {
+            print(String(format: "[Pose] %@: (%.2f, %.2f, %.2f)",
+                          "\(id)", joint.position.x, joint.position.y, joint.position.z))
+        }
     }
 }
 

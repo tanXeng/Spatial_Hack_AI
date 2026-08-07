@@ -27,6 +27,15 @@ final class ReactiveStrikeSession {
     let hands = HandTrackingService()
     let targets = TargetController()
 
+    /// Aura Punch shares this session's hand tracking and scene root rather than standing up its
+    /// own ARKit session — two sessions competing for the same providers is a good way to get
+    /// neither. Only one drill runs at a time, so there is no contention over the data.
+    let auraPunch: AuraPunchSession
+
+    init() {
+        auraPunch = AuraPunchSession(hands: hands)
+    }
+
     private var drillTask: Task<Void, Never>?
     private var activeAttemptID: UUID?
     private var spawnTime: Date?
@@ -46,6 +55,7 @@ final class ReactiveStrikeSession {
 
     func attachSceneRoot(_ root: Entity) {
         targets.attach(to: root)
+        auraPunch.attach(to: root)
     }
 
     func startDrill() {
@@ -64,6 +74,10 @@ final class ReactiveStrikeSession {
     }
 
     func stopDrill() {
+        // Also covers the immersive space being dismissed, which is the one moment Aura Punch
+        // must stop too — its pose loop would otherwise keep running against dead tracking.
+        auraPunch.stop()
+
         drillTask?.cancel()
         drillTask = nil
         targets.removeActiveTarget()

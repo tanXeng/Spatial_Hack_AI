@@ -39,6 +39,9 @@ struct BoxingCoachContentView: View {
     @State private var selectedMode: ReactiveStrikeMode?
     @State private var selectedTechnique: Technique?
     @State private var isBusy = false
+    /// The in-flight immersive-space dismissal, if any. Anything that wants to open a space must
+    /// wait on this first.
+    @State private var pendingClose: Task<Void, Never>?
 
     /// Read from the session rather than tracked locally, so it still reflects reality when the
     /// space is closed by something other than this view's buttons.
@@ -529,34 +532,37 @@ struct BoxingCoachContentView: View {
         .font(.body)
     }
 
+    /// Navigation updates immediately so the screen always responds, while the immersive
+    /// dismissal runs behind `isBusy` and is tracked in `pendingClose`.
+    ///
+    /// It used to fire the dismissal into an untracked `Task` and return. Selecting another
+    /// technique and starting it could then call `openImmersiveSpace` while the previous space
+    /// was still tearing down, which fails — and when that open never resolves, `isBusy` stays
+    /// true and every button that depends on it is stuck disabled.
     private func goBack() {
+        let wasOpen = immersiveOpened
+
         if selectedFeature == .reactiveStrike, selectedMode != nil {
-            if immersiveOpened {
-                Task { await closeImmersiveSpace() }
-            }
             selectedMode = nil
             session.clearError()
-            return
-        }
-
-        if selectedFeature == .auraPunch, selectedTechnique != nil {
-            if immersiveOpened {
-                Task { await closeImmersiveSpace() }
-            }
+        } else if selectedFeature == .auraPunch, selectedTechnique != nil {
             selectedTechnique = nil
             session.auraPunch.reset()
             session.clearError()
-            return
+        } else {
+            selectedFeature = nil
+            selectedMode = nil
+            selectedTechnique = nil
+            session.auraPunch.reset()
+            session.clearError()
         }
 
-        if immersiveOpened {
-            Task { await closeImmersiveSpace() }
-        }
-        selectedFeature = nil
-        selectedMode = nil
-        selectedTechnique = nil
-        session.auraPunch.reset()
-        session.clearError()
+        guard wasOpen else { return }
+
+        // Set synchronously rather than inside the task, so there is no window where the drill
+        // could be restarted between pressing Back and the dismissal actually beginning.
+        isBusy = true
+        pendingClose = Task { await closeImmersiveSpace() }
     }
 
     private func startDrillFlow() async {
@@ -593,6 +599,11 @@ struct BoxingCoachContentView: View {
     /// Opens the mixed immersive space if it isn't already up. Returns false when the caller
     /// should abort — the error has already been reported to the user.
     private func ensureImmersiveSpace() async -> Bool {
+        // Let any dismissal finish first. Opening a space while the previous one is still closing
+        // is rejected by the system, and the failed open is what strands the UI.
+        await pendingClose?.value
+        pendingClose = nil
+
         guard !immersiveOpened else { return true }
 
         guard supportsMultipleWindows else {
@@ -636,6 +647,8 @@ struct BoxingCoachContentView: View {
         defer { isBusy = false }
 
         session.stopDrill()
+        await pendingClose?.value
+        pendingClose = nil
         if immersiveOpened {
             await dismissImmersiveSpace()
         }

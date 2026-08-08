@@ -61,10 +61,22 @@ final class HandTrackingService {
         side == .left ? leftHand : rightHand
     }
 
-    private let session = ARKitSession()
-    private let handTracking = HandTrackingProvider()
-    private let worldTracking = WorldTrackingProvider()
+    /// Rebuilt on every `start()` — see the note there. Never make these `let`.
+    private var session = ARKitSession()
+    private var handTracking = HandTrackingProvider()
+    private var worldTracking = WorldTrackingProvider()
     private var updateTask: Task<Void, Never>?
+
+    /// Guards against overlapping starts. The immersive scene, Reactive Strike, and Aura Punch all
+    /// call `start()`, and the authorization `await` sits between the `isRunning` check and the
+    /// flag being set — so without this, two callers arriving together would each stand up their
+    /// own session and providers and then fight over the same hands.
+    private var isStarting = false
+
+    /// Bumped by every start and every stop, so a start that is still awaiting authorization can
+    /// tell that it has been superseded — closing the immersive space right after opening it
+    /// would otherwise let the cancelled start finish and mark a stopped session as running.
+    private var startGeneration = 0
 
     /// Closest tracked fist tip to a world-space point, if any hand is tracked.
     func nearestFistPosition(to point: SIMD3<Float>) -> SIMD3<Float>? {
@@ -74,14 +86,34 @@ final class HandTrackingService {
     }
 
     func start() async {
-        guard !isRunning else { return }
+        guard !isRunning, !isStarting else { return }
+        isStarting = true
+        startGeneration += 1
+        let generation = startGeneration
+        defer { isStarting = false }
 
         guard HandTrackingProvider.isSupported else {
             statusMessage = "Hand tracking not supported on this device"
             return
         }
 
+        // ARKit data providers are single-use: once their session stops they enter `.stopped` and
+        // can never be run again. The immersive space is opened and closed every time the user
+        // backs out of a technique, and closing it stops this service — so reusing the original
+        // instances meant tracking worked exactly once per launch and every drill after the first
+        // silently received no anchors at all. Build a fresh session and providers each start.
+        let session = ARKitSession()
+        let handTracking = HandTrackingProvider()
+        let worldTracking = WorldTrackingProvider()
+        self.session = session
+        self.handTracking = handTracking
+        self.worldTracking = worldTracking
+
         let auth = await session.requestAuthorization(for: [.handTracking])
+        guard generation == startGeneration else {
+            session.stop()
+            return
+        }
         guard auth[.handTracking] == .allowed else {
             statusMessage = "Hand tracking permission denied"
             return
@@ -96,11 +128,15 @@ final class HandTrackingService {
                 try await session.run([handTracking])
                 statusMessage = "World tracking unavailable — Aura Punch needs head tracking"
             }
+            guard generation == startGeneration else {
+                session.stop()
+                return
+            }
             isRunning = true
             if statusMessage.isEmpty || !statusMessage.hasPrefix("World tracking") {
                 statusMessage = "Hand tracking active"
             }
-            startListening()
+            startListening(on: handTracking)
         } catch {
             statusMessage = "Failed to start hand tracking: \(error.localizedDescription)"
             isRunning = false
@@ -108,6 +144,9 @@ final class HandTrackingService {
     }
 
     func stop() {
+        // Supersede any start still waiting on authorization so it cannot revive this service
+        // after the immersive space has already gone away.
+        startGeneration += 1
         updateTask?.cancel()
         updateTask = nil
         session.stop()
@@ -118,12 +157,16 @@ final class HandTrackingService {
         statusMessage = "Hand tracking stopped"
     }
 
-    private func startListening() {
+    /// Consumes anchor updates from the provider this session was started with.
+    ///
+    /// Takes the provider explicitly rather than reading the property: a restart replaces it, and
+    /// a listener that resolved `self.handTracking` later could attach to the wrong generation.
+    private func startListening(on provider: HandTrackingProvider) {
         updateTask?.cancel()
         updateTask = Task { [weak self] in
-            guard let self else { return }
-            for await update in handTracking.anchorUpdates {
+            for await update in provider.anchorUpdates {
                 if Task.isCancelled { break }
+                guard let self else { break }
                 self.handle(update.anchor)
             }
         }

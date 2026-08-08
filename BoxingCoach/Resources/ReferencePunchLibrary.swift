@@ -164,18 +164,23 @@ enum ReferencePunchLibrary {
             ]
 
         case "hook":
-            // Horizontal arc with the elbow lifted to roughly shoulder height, so the pole
-            // rotates from "down" at guard to "up and out" at the peak. Deliberately does NOT
-            // wind back past the guard first — that telegraph is the most common beginner error
-            // and the reference must not teach it.
-            let elbowUp = SIMD3<Float>(lateral * 0.55, 0.75, -0.30)
-            let elbowMid = SIMD3<Float>(lateral * 0.45, 0.10, -0.25)
+            // Tight horizontal arc at chin height: elbow flares to the side at shoulder level
+            // while the fist sweeps forward across the face. No outward wind-up past the shoulder
+            // (that read as looping over the head on device) and no skyward elbow pole.
+            let elbowFlared = SIMD3<Float>(lateral * 0.70, 0.08, -0.08)
+            let elbowRising = SIMD3<Float>(lateral * 0.45, 0.02, -0.12)
+            let hookPeak = SIMD3<Float>(inward * 0.20, 0.20, 0.64)
             return [
                 ReferenceKeyframe(time: 0.00, fist: guardFist, elbowPole: elbowDown, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.14, fist: SIMD3(lateral * 0.10, 0.22, 0.48), elbowPole: elbowMid, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.26, fist: SIMD3(inward * 0.18, 0.24, 0.66), elbowPole: elbowUp, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.36, fist: SIMD3(inward * 0.34, 0.22, 0.58), elbowPole: elbowUp, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.62, fist: guardFist, elbowPole: elbowDown, guardHand: guardHand)
+                ReferenceKeyframe(
+                    time: 0.10,
+                    fist: SIMD3(guardFist.x + inward * 0.02, 0.19, 0.38),
+                    elbowPole: elbowRising,
+                    guardHand: guardHand
+                ),
+                ReferenceKeyframe(time: 0.22, fist: hookPeak, elbowPole: elbowFlared, guardHand: guardHand),
+                ReferenceKeyframe(time: 0.32, fist: hookPeak, elbowPole: elbowFlared, guardHand: guardHand),
+                ReferenceKeyframe(time: 0.58, fist: guardFist, elbowPole: elbowDown, guardHand: guardHand)
             ]
 
         case "uppercut", "left-uppercut", "right-uppercut":

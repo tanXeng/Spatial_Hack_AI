@@ -3,7 +3,6 @@ import SwiftUI
 struct FeatureSelectionView: View {
     let controlsDisabled: Bool
     let onSelect: (TrainingFeature) -> Void
-    let onExit: () -> Void
 
     var body: some View {
         VStack(spacing: 24) {
@@ -37,11 +36,6 @@ struct FeatureSelectionView: View {
             }
             .scrollBounceBehavior(.basedOnSize)
 
-            Button("Exit Boxing Coach", systemImage: "xmark.circle") {
-                onExit()
-            }
-            .buttonStyle(.bordered)
-            .disabled(controlsDisabled)
         }
     }
 
@@ -78,7 +72,6 @@ struct ReactiveSetupView: View {
     let controlsDisabled: Bool
     let onSelect: (ReactiveStrikeMode) -> Void
     let onBack: () -> Void
-    let onExit: () -> Void
 
     var body: some View {
         TrainingDetailScaffold(
@@ -86,8 +79,7 @@ struct ReactiveSetupView: View {
             title: "Reactive Strike",
             subtitle: "Choose Air Mode or Bag Mode",
             controlsDisabled: controlsDisabled,
-            onBack: onBack,
-            onExit: onExit
+            onBack: onBack
         ) {
             VStack(spacing: 12) {
                 ForEach(ReactiveStrikeMode.allCases) { mode in
@@ -113,7 +105,6 @@ struct AuraSetupView: View {
     let onStanceChange: (Stance) -> Void
     let onSelect: (Technique) -> Void
     let onBack: () -> Void
-    let onExit: () -> Void
 
     var body: some View {
         TrainingDetailScaffold(
@@ -121,8 +112,7 @@ struct AuraSetupView: View {
             title: "Aura Punch",
             subtitle: "Choose your stance and a punch to learn",
             controlsDisabled: controlsDisabled,
-            onBack: onBack,
-            onExit: onExit
+            onBack: onBack
         ) {
             VStack(spacing: 20) {
                 VStack(alignment: .leading, spacing: 10) {
@@ -203,7 +193,6 @@ struct UnavailableFeatureView: View {
     let feature: TrainingFeature
     let controlsDisabled: Bool
     let onBack: () -> Void
-    let onExit: () -> Void
 
     var body: some View {
         TrainingDetailScaffold(
@@ -211,8 +200,7 @@ struct UnavailableFeatureView: View {
             title: feature.title,
             subtitle: feature.subtitle,
             controlsDisabled: controlsDisabled,
-            onBack: onBack,
-            onExit: onExit
+            onBack: onBack
         ) {
             VStack(spacing: 12) {
                 Text("Coming soon")

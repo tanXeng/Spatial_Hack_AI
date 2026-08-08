@@ -1,8 +1,8 @@
 import Accessibility
 import SwiftUI
 
-/// Window-level composition root. This is the only view that can invoke visionOS scene actions;
-/// every child view receives synchronous intent closures instead.
+/// Window-level composition root for selection, ready, error, and results screens.
+/// The window hides once an engine starts; the immersive host restores it when training ends.
 struct BoxingCoachRootView: View {
     @Environment(ReactiveStrikeSession.self) private var session
     @Environment(TrainingFlowCoordinator.self) private var flow
@@ -17,16 +17,14 @@ struct BoxingCoachRootView: View {
             case .features:
                 FeatureSelectionView(
                     controlsDisabled: flow.controlsDisabled,
-                    onSelect: flow.chooseFeature,
-                    onExit: exit
+                    onSelect: flow.chooseFeature
                 )
 
             case .reactiveSetup:
                 ReactiveSetupView(
                     controlsDisabled: flow.controlsDisabled,
                     onSelect: flow.chooseReactiveMode,
-                    onBack: flow.backFromSetup,
-                    onExit: exit
+                    onBack: flow.backFromSetup
                 )
 
             case .auraSetup:
@@ -35,16 +33,14 @@ struct BoxingCoachRootView: View {
                     controlsDisabled: flow.controlsDisabled,
                     onStanceChange: flow.setDraftStance,
                     onSelect: flow.chooseAuraTechnique,
-                    onBack: flow.backFromSetup,
-                    onExit: exit
+                    onBack: flow.backFromSetup
                 )
 
             case .unavailableFeature(let feature):
                 UnavailableFeatureView(
                     feature: feature,
                     controlsDisabled: flow.controlsDisabled,
-                    onBack: flow.backFromSetup,
-                    onExit: exit
+                    onBack: flow.backFromSetup
                 )
 
             case .experience(let selection):
@@ -54,9 +50,7 @@ struct BoxingCoachRootView: View {
                     presentationError: flow.presentationError,
                     controlsDisabled: flow.controlsDisabled,
                     onStart: { start(selection) },
-                    onEnd: end,
-                    onChangeSelection: { changeSelection(selection) },
-                    onExit: exit
+                    onChangeSelection: { changeSelection(selection) }
                 )
             }
         }
@@ -67,45 +61,11 @@ struct BoxingCoachRootView: View {
             minHeight: 520,
             maxHeight: .infinity
         )
-        .onChange(of: session.phase) { _, phase in
-            guard case .experience(.reactive) = flow.route,
-                  phase == .finished else { return }
-            announce("Reactive Strike complete")
-            finishExperience()
-        }
-        .onChange(of: session.auraPunch.phase) { _, phase in
-            guard case .experience(.aura) = flow.route,
-                  phase == .results else { return }
-            announce("Aura Punch scoring complete")
-            finishExperience()
-        }
-        .onChange(of: session.errorMessage) { _, message in
-            guard case .experience(.reactive) = flow.route,
-                  let message else { return }
-            announce(message)
-            finishExperience()
-        }
-        .onChange(of: session.auraPunch.errorMessage) { _, message in
-            guard case .experience(.aura) = flow.route,
-                  let message else { return }
-            announce(message)
-            finishExperience()
-        }
         .onChange(of: flow.presentationError) { _, message in
             if let message { announce(message) }
         }
         .onChange(of: flow.route) {
             AccessibilityNotification.ScreenChanged().post()
-        }
-        .onChange(of: session.lastFeedback) { _, message in
-            guard case .experience(.reactive) = flow.route,
-                  session.phase == .running else { return }
-            announce(message)
-        }
-        .onChange(of: session.auraPunch.statusMessage) { _, message in
-            guard case .experience(.aura) = flow.route,
-                  session.auraPunch.isRunning else { return }
-            announce(message)
         }
     }
 
@@ -116,16 +76,10 @@ struct BoxingCoachRootView: View {
                 session: session,
                 supportsMultipleScenes: supportsMultipleWindows,
                 openImmersive: openImmersive,
-                dismissImmersive: dismissImmersive
-            )
-        }
-    }
-
-    private func end() {
-        Task {
-            await flow.endExperience(
-                session: session,
-                dismissImmersive: dismissImmersive
+                dismissImmersive: dismissImmersive,
+                hideControlWindow: {
+                    dismissWindow(id: BoxingCoachSceneID.controlWindow)
+                }
             )
         }
     }
@@ -136,25 +90,6 @@ struct BoxingCoachRootView: View {
                 from: selection,
                 session: session,
                 dismissImmersive: dismissImmersive
-            )
-        }
-    }
-
-    private func finishExperience() {
-        Task {
-            await flow.finishExperience(
-                session: session,
-                dismissImmersive: dismissImmersive
-            )
-        }
-    }
-
-    private func exit() {
-        Task {
-            await flow.exit(
-                session: session,
-                dismissImmersive: dismissImmersive,
-                dismissWindow: { dismissWindow() }
             )
         }
     }

@@ -52,7 +52,6 @@ enum TrainingFlowTransition: String, Sendable {
     case idle
     case openingImmersion
     case closingImmersion
-    case exiting
 }
 
 enum ImmersiveOpenOutcome: Sendable {
@@ -130,7 +129,8 @@ final class TrainingFlowCoordinator {
         session: ReactiveStrikeSession,
         supportsMultipleScenes: Bool,
         openImmersive: (String) async -> ImmersiveOpenOutcome,
-        dismissImmersive: () async -> Void
+        dismissImmersive: () async -> Void,
+        hideControlWindow: () -> Void
     ) async {
         guard transition == .idle,
               route == .experience(selection) else { return }
@@ -190,16 +190,20 @@ final class TrainingFlowCoordinator {
         }
 
         transition = .idle
+        hideControlWindow()
     }
 
     func endExperience(
         session: ReactiveStrikeSession,
+        showControlWindow: () -> Void,
         dismissImmersive: () async -> Void
     ) async {
         guard transition == .idle else { return }
         transition = .closingImmersion
 
         if hasActiveImmersiveScene(session: session) {
+            showControlWindow()
+            try? await Task.sleep(for: .milliseconds(100))
             immersiveState = .closing
             await dismissImmersive()
             finalizeImmersiveClosure(session: session)
@@ -212,12 +216,15 @@ final class TrainingFlowCoordinator {
 
     func finishExperience(
         session: ReactiveStrikeSession,
+        showControlWindow: () -> Void,
         dismissImmersive: () async -> Void
     ) async {
         guard transition == .idle,
               hasActiveImmersiveScene(session: session) else { return }
 
         transition = .closingImmersion
+        showControlWindow()
+        try? await Task.sleep(for: .milliseconds(100))
         immersiveState = .closing
         await dismissImmersive()
         finalizeImmersiveClosure(session: session)
@@ -252,31 +259,6 @@ final class TrainingFlowCoordinator {
         }
 
         presentationError = nil
-        transition = .idle
-    }
-
-    func exit(
-        session: ReactiveStrikeSession,
-        dismissImmersive: () async -> Void,
-        dismissWindow: () -> Void
-    ) async {
-        guard transition == .idle else { return }
-        transition = .exiting
-
-        if hasActiveImmersiveScene(session: session) {
-            immersiveState = .closing
-            await dismissImmersive()
-            finalizeImmersiveClosure(session: session)
-        } else {
-            session.stopDrill()
-            session.hands.stop()
-        }
-
-        session.resetForNewRound()
-        session.auraPunch.reset()
-        presentationError = nil
-        route = .features
-        dismissWindow()
         transition = .idle
     }
 

@@ -47,6 +47,11 @@ BoxingCoach/
 app. The project uses Xcode synchronized groups, so new source files inside `BoxingCoach/` are
 included without manually changing `project.pbxproj`.
 
+The selection window is dismissed after a training engine starts, leaving only the spatial drill
+and a compact **End Training** control in view. Completion, tracking errors, early ending, and
+system-driven immersive dismissal restore the window before closing immersion so results and
+actionable errors remain available.
+
 ## Uppercut and tracking behavior
 
 Aura Punch exposes separate left- and right-hand uppercut drills. Both reference paths curve

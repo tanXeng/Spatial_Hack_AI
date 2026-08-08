@@ -6,7 +6,6 @@ struct TrainingDetailScaffold<Content: View>: View {
     let subtitle: String
     let controlsDisabled: Bool
     let onBack: () -> Void
-    let onExit: () -> Void
     @ViewBuilder let content: () -> Content
 
     var body: some View {
@@ -21,12 +20,6 @@ struct TrainingDetailScaffold<Content: View>: View {
                 .disabled(controlsDisabled)
 
                 Spacer()
-
-                Button("Exit", systemImage: "xmark.circle") {
-                    onExit()
-                }
-                .buttonStyle(.bordered)
-                .disabled(controlsDisabled)
             }
 
             ScrollView {

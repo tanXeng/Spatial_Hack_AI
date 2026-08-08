@@ -6,9 +6,7 @@ struct TrainingExperienceView: View {
     let presentationError: String?
     let controlsDisabled: Bool
     let onStart: () -> Void
-    let onEnd: () -> Void
     let onChangeSelection: () -> Void
-    let onExit: () -> Void
 
     var body: some View {
         switch selection {
@@ -25,8 +23,7 @@ struct TrainingExperienceView: View {
             title: "Reactive Strike",
             subtitle: mode.title,
             controlsDisabled: controlsDisabled,
-            onBack: onChangeSelection,
-            onExit: onExit
+            onBack: onChangeSelection
         ) {
             VStack(spacing: 16) {
                 TrainingStatusCard(message: reactiveStatusLine)
@@ -37,21 +34,11 @@ struct TrainingExperienceView: View {
 
                 errorCards(engineError: session.errorMessage)
 
-                HStack(spacing: 12) {
-                    Button(session.phase == .finished ? "Try Again" : "Start Drill") {
-                        onStart()
-                    }
-                    .disabled(session.phase == .running || controlsDisabled)
-                    .buttonStyle(.borderedProminent)
-
-                    if session.isImmersiveSpaceOpen {
-                        Button("End Training") {
-                            onEnd()
-                        }
-                        .disabled(controlsDisabled)
-                        .buttonStyle(.bordered)
-                    }
+                Button(session.phase == .finished ? "Try Again" : "Start Drill") {
+                    onStart()
                 }
+                .disabled(session.phase == .running || controlsDisabled)
+                .buttonStyle(.borderedProminent)
             }
         }
     }
@@ -64,8 +51,7 @@ struct TrainingExperienceView: View {
             title: technique.name,
             subtitle: "\(stance.title) · \(technique.hand.requirementDescription(for: stance))",
             controlsDisabled: controlsDisabled,
-            onBack: onChangeSelection,
-            onExit: onExit
+            onBack: onChangeSelection
         ) {
             VStack(spacing: 16) {
                 TrainingStatusCard(message: auraStatusLine)
@@ -92,21 +78,11 @@ struct TrainingExperienceView: View {
 
                 errorCards(engineError: aura.errorMessage)
 
-                HStack(spacing: 12) {
-                    Button(aura.phase == .results ? "Try Again" : "Start Rep") {
-                        onStart()
-                    }
-                    .disabled(aura.isRunning || controlsDisabled)
-                    .buttonStyle(.borderedProminent)
-
-                    if session.isImmersiveSpaceOpen {
-                        Button("End Training") {
-                            onEnd()
-                        }
-                        .disabled(controlsDisabled)
-                        .buttonStyle(.bordered)
-                    }
+                Button(aura.phase == .results ? "Try Again" : "Start Rep") {
+                    onStart()
                 }
+                .disabled(aura.isRunning || controlsDisabled)
+                .buttonStyle(.borderedProminent)
             }
         }
     }

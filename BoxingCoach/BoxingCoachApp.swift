@@ -1,6 +1,7 @@
 import SwiftUI
 
 enum BoxingCoachSceneID {
+    static let controlWindow = "BoxingCoachControlWindow"
     static let immersiveSpace = "ReactiveStrike"
 }
 
@@ -10,7 +11,7 @@ struct BoxingCoachApp: App {
     @State private var flow = TrainingFlowCoordinator()
 
     var body: some Scene {
-        WindowGroup {
+        WindowGroup(id: BoxingCoachSceneID.controlWindow) {
             BoxingCoachRootView()
                 .environment(session)
                 .environment(flow)

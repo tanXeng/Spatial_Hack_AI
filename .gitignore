@@ -1,14 +1,64 @@
-# Xcode / macOS
+# OS and editor noise
 .DS_Store
-xcuserdata/
-*.xcuserstate
-DerivedData/
-build/
+._*
+Thumbs.db
+desktop.ini
 
-# Cursor / local tooling
+*.log
+*.tmp
+*.swp
+*.swo
+*~
+
+# Build output and Xcode workspace state
+build/
+DerivedData/
+*.app
+*.ipa
+*.dSYM
+*.dSYM.zip
+*.xcarchive
+*.xcresult
+*.xccovreport
+*.xccovreport/*.json
+*.xccovarchive
+
+# Xcode generated/IDE-only metadata
+*.xcuserdata
+xcuserdata/
+*.xcodeproj/**/xcuserdata/
+*.xcworkspace/xcuserdata/
+*.xcuserstate
+*.xcscmblueprint
+*.xccheckout
+*.xcbkptlist
+*.perspectivev3
+
+# SwiftPM / dependency caches
+.build/
+.swiftpm/
+Packages/
+Package.resolved
+
+# Dependency managers
+Pods/
+Carthage/Build/
+
+# Tooling / editor state
 .cursor/
 .claude/
+.idea/
+.vscode/
+.xcodeshareddata/
+.xcuserdata/
 
-# Misc
-*.swp
-*~
+# Local-only workspace/legacy/reference artifacts (kept out of Git)
+local/*
+!local/.keep
+
+# Keep local docs/notes/scratch files local only (track only root README).
+*.md
+!README.md
+*.txt
+*.docx
+*.pdf

@@ -1,0 +1,4 @@
+Keep local documentation, scratch notes, and temporary experiment files in this
+folder.
+
+This directory is intentionally ignored from git to keep pushes clean.

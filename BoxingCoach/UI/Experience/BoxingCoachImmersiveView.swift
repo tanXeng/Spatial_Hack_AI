@@ -11,12 +11,25 @@ struct BoxingCoachImmersiveView: View {
     @Environment(\.openWindow) private var openWindow
 
     private let controlsAttachmentID = "TrainingControls"
+    private let instructionsAttachmentID = "TrainingInstructions"
 
     var body: some View {
         RealityView { content, attachments in
             let root = Entity()
             root.name = "BoxingCoachTrainingRoot"
             content.add(root)
+
+            // Keep coaching just above the user's neutral gaze instead of at a fixed room height.
+            // At 1.15 m forward and 18 cm up this is roughly nine degrees above line of sight.
+            let instructionAnchor = AnchorEntity(.head, trackingMode: .continuous)
+            instructionAnchor.name = "TrainingInstructionAnchor"
+            content.add(instructionAnchor)
+
+            if let instructions = attachments.entity(for: instructionsAttachmentID) {
+                instructions.name = "TrainingInstructions"
+                instructions.position = SIMD3<Float>(0, 0.18, -1.15)
+                instructionAnchor.addChild(instructions)
+            }
 
             if let controls = attachments.entity(for: controlsAttachmentID) {
                 controls.name = "TrainingControls"
@@ -27,6 +40,10 @@ struct BoxingCoachImmersiveView: View {
             session.attachSceneRoot(root)
             flow.immersiveSceneDidBecomeReady(session: session)
         } attachments: {
+            Attachment(id: instructionsAttachmentID) {
+                ImmersiveInstructionBanner(instruction: currentInstruction)
+            }
+
             Attachment(id: controlsAttachmentID) {
                 Button("End Training", systemImage: "stop.circle") {
                     endTraining()
@@ -112,5 +129,85 @@ struct BoxingCoachImmersiveView: View {
 
     private func announce(_ message: String) {
         AccessibilityNotification.Announcement(message).post()
+    }
+
+    private var currentInstruction: ImmersiveInstruction {
+        switch flow.route {
+        case .experience(.aura(let technique, _)):
+            let action = technique.name.lowercased()
+            switch session.auraPunch.phase {
+            case .idle:
+                return ImmersiveInstruction(
+                    stage: "GET READY",
+                    message: "Raise your guard to begin the \(action) training",
+                    symbol: "figure.boxing"
+                )
+            case .acquiring:
+                return ImmersiveInstruction(
+                    stage: "GET READY",
+                    message: "Raise your guard and keep both hands visible",
+                    symbol: "hand.raised.fill"
+                )
+            case .guiding:
+                return ImmersiveInstruction(
+                    stage: "FOLLOW THE SAMPLE",
+                    message: session.auraPunch.statusMessage,
+                    symbol: "eye.fill"
+                )
+            case .countdown:
+                return ImmersiveInstruction(
+                    stage: "YOUR TURN",
+                    message: session.auraPunch.statusMessage,
+                    symbol: "timer"
+                )
+            case .attempting:
+                return ImmersiveInstruction(
+                    stage: "YOUR TURN",
+                    message: "Try the \(action) on your own",
+                    symbol: "figure.boxing"
+                )
+            case .scoring:
+                return ImmersiveInstruction(
+                    stage: "REP COMPLETE",
+                    message: "Hold your guard while we score your \(action)",
+                    symbol: "waveform.path.ecg"
+                )
+            case .results:
+                return ImmersiveInstruction(
+                    stage: "COMPLETE",
+                    message: "Your results are ready",
+                    symbol: "checkmark.circle.fill"
+                )
+            }
+
+        case .experience(.reactive):
+            switch session.phase {
+            case .idle:
+                return ImmersiveInstruction(
+                    stage: "GET READY",
+                    message: "Raise your guard and watch for the target",
+                    symbol: "scope"
+                )
+            case .running:
+                return ImmersiveInstruction(
+                    stage: session.progressLabel.uppercased(),
+                    message: session.lastFeedback,
+                    symbol: "bolt.fill"
+                )
+            case .finished:
+                return ImmersiveInstruction(
+                    stage: "ROUND COMPLETE",
+                    message: session.lastFeedback,
+                    symbol: "checkmark.circle.fill"
+                )
+            }
+
+        default:
+            return ImmersiveInstruction(
+                stage: "BOXING COACH",
+                message: "Preparing your training space",
+                symbol: "figure.boxing"
+            )
+        }
     }
 }

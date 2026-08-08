@@ -19,6 +19,23 @@ final class ReactiveStrikeSession {
     private(set) var lastFeedback: String = "Ready"
     private(set) var errorMessage: String?
 
+    /// Whether the immersive space is actually on screen.
+    ///
+    /// Owned here, and set from the immersive scene's own lifecycle, because the space can also
+    /// close without the window's buttons being involved — the system dismissing it, or the user
+    /// leaving it. A copy kept in the window's local view state goes stale in exactly that case,
+    /// which then makes "Start" silently do nothing because the app believes a closed space is
+    /// still open.
+    private(set) var isImmersiveSpaceOpen = false
+
+    func immersiveSpaceDidOpen() {
+        isImmersiveSpaceOpen = true
+    }
+
+    func immersiveSpaceDidClose() {
+        isImmersiveSpaceOpen = false
+    }
+
     var config = DrillConfig()
     var mode: ReactiveStrikeMode = .air
     var reachProfile = ReachProfile.air

@@ -33,12 +33,16 @@ struct BoxingCoachContentView: View {
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
+    @Environment(\.dismissWindow) private var dismissWindow
 
     @State private var selectedFeature: TrainingFeature?
     @State private var selectedMode: ReactiveStrikeMode?
     @State private var selectedTechnique: Technique?
-    @State private var immersiveOpened = false
     @State private var isBusy = false
+
+    /// Read from the session rather than tracked locally, so it still reflects reality when the
+    /// space is closed by something other than this view's buttons.
+    private var immersiveOpened: Bool { session.isImmersiveSpaceOpen }
 
     var body: some View {
         Group {
@@ -49,7 +53,12 @@ struct BoxingCoachContentView: View {
             }
         }
         .padding(32)
-        .frame(minWidth: 480, minHeight: 520)
+        .frame(
+            minWidth: 480,
+            maxWidth: .infinity,
+            minHeight: 520,
+            maxHeight: .infinity
+        )
     }
 
     private var featureMenu: some View {
@@ -62,18 +71,27 @@ struct BoxingCoachContentView: View {
                     .foregroundStyle(.secondary)
             }
 
-            VStack(spacing: 12) {
-                ForEach(TrainingFeature.allCases) { feature in
-                    Button {
-                        selectedFeature = feature
-                        selectedMode = nil
-                        selectedTechnique = nil
-                    } label: {
-                        featureRow(feature)
+            ScrollView {
+                VStack(spacing: 12) {
+                    ForEach(TrainingFeature.allCases) { feature in
+                        Button {
+                            selectedFeature = feature
+                            selectedMode = nil
+                            selectedTechnique = nil
+                        } label: {
+                            featureRow(feature)
+                        }
+                        .buttonStyle(.plain)
                     }
-                    .buttonStyle(.plain)
                 }
             }
+            .scrollBounceBehavior(.basedOnSize)
+
+            Button("Exit Boxing Coach", systemImage: "xmark.circle") {
+                Task { await exitApp() }
+            }
+            .buttonStyle(.bordered)
+            .disabled(isBusy)
         }
     }
 
@@ -104,7 +122,13 @@ struct BoxingCoachContentView: View {
         .opacity(feature.isAvailable ? 1 : 0.75)
     }
 
-    @ViewBuilder
+    /// Detail screens keep the navigation bar **outside** the scroll view.
+    ///
+    /// Previously everything lived in one unscrollable `VStack`. Once a results card appeared the
+    /// stack grew past the window's height, SwiftUI centred the overflow, and the back button was
+    /// pushed beyond the window's bounds — where it is not hit-tested. It looked present but was
+    /// completely untappable, which is exactly the reported symptom. Pinning it here means it stays
+    /// reachable no matter how much content the panel below grows to.
     private func featureDetail(_ feature: TrainingFeature) -> some View {
         VStack(spacing: 20) {
             HStack {
@@ -116,33 +140,50 @@ struct BoxingCoachContentView: View {
                 .buttonStyle(.bordered)
 
                 Spacer()
+
+                Button("Exit", systemImage: "xmark.circle") {
+                    Task { await exitApp() }
+                }
+                .buttonStyle(.bordered)
+                .disabled(isBusy)
             }
 
-            VStack(spacing: 8) {
-                Text(detailTitle(for: feature))
-                    .font(.largeTitle.bold())
-                Text(detailSubtitle(for: feature))
-                    .font(.subheadline)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-            }
+            ScrollView {
+                VStack(spacing: 20) {
+                    VStack(spacing: 8) {
+                        Text(detailTitle(for: feature))
+                            .font(.largeTitle.bold())
+                        Text(detailSubtitle(for: feature))
+                            .font(.subheadline)
+                            .foregroundStyle(.secondary)
+                            .multilineTextAlignment(.center)
+                    }
 
-            switch feature {
-            case .reactiveStrike:
-                if let selectedMode {
-                    reactiveStrikePanel(mode: selectedMode)
-                } else {
-                    reactiveStrikeModePicker
+                    featurePanel(feature)
                 }
-            case .auraPunch:
-                if let selectedTechnique {
-                    auraPunchPanel(technique: selectedTechnique)
-                } else {
-                    techniquePicker
-                }
-            case .anthropometry:
-                comingSoonPanel(feature)
+                .padding(.bottom, 8)
             }
+            .scrollBounceBehavior(.basedOnSize)
+        }
+    }
+
+    @ViewBuilder
+    private func featurePanel(_ feature: TrainingFeature) -> some View {
+        switch feature {
+        case .reactiveStrike:
+            if let selectedMode {
+                reactiveStrikePanel(mode: selectedMode)
+            } else {
+                reactiveStrikeModePicker
+            }
+        case .auraPunch:
+            if let selectedTechnique {
+                auraPunchPanel(technique: selectedTechnique)
+            } else {
+                techniquePicker
+            }
+        case .anthropometry:
+            comingSoonPanel(feature)
         }
     }
 
@@ -236,6 +277,15 @@ struct BoxingCoachContentView: View {
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
+
+                        // Which hand the punch expects, stated up front — the score is reduced
+                        // for using the wrong one, so it should never be a surprise.
+                        Text(technique.hand.requirementDescription(for: session.auraPunch.stance))
+                            .font(.caption.weight(.semibold))
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.secondary.opacity(0.18), in: Capsule())
+
                         Image(systemName: "chevron.right")
                             .foregroundStyle(.secondary)
                     }
@@ -265,13 +315,23 @@ struct BoxingCoachContentView: View {
                 .padding()
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
 
-            if aura.phase == .attempting {
-                // Live extension meter — shows the punch developing while it happens.
+            if aura.phase == .attempting || aura.phase == .guiding {
+                // Live extension meter — shows the punch developing while it happens. Also shown
+                // during the guided reps, where the user is trying to reach the ghost's hold.
                 ProgressView(value: Double(min(max(aura.liveReach, 0), 1)))
                     .tint(.accentColor)
             }
 
             if aura.phase == .results, let score = aura.score {
+                if let note = score.wrongHandNote {
+                    Label(note, systemImage: "hand.raised.slash")
+                        .font(.callout.weight(.medium))
+                        .foregroundStyle(.orange)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding()
+                        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                }
+
                 auraScoreCard(score)
                 if let feedback = aura.feedback {
                     auraFeedbackCard(feedback)
@@ -309,6 +369,14 @@ struct BoxingCoachContentView: View {
                 .font(.headline)
 
             labeledRow("Overall", "\(Int(score.overall.rounded())) · \(score.grade)")
+
+            if score.wrongHand {
+                // Say so on the score itself, not just in the coaching text — otherwise a
+                // reduced number looks like the technique was bad rather than the hand wrong.
+                Text("Reduced: thrown with the \(score.thrownHandName) hand instead of the \(score.requiredHandName).")
+                    .font(.footnote)
+                    .foregroundStyle(.orange)
+            }
 
             Divider()
 
@@ -532,21 +600,19 @@ struct BoxingCoachContentView: View {
             return false
         }
 
+        // No flag is set on success: the immersive scene reports its own arrival to the session,
+        // which is the only signal that stays correct when the space later closes on its own.
         switch await openImmersiveSpace(id: session.immersiveSpaceID) {
         case .opened:
-            immersiveOpened = true
             session.clearError()
             return true
         case .userCancelled:
-            immersiveOpened = false
             session.reportError("Immersive space cancelled")
             return false
         case .error:
-            immersiveOpened = false
             session.reportError("Could not open immersive space (system error)")
             return false
         @unknown default:
-            immersiveOpened = false
             session.reportError("Could not open immersive space (unknown result)")
             return false
         }
@@ -557,7 +623,23 @@ struct BoxingCoachContentView: View {
         defer { isBusy = false }
         session.stopDrill()
         await dismissImmersiveSpace()
-        immersiveOpened = false
+        // `immersiveOpened` now follows the session, which the immersive scene updates from its
+        // own lifecycle — there is no local flag left here to get out of step with reality.
+    }
+
+    /// Tears the app down: stop the drill, close the immersive space, then close the window.
+    ///
+    /// visionOS keeps an app alive while it owns any scene, so dismissing the window alone leaves
+    /// it running whenever an immersive space is still up. Both have to go, in that order.
+    private func exitApp() async {
+        isBusy = true
+        defer { isBusy = false }
+
+        session.stopDrill()
+        if immersiveOpened {
+            await dismissImmersiveSpace()
+        }
+        dismissWindow()
     }
 }
 

@@ -15,6 +15,19 @@ struct ReferencePunch: Sendable {
         samples.last?.time ?? 0
     }
 
+    /// Reach at the moment of full extension. The follow-along guide holds the ghost here, and
+    /// the user's own reach is judged against it rather than against a hardcoded 1.0 — a hook
+    /// peaks near 0.70 by design, so an absolute threshold would be unreachable for it.
+    var peakReach: Float {
+        samples.map(\.reachFraction).max() ?? 1
+    }
+
+    /// Time of full extension — the boundary between the outward and return halves of the punch.
+    var peakTime: TimeInterval {
+        guard let peak = samples.max(by: { $0.reachFraction < $1.reachFraction }) else { return 0 }
+        return peak.time
+    }
+
     /// Interpolated pose at an arbitrary time. Used to drive the demo silhouette, which renders
     /// at the display's refresh rate rather than at the trajectory's authoring rate.
     func sample(at time: TimeInterval) -> MotionSample? {
@@ -73,12 +86,17 @@ enum ReferencePunchLibrary {
     /// sequences of similar density.
     static let sampleRate: Double = 60
 
+    /// - Parameter side: Overrides which arm the trajectory is mirrored onto. Scoring passes the
+    ///   hand the user *actually* threw with, so a jab thrown off the wrong arm is still compared
+    ///   against a correctly mirrored jab — the hand fault is then reported as a hand fault
+    ///   instead of being smeared across every geometry sub-metric.
     static func punch(
         for technique: Technique,
         stance: Stance,
-        measurements: BodyMeasurements
+        measurements: BodyMeasurements,
+        side overrideSide: BodySide? = nil
     ) -> ReferencePunch {
-        let side = technique.hand.side(for: stance)
+        let side = overrideSide ?? technique.hand.side(for: stance)
 
         if let recorded = recordedPunch(for: technique, side: side) {
             return recorded

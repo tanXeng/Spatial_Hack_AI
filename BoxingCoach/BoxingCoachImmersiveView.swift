@@ -14,9 +14,13 @@ struct BoxingCoachImmersiveView: View {
         }
         .task {
             // Start hand tracking as soon as the space opens; drill starts from the window UI.
+            session.immersiveSpaceDidOpen()
             await session.hands.start()
         }
         .onDisappear {
+            // Reports the close however it happened — our own button, or the system taking the
+            // space away — so the window UI can never believe a dismissed space is still up.
+            session.immersiveSpaceDidClose()
             session.stopDrill()
             session.hands.stop()
         }

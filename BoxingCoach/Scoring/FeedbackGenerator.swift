@@ -41,10 +41,19 @@ nonisolated struct MockFeedbackGenerator: FeedbackGenerating {
     }
 
     private func headline(for score: TechniqueScore, technique: Technique) -> String {
-        "\(technique.name): \(Int(score.overall.rounded()))/100 — \(score.grade)."
+        let base = "\(technique.name): \(Int(score.overall.rounded()))/100 — \(score.grade)."
+        guard score.wrongHand else { return base }
+        return "\(base) Wrong hand — that one doesn't count as a \(technique.name.lowercased())."
     }
 
     private func primaryFix(for score: TechniqueScore, technique: Technique) -> String {
+        // The hand comes first when it was wrong. Coaching someone's elbow on a punch they threw
+        // with the wrong arm fixes the wrong problem — they have to throw it off the right hand
+        // before anything else about the shape is worth talking about.
+        if let note = score.wrongHandNote {
+            return "\(note) Throw the next one off your \(score.requiredHandName)."
+        }
+
         guard let weakest = score.weakest, let value = weakest.score, value < 85 else {
             // Nothing stands out as wrong, so fall back to a technique cue rather than
             // manufacturing a fault the numbers don't support.
@@ -200,6 +209,10 @@ nonisolated struct ClaudeFeedbackGenerator: FeedbackGenerating {
         unavailable, do not comment on it at all; it was not measured, which is not the same as \
         the boxer doing it badly.
 
+        If the summary says the punch was thrown with the wrong hand, lead with that and make it \
+        the correction — everything else is secondary, because the shape of a punch thrown off \
+        the wrong arm is not the fault worth fixing first. Say plainly which hand it should be.
+
         Coach one thing at a time. Beginners cannot fix five faults at once, so name the single \
         most valuable correction and leave the rest. Write plainly, the way someone would talk in \
         a gym — no jargon the boxer would not already know, no lists, no preamble. Keep every \
@@ -214,9 +227,17 @@ nonisolated struct ClaudeFeedbackGenerator: FeedbackGenerating {
             "Technique: \(technique.name) — \(technique.summary)",
             "Overall: \(Int(score.overall.rounded()))/100 (\(score.grade))",
             "Punch duration: \(String(format: "%.2f", score.duration))s",
+            "Required hand: \(score.requiredHandName)"
+        ]
+
+        if let note = score.wrongHandNote {
+            lines.append("WRONG HAND: \(note) The overall score above already includes the penalty for this.")
+        }
+
+        lines.append(contentsOf: [
             "",
             "Sub-metrics (0-100, higher is better):"
-        ]
+        ])
 
         for metric in score.metrics {
             if let value = metric.score {

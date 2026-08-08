@@ -88,6 +88,21 @@ nonisolated struct TechniqueScore: Sendable {
     /// How long the punch took, start to finish.
     var duration: TimeInterval
 
+    /// True when the punch was thrown with a hand this technique does not allow — a jab off the
+    /// rear hand, say. Stored as plain values rather than as `BodySide`/`PunchHand` so the
+    /// `nonisolated` feedback generator can read them without hopping to the main actor.
+    var wrongHand: Bool = false
+    /// The hand that actually threw, e.g. "right".
+    var thrownHandName: String = ""
+    /// What the technique asks for, e.g. "left hand" or "either hand".
+    var requiredHandName: String = ""
+
+    /// One sentence stating the hand fault, or `nil` when the right hand was used.
+    var wrongHandNote: String? {
+        guard wrongHand, !thrownHandName.isEmpty, !requiredHandName.isEmpty else { return nil }
+        return "Thrown with the \(thrownHandName) hand, but this punch is the \(requiredHandName)."
+    }
+
     var grade: String {
         switch overall {
         case 88...: return "Excellent"
@@ -140,6 +155,14 @@ struct ScoringThresholds: Sendable {
     var retractionGood: Float = 0.13
     var retractionBad: Float = 0.50
 
+    /// Multiplier applied to the overall score when the punch was thrown with the wrong hand.
+    ///
+    /// The sub-metrics are deliberately left alone: a well-shaped cross thrown off the lead hand
+    /// is a hand-selection error, not a technique collapse, and zeroing the geometry would hide
+    /// the fact that the movement itself was fine. The penalty lands on the overall number so the
+    /// results page can name the actual mistake.
+    var wrongHandMultiplier: Float = 0.6
+
     static let `default` = ScoringThresholds()
 }
 
@@ -148,10 +171,15 @@ struct TechniqueScorer: Sendable {
     var thresholds: ScoringThresholds = .default
 
     /// Returns `nil` when the capture was too poor to grade honestly.
+    ///
+    /// `thrownSide` is the hand the user actually punched with, which is not always the one the
+    /// technique asks for — see `wrongHandMultiplier`.
     func score(
         attempt: RecordedAttempt,
         reference: ReferencePunch,
-        technique: Technique
+        technique: Technique,
+        thrownSide: BodySide,
+        stance: Stance
     ) -> TechniqueScore? {
         guard attempt.isUsable, !reference.samples.isEmpty else { return nil }
 
@@ -177,12 +205,18 @@ struct TechniqueScorer: Sendable {
             return (order.firstIndex(of: a.kind) ?? 0) < (order.firstIndex(of: b.kind) ?? 0)
         }
 
+        let wrongHand = !technique.hand.allows(thrownSide, stance: stance)
+        let shapeScore = weightedOverall(metrics)
+
         return TechniqueScore(
             techniqueID: technique.id,
-            overall: weightedOverall(metrics),
+            overall: wrongHand ? shapeScore * thresholds.wrongHandMultiplier : shapeScore,
             metrics: metrics,
             trackedFraction: attempt.trackedFraction,
-            duration: attempt.duration
+            duration: attempt.duration,
+            wrongHand: wrongHand,
+            thrownHandName: thrownSide.rawValue,
+            requiredHandName: technique.hand.requirementDescription(for: stance)
         )
     }
 

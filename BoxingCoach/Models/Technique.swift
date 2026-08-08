@@ -5,9 +5,28 @@ import Foundation
 enum PunchHand: String, Sendable, Codable {
     case lead
     case rear
+    /// Thrown correctly from either side — hooks are drilled off both hands.
+    case either
 
+    /// The side the ghost arm demonstrates on.
+    ///
+    /// `either` still has to pick one arm to draw, so it demonstrates on the lead side; the
+    /// user is free to answer with the other one and `allows` will accept it.
     func side(for stance: Stance) -> BodySide {
-        self == .lead ? stance.leadSide : stance.rearSide
+        switch self {
+        case .lead, .either: return stance.leadSide
+        case .rear: return stance.rearSide
+        }
+    }
+
+    /// Whether a punch thrown with `side` counts as the right hand for this technique.
+    func allows(_ side: BodySide, stance: Stance) -> Bool {
+        self == .either || side == self.side(for: stance)
+    }
+
+    /// How the requirement reads in coaching copy, e.g. "left hand".
+    func requirementDescription(for stance: Stance) -> String {
+        self == .either ? "either hand" : "\(side(for: stance).rawValue) hand"
     }
 }
 
@@ -59,8 +78,8 @@ nonisolated struct Technique: Identifiable, Sendable, Hashable, Codable {
     static let hook = Technique(
         id: "hook",
         name: "Hook",
-        summary: "Lead-hand punch that arcs horizontally with the elbow raised.",
-        hand: .lead,
+        summary: "Horizontal arcing punch with the elbow raised. Thrown off either hand.",
+        hand: .either,
         isImplemented: true,
         coachingCues: [
             "Elbow comes up to roughly shoulder height",

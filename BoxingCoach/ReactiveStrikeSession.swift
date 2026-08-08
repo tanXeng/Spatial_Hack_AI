@@ -19,6 +19,23 @@ final class ReactiveStrikeSession {
     private(set) var lastFeedback: String = "Ready"
     private(set) var errorMessage: String?
 
+    /// Whether the immersive space is actually on screen.
+    ///
+    /// Owned here, and set from the immersive scene's own lifecycle, because the space can also
+    /// close without the window's buttons being involved — the system dismissing it, or the user
+    /// leaving it. A copy kept in the window's local view state goes stale in exactly that case,
+    /// which then makes "Start" silently do nothing because the app believes a closed space is
+    /// still open.
+    private(set) var isImmersiveSpaceOpen = false
+
+    func immersiveSpaceDidOpen() {
+        isImmersiveSpaceOpen = true
+    }
+
+    func immersiveSpaceDidClose() {
+        isImmersiveSpaceOpen = false
+    }
+
     var config = DrillConfig()
     var mode: ReactiveStrikeMode = .air
     var reachProfile = ReachProfile.air
@@ -26,6 +43,15 @@ final class ReactiveStrikeSession {
     let metrics = DrillMetrics()
     let hands = HandTrackingService()
     let targets = TargetController()
+
+    /// Aura Punch shares this session's hand tracking and scene root rather than standing up its
+    /// own ARKit session — two sessions competing for the same providers is a good way to get
+    /// neither. Only one drill runs at a time, so there is no contention over the data.
+    let auraPunch: AuraPunchSession
+
+    init() {
+        auraPunch = AuraPunchSession(hands: hands)
+    }
 
     private var drillTask: Task<Void, Never>?
     private var activeAttemptID: UUID?
@@ -46,6 +72,7 @@ final class ReactiveStrikeSession {
 
     func attachSceneRoot(_ root: Entity) {
         targets.attach(to: root)
+        auraPunch.attach(to: root)
     }
 
     func startDrill() {
@@ -64,6 +91,10 @@ final class ReactiveStrikeSession {
     }
 
     func stopDrill() {
+        // Also covers the immersive space being dismissed, which is the one moment Aura Punch
+        // must stop too — its pose loop would otherwise keep running against dead tracking.
+        auraPunch.stop()
+
         drillTask?.cancel()
         drillTask = nil
         targets.removeActiveTarget()

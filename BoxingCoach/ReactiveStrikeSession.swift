@@ -4,6 +4,7 @@ import simd
 
 enum DrillPhase: String, Sendable {
     case idle
+    case calibrating
     case running
     case finished
 }
@@ -59,8 +60,11 @@ final class ReactiveStrikeSession {
     private var fistPositionAtSpawn: SIMD3<Float>?
 
     var progressLabel: String {
-        guard phase == .running else {
+        guard phase == .running || phase == .calibrating else {
             return phase == .finished ? "Round complete" : "Idle"
+        }
+        if phase == .calibrating {
+            return "Calibrating…"
         }
         return "Target \(min(currentTargetIndex + 1, config.targetCount)) / \(config.targetCount)"
     }
@@ -76,7 +80,7 @@ final class ReactiveStrikeSession {
     }
 
     func startDrill() {
-        guard phase != .running else { return }
+        guard phase != .running, phase != .calibrating else { return }
         reachProfile = mode.reachProfile
         metrics.reset()
         currentTargetIndex = 0
@@ -101,7 +105,7 @@ final class ReactiveStrikeSession {
         activeAttemptID = nil
         spawnTime = nil
         fistPositionAtSpawn = nil
-        if phase == .running {
+        if phase == .running || phase == .calibrating {
             phase = metrics.attempts.isEmpty ? .idle : .finished
         }
         lastFeedback = "Drill stopped"
@@ -133,8 +137,10 @@ final class ReactiveStrikeSession {
             return
         }
 
-        // Brief pause so the user can raise their guard.
         try? await Task.sleep(for: .milliseconds(700))
+        guard !Task.isCancelled, phase == .running || phase == .calibrating else { return }
+
+        await calibrateReach()
         guard !Task.isCancelled, phase == .running else { return }
 
         for index in 0..<config.targetCount {
@@ -151,6 +157,48 @@ final class ReactiveStrikeSession {
         targets.removeActiveTarget()
         phase = .finished
         lastFeedback = summaryFeedback()
+    }
+
+    private func calibrateReach() async {
+        phase = .calibrating
+        lastFeedback = "Extend arm to calibrate reach…"
+
+        let testForward: Float = 0.90
+        let testPosition = SIMD3<Float>(0, 1.25, -testForward)
+        _ = targets.spawnTarget(at: testPosition, radius: config.targetRadius * 1.25)
+
+        let deadline = Date().addingTimeInterval(6)
+        var bestForward: Float = 0
+
+        while Date() < deadline {
+            if Task.isCancelled {
+                targets.removeActiveTarget()
+                return
+            }
+
+            if let fist = hands.nearestFistPosition(to: testPosition) {
+                let fistForward = abs(fist.z)
+                if fistForward > bestForward {
+                    bestForward = fistForward
+                }
+
+                let dist = distance(fist, testPosition)
+                if dist <= config.hitRadius * 1.5 {
+                    break
+                }
+            }
+
+            try? await Task.sleep(for: .milliseconds(16))
+        }
+
+        targets.removeActiveTarget()
+
+        if bestForward > 0.25 {
+            reachProfile = reachProfile.calibrated(measuredForwardReach: bestForward)
+        }
+
+        phase = .running
+        lastFeedback = "Get ready…"
     }
 
     private func presentTarget() async {

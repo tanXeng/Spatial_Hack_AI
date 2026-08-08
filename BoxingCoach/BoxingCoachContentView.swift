@@ -248,7 +248,7 @@ struct BoxingCoachContentView: View {
                 Button(session.phase == .finished ? "Run Again" : "Start Drill") {
                     Task { await startDrillFlow() }
                 }
-                .disabled(session.phase == .running || isBusy)
+                .disabled(session.phase == .running || session.phase == .calibrating || isBusy)
                 .buttonStyle(.borderedProminent)
 
                 if immersiveOpened {
@@ -512,6 +512,9 @@ struct BoxingCoachContentView: View {
     }
 
     private var statusLine: String {
+        if session.phase == .calibrating {
+            return "Extend your arm fully to reach the target — this calibrates your reach"
+        }
         if session.phase == .running {
             return "\(session.progressLabel) · \(session.lastFeedback)"
         }

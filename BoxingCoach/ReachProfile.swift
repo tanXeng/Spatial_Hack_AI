@@ -72,4 +72,18 @@ struct ReachProfile: Sendable, Equatable {
         let height = Float.random(in: heightMin...heightMax)
         return SIMD3(lateral, height, -forward)
     }
+
+    func calibrated(measuredForwardReach: Float) -> ReachProfile {
+        let referenceReach = ReachProfile.air.forwardMax
+        let scale = max(0.5, measuredForwardReach / referenceReach)
+        let cappedReach = measuredForwardReach * 0.90
+        return ReachProfile(
+            forwardMin: cappedReach * 0.55,
+            forwardMax: cappedReach,
+            lateralMin: ReachProfile.air.lateralMin * scale,
+            lateralMax: ReachProfile.air.lateralMax * scale,
+            heightMin: ReachProfile.air.heightMin,
+            heightMax: ReachProfile.air.heightMax
+        )
+    }
 }

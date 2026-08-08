@@ -53,8 +53,7 @@ Carthage/Build/
 .xcuserdata/
 
 # Local-only workspace/legacy/reference artifacts (kept out of Git)
-local/*
-!local/.keep
+local/
 
 # Keep local docs/notes/scratch files local only (track only root README).
 *.md

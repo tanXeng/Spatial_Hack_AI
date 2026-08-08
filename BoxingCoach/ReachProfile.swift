@@ -48,7 +48,7 @@ struct ReachProfile: Sendable, Equatable {
 
     /// Wider floating volume in front of the user.
     static let air = ReachProfile(
-        forwardMin: 0.45,
+        forwardMin: 0.62,
         forwardMax: 0.75,
         lateralMin: -0.35,
         lateralMax: 0.35,
@@ -78,7 +78,7 @@ struct ReachProfile: Sendable, Equatable {
         let scale = max(0.5, measuredForwardReach / referenceReach)
         let cappedReach = measuredForwardReach * 0.90
         return ReachProfile(
-            forwardMin: cappedReach * 0.55,
+            forwardMin: cappedReach * 0.83,
             forwardMax: cappedReach,
             lateralMin: ReachProfile.air.lateralMin * scale,
             lateralMax: ReachProfile.air.lateralMax * scale,

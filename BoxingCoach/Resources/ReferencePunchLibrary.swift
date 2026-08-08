@@ -102,7 +102,7 @@ enum ReferencePunchLibrary {
             return recorded
         }
 
-        let keyframes = keyframes(for: technique, side: side, measurements: measurements)
+        let keyframes = keyframes(for: technique, side: side)
         return ReferencePunch(
             techniqueID: technique.id,
             side: side,
@@ -121,10 +121,11 @@ enum ReferencePunchLibrary {
     //     for straights and ~0.70 for hooks — nobody hyperextends, and scoring against 1.0
     //     would mark a technically correct punch down.
 
+    /// Authored purely in normalized units — no `BodyMeasurements` needed. The uppercut briefly
+    /// took them to derive a centerline offset; `resample` still scales bone lengths per user.
     private static func keyframes(
         for technique: Technique,
-        side: BodySide,
-        measurements: BodyMeasurements
+        side: BodySide
     ) -> [ReferenceKeyframe] {
         let lateral = side.lateralSign
         let inward = -lateral
@@ -183,20 +184,31 @@ enum ReferencePunchLibrary {
                 ReferenceKeyframe(time: 0.58, fist: guardFist, elbowPole: elbowDown, guardHand: guardHand)
             ]
 
-        case "uppercut", "left-uppercut", "right-uppercut":
-            // Small dip, then drive upward. The elbow stays pinned near the ribs throughout —
-            // hence a pole pointing down and *inward* rather than down and outward. The peak X
-            // exactly cancels this side's half-shoulder offset, so both hands land on the same
-            // body centerline instead of remaining displaced left or right.
-            let elbowTucked = SIMD3<Float>(inward * 0.30, -1.0, -0.20)
-            let centerlineX = inward * (measurements.shoulderWidth * 0.5 / max(measurements.armReach, 1e-3))
-            let dipX = guardFist.x + (centerlineX - guardFist.x) * 0.55
+        case "uppercut":
+            // Loads low on the punching side, then drives near-vertically — only ~0.04 of lateral
+            // drift across a 0.87 climb.
+            //
+            // It deliberately does **not** converge on the body's centerline. An earlier version
+            // cancelled this side's half-shoulder offset so both hands finished on the midline,
+            // but that put the *elbow* about 2 cm past the centerline at shoulder height — the
+            // exact opposite of this punch's own "elbow close to your ribs" cue, and on device it
+            // read as the arm starting from the middle of the chest and swinging out sideways.
+            // Keeping the fist over its own shoulder costs a little left/right symmetry and buys
+            // an elbow that stays where an uppercut's belongs.
+            //
+            // The pole points down, slightly *outward* and back so the elbow settles under the
+            // fist on the punching side. Pointing it inward — the previous value — is nearly
+            // antiparallel to the direction of travel, so the IK strips most of it away as the
+            // along-axis component and what survives drives the elbow across the body.
+            let elbowTucked = SIMD3<Float>(lateral * 0.25, -1.0, -0.35)
+            let loaded = SIMD3<Float>(inward * 0.02, -0.45, 0.18)
+            let peak = SIMD3<Float>(inward * 0.06, 0.42, 0.45)
             return [
                 ReferenceKeyframe(time: 0.00, fist: guardFist, elbowPole: elbowTucked, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.14, fist: SIMD3(dipX, -0.08, 0.32), elbowPole: elbowTucked, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.34, fist: SIMD3(centerlineX, 0.48, 0.56), elbowPole: elbowTucked, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.44, fist: SIMD3(centerlineX, 0.46, 0.54), elbowPole: elbowTucked, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.70, fist: guardFist, elbowPole: elbowTucked, guardHand: guardHand)
+                ReferenceKeyframe(time: 0.16, fist: loaded, elbowPole: elbowTucked, guardHand: guardHand),
+                ReferenceKeyframe(time: 0.36, fist: peak, elbowPole: elbowTucked, guardHand: guardHand),
+                ReferenceKeyframe(time: 0.46, fist: peak, elbowPole: elbowTucked, guardHand: guardHand),
+                ReferenceKeyframe(time: 0.72, fist: guardFist, elbowPole: elbowTucked, guardHand: guardHand)
             ]
 
         default:

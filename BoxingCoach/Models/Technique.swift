@@ -5,21 +5,19 @@ import Foundation
 enum PunchHand: String, Sendable, Codable {
     case lead
     case rear
-    case left
-    case right
-    /// Thrown correctly from either side — hooks are drilled off both hands.
+    /// Thrown correctly from either side — hooks and uppercuts are drilled off both hands, and
+    /// the guided follow-along alternates arms rep to rep rather than showing one fixed side.
     case either
 
     /// The side the ghost arm demonstrates on.
     ///
-    /// `either` still has to pick one arm to draw, so it demonstrates on the lead side; the
-    /// user is free to answer with the other one and `allows` will accept it.
+    /// `either` still has to pick one arm to draw, so this returns the lead side as the default;
+    /// the user is free to answer with the other one and `allows` will accept it. The guided
+    /// loop overrides this per rep — see `AuraPunchSession.demoSide(forRep:technique:stance:)`.
     func side(for stance: Stance) -> BodySide {
         switch self {
         case .lead, .either: return stance.leadSide
         case .rear: return stance.rearSide
-        case .left: return .left
-        case .right: return .right
         }
     }
 
@@ -93,35 +91,22 @@ nonisolated struct Technique: Identifiable, Sendable, Hashable, Codable {
         ]
     )
 
-    static let leftUppercut = Technique(
-        id: "left-uppercut",
-        name: "Left Uppercut",
-        summary: "Left-hand punch driving upward toward the body's centerline.",
-        hand: .left,
+    static let uppercut = Technique(
+        id: "uppercut",
+        name: "Uppercut",
+        summary: "Short punch that loads low at the hip and drives straight up. Alternates hands.",
+        hand: .either,
         isImplemented: true,
         coachingCues: [
-            "Dip slightly, then drive upward",
-            "Palm faces you through the rise",
-            "Keep the elbow close to your ribs",
-            "Do not drop the hand before you throw"
+            "Load low at your hip, then drive straight up",
+            "Keep the elbow under the fist and close to your ribs",
+            "Rise on your own side — do not swing across your body",
+            "Spare hand stays at your chin",
+            "Snap it back to guard"
         ]
     )
 
-    static let rightUppercut = Technique(
-        id: "right-uppercut",
-        name: "Right Uppercut",
-        summary: "Right-hand punch driving upward toward the body's centerline.",
-        hand: .right,
-        isImplemented: true,
-        coachingCues: [
-            "Dip slightly, then drive upward",
-            "Palm faces you through the rise",
-            "Keep the elbow close to your ribs",
-            "Do not drop the hand before you throw"
-        ]
-    )
-
-    static let all: [Technique] = [.jab, .cross, .hook, .leftUppercut, .rightUppercut]
+    static let all: [Technique] = [.jab, .cross, .hook, .uppercut]
 
     static func technique(id: String) -> Technique? {
         all.first { $0.id == id }

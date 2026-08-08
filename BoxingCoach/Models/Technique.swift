@@ -94,13 +94,13 @@ nonisolated struct Technique: Identifiable, Sendable, Hashable, Codable {
     static let uppercut = Technique(
         id: "uppercut",
         name: "Uppercut",
-        summary: "Short punch that loads low at the hip and drives straight up. Alternates hands.",
+        summary: "Short punch that loads low at the hip and drives up to the centreline. Alternates hands.",
         hand: .either,
         isImplemented: true,
         coachingCues: [
-            "Load low at your hip, then drive straight up",
+            "Load low at your hip, then drive up toward the centre",
             "Keep the elbow under the fist and close to your ribs",
-            "Rise on your own side — do not swing across your body",
+            "Travel in a straight line from hip to chin — no looping out",
             "Spare hand stays at your chin",
             "Snap it back to guard"
         ]

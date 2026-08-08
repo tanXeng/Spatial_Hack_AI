@@ -185,24 +185,31 @@ enum ReferencePunchLibrary {
             ]
 
         case "uppercut":
-            // Loads low on the punching side, then drives near-vertically — only ~0.04 of lateral
-            // drift across a 0.87 climb.
+            // Drops to hip height on the punching side, then drives up and *inward* to finish
+            // near the body's centerline — where a real uppercut lands, on the opponent's chin.
+            // The diagonal is the punch: ~0.24 of inward travel across a ~0.98 climb, about 14°
+            // off vertical.
             //
-            // It deliberately does **not** converge on the body's centerline. An earlier version
-            // cancelled this side's half-shoulder offset so both hands finished on the midline,
-            // but that put the *elbow* about 2 cm past the centerline at shoulder height — the
-            // exact opposite of this punch's own "elbow close to your ribs" cue, and on device it
-            // read as the arm starting from the middle of the chest and swinging out sideways.
-            // Keeping the fist over its own shoulder costs a little left/right symmetry and buys
-            // an elbow that stays where an uppercut's belongs.
+            // Both ends have been wrong in a previous revision, in opposite directions, so keep
+            // them straight:
             //
-            // The pole points down, slightly *outward* and back so the elbow settles under the
-            // fist on the punching side. Pointing it inward — the previous value — is nearly
-            // antiparallel to the direction of travel, so the IK strips most of it away as the
-            // along-axis component and what survives drives the elbow across the body.
-            let elbowTucked = SIMD3<Float>(lateral * 0.25, -1.0, -0.35)
-            let loaded = SIMD3<Float>(inward * 0.02, -0.45, 0.18)
-            let peak = SIMD3<Float>(inward * 0.06, 0.42, 0.45)
+            //   • The *load* must sit low and lateral. An early version loaded at the midline
+            //     barely below shoulder height, which read as the punch starting from the middle
+            //     of the chest.
+            //   • The *peak* must converge inward. Correcting the load by removing the inward
+            //     travel altogether over-corrected: the punch then rose vertically over its own
+            //     shoulder and read as being thrown out to the side.
+            //
+            // What actually caused the original sideways swing was the elbow, not the fist path:
+            // the pole pointed inward, nearly antiparallel to the direction of travel, so the IK
+            // stripped most of it away as the along-axis component and what survived drove the
+            // elbow about 2 cm *past* the centerline at shoulder height — the exact opposite of
+            // this punch's own "elbow close to your ribs" cue. Pointing the pole down, slightly
+            // outward and back keeps the elbow inside the body through the whole inward climb
+            // (it finishes ~4 cm short of the midline, below the shoulder).
+            let elbowTucked = SIMD3<Float>(lateral * 0.20, -1.0, -0.25)
+            let loaded = SIMD3<Float>(inward * 0.04, -0.62, 0.20)
+            let peak = SIMD3<Float>(inward * 0.28, 0.36, 0.42)
             return [
                 ReferenceKeyframe(time: 0.00, fist: guardFist, elbowPole: elbowTucked, guardHand: guardHand),
                 ReferenceKeyframe(time: 0.16, fist: loaded, elbowPole: elbowTucked, guardHand: guardHand),

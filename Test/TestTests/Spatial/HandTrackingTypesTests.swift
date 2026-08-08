@@ -12,11 +12,27 @@ struct HandTrackingTypesTests {
     func markerIdentifierIncludesSideAndJoint() {
         let marker = HandMarker(
             side: .left,
-            kind: .indexTip,
+            kind: .indexKnuckle,
             position: SIMD3<Float>(0.1, 0.2, -0.3)
         )
 
-        #expect(marker.id == "left.indexTip")
+        #expect(marker.id == "left.indexKnuckle")
+    }
+
+    /// Fingertip joints stop being reported by a closed fist, so drawing them
+    /// made a correct boxing guard look untracked.
+    @Test
+    func diagnosticMarkersFollowTheFistRatherThanFingertips() {
+        #expect(HandMarkerKind.allCases.count == 5)
+        #expect(!HandMarkerKind.allCases.contains { $0.rawValue.hasSuffix("Tip") })
+    }
+
+    @Test
+    func trackedHandCountDistinguishesOneHandFromNone() {
+        #expect(HandTrackingState.tracking(handCount: 2).trackedHandCount == 2)
+        #expect(HandTrackingState.tracking(handCount: 1).trackedHandCount == 1)
+        #expect(HandTrackingState.trackingLost.trackedHandCount == 0)
+        #expect(HandTrackingState.waitingForHands.trackedHandCount == 0)
     }
 
     @Test

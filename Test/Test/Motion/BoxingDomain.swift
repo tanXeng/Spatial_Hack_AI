@@ -186,6 +186,17 @@ struct DrillConfiguration: Equatable, Sendable {
     var minimumRetractSpeed: Float = 0.15
     var reversalDistance: Float = 0.025
     var maximumSampleInterval: TimeInterval = 0.20
+    /// A jab pushes the lead fist toward the edge of the camera envelope while
+    /// the rear fist sits under the headset, so one hand routinely drops for a
+    /// few frames at exactly the moment a punch is thrown. Scoring rides out a
+    /// single-hand gap this long; losing both hands still pauses immediately.
+    var singleHandGraceDuration: TimeInterval = 0.30
+    /// Holds a hand's punch phase across a brief dropout of that same hand
+    /// instead of discarding an in-flight punch on the first missing frame.
+    /// Deliberately well under `maximumSampleInterval` so it can only bridge a
+    /// few dropped frames, never widen the window of unobserved motion that
+    /// scoring is willing to trust.
+    var handDropoutGrace: TimeInterval = 0.08
     var minimumFistJointCount: Int = 3
     var minimumComfortableReach: Float = 0.32
     var maximumComfortableReach: Float = 0.75
@@ -374,18 +385,38 @@ struct PunchDetector: Sendable {
 
     mutating func process(_ sample: HandSample, target: TargetCue?) -> [PunchEvent] {
         HandSide.allCases.compactMap { hand in
-            process(hand: hand, pose: sample.pose(for: hand), target: target)
+            process(
+                hand: hand,
+                pose: sample.pose(for: hand),
+                sampledAt: sample.timestamp,
+                target: target
+            )
         }
     }
 
     private mutating func process(
         hand: HandSide,
         pose: HandPose?,
+        sampledAt: TimeInterval,
         target: TargetCue?
     ) -> PunchEvent? {
         var track = tracks[hand] ?? HandTrack()
         guard let pose else {
-            tracks[hand] = HandTrack()
+            // Resetting on the first missing frame silently discarded a jab
+            // that was already extending, because the punching fist routinely
+            // blinks out for a frame or two as it leaves the camera envelope.
+            // Hold the phase only while this hand has been unobserved for less
+            // than the dropout grace, measured from the last pose actually
+            // seen. A longer absence is a real tracking gap and still demands
+            // a fresh guard before another punch can be scored.
+            guard let lastObservedAt = track.previousTimestamp,
+                  sampledAt.isFinite,
+                  sampledAt >= lastObservedAt,
+                  sampledAt - lastObservedAt <= configuration.handDropoutGrace else {
+                tracks[hand] = HandTrack()
+                return nil
+            }
+            tracks[hand] = track
             return nil
         }
 

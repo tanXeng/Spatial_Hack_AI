@@ -12,13 +12,16 @@ import Observation
 import QuartzCore
 import simd
 
+/// Diagnostic markers deliberately follow the wrist and the four knuckles that
+/// define the fist. Fingertip joints stop being reported the moment a hand
+/// closes, so drawing them made a correctly formed fist look untracked and
+/// implied an open palm was required.
 enum HandMarkerKind: String, CaseIterable, Sendable {
     case wrist
-    case thumbTip
-    case indexTip
-    case middleTip
-    case ringTip
-    case littleTip
+    case indexKnuckle
+    case middleKnuckle
+    case ringKnuckle
+    case littleKnuckle
 }
 
 struct HandMarker: Identifiable, Equatable, Sendable {
@@ -125,6 +128,16 @@ enum HandTrackingState: Equatable, Sendable {
         }
         return false
     }
+
+    /// Hands currently tracked. Starting a round still requires both, but a
+    /// live round distinguishes "one fist blinked out mid-punch" from "both
+    /// hands are gone" instead of treating them identically.
+    var trackedHandCount: Int {
+        if case .tracking(let handCount) = self {
+            return handCount
+        }
+        return 0
+    }
 }
 
 @MainActor
@@ -150,6 +163,11 @@ final class HandTrackingService {
     @ObservationIgnored private var devicePoseTask: Task<Void, Never>?
     @ObservationIgnored private var lastAnchorUpdateUptime: TimeInterval = 0
     @ObservationIgnored private var latestHandPoses: [HandSide: TimedHandPose] = [:]
+    /// Last high-confidence fist center expressed in that hand's anchor frame.
+    /// The anchor keeps tracking through a closed, rotated fist even when the
+    /// individual knuckle joints drop out, so reprojecting this offset keeps a
+    /// punch alive instead of discarding the hand.
+    @ObservationIgnored private var fistOffsetInAnchor: [HandSide: SIMD3<Float>] = [:]
     @ObservationIgnored private var activeRequiresHandTracking = true
 
     private(set) var state: HandTrackingState = .idle
@@ -186,6 +204,7 @@ final class HandTrackingService {
         state = .checkingSupport
         activeRequiresHandTracking = requiresHandTracking
         markers = []
+        fistOffsetInAnchor.removeAll()
         clearTrackedHands(publishSample: false)
 
 #if targetEnvironment(simulator)
@@ -315,6 +334,7 @@ final class HandTrackingService {
         markers = []
         latestDevicePose = nil
         activeRequiresHandTracking = true
+        fistOffsetInAnchor.removeAll()
         clearTrackedHands()
         replaceSampleStream()
         state = .idle
@@ -507,6 +527,7 @@ final class HandTrackingService {
         markers = []
         latestDevicePose = nil
         activeRequiresHandTracking = true
+        fistOffsetInAnchor.removeAll()
         clearTrackedHands()
         state = terminalState
     }
@@ -533,16 +554,18 @@ final class HandTrackingService {
         }
         let wrist = jointPosition(.wrist, skeleton: skeleton, anchor: anchor)
         let receivedAt = ProcessInfo.processInfo.systemUptime
+        let trackedKnuckleCount = knuckles.compactMap { $0 }.count
 
-        if let fistCenter = FistCenterEstimator.centroid(
-            of: knuckles,
-            minimumJointCount: DrillConfiguration.provisional.minimumFistJointCount
+        if let fistCenter = resolveFistCenter(
+            knuckles: knuckles,
+            side: side,
+            anchor: anchor
         ) {
             latestHandPoses[side] = TimedHandPose(
                 pose: HandPose(
                     fistCenter: fistCenter,
                     wrist: wrist,
-                    trackedKnuckleCount: knuckles.compactMap { $0 }.count,
+                    trackedKnuckleCount: trackedKnuckleCount,
                     capturedAt: capturedAt
                 ),
                 timestamp: receivedAt
@@ -553,11 +576,10 @@ final class HandTrackingService {
 
         let jointMap: [(HandMarkerKind, HandSkeleton.JointName)] = [
             (.wrist, .wrist),
-            (.thumbTip, .thumbTip),
-            (.indexTip, .indexFingerTip),
-            (.middleTip, .middleFingerTip),
-            (.ringTip, .ringFingerTip),
-            (.littleTip, .littleFingerTip),
+            (.indexKnuckle, .indexFingerKnuckle),
+            (.middleKnuckle, .middleFingerKnuckle),
+            (.ringKnuckle, .ringFingerKnuckle),
+            (.littleKnuckle, .littleFingerKnuckle),
         ]
 
         for (kind, jointName) in jointMap {
@@ -573,6 +595,56 @@ final class HandTrackingService {
 
         publishCurrentSample()
         refreshTrackingState()
+    }
+
+    /// Resolves a fist center from the strongest evidence this frame offers.
+    ///
+    /// A boxing fist is closed and often rotated away from the downward-facing
+    /// cameras, which is exactly when ARKit stops reporting individual knuckle
+    /// joints. Requiring the full knuckle quorum every frame therefore dropped
+    /// the hand mid-punch. The hand anchor itself keeps tracking through that,
+    /// so a cached anchor-local offset can carry the fist until the knuckles
+    /// come back.
+    private func resolveFistCenter(
+        knuckles: [SIMD3<Float>?],
+        side: HandSide,
+        anchor: HandAnchor
+    ) -> SIMD3<Float>? {
+        let originFromAnchor = anchor.originFromAnchorTransform
+
+        if let centroid = FistCenterEstimator.centroid(
+            of: knuckles,
+            minimumJointCount: DrillConfiguration.provisional.minimumFistJointCount
+        ) {
+            let localOffset = transform(centroid, by: originFromAnchor.inverse)
+            if isFinite(localOffset) {
+                fistOffsetInAnchor[side] = localOffset
+            }
+            return centroid
+        }
+
+        if let localOffset = fistOffsetInAnchor[side] {
+            let reprojected = transform(localOffset, by: originFromAnchor)
+            if isFinite(reprojected) {
+                return reprojected
+            }
+        }
+
+        // No calibrated offset yet: accept a partial knuckle centroid so the
+        // very first frames of a session can still bootstrap one.
+        return FistCenterEstimator.centroid(of: knuckles, minimumJointCount: 1)
+    }
+
+    private func transform(
+        _ point: SIMD3<Float>,
+        by matrix: simd_float4x4
+    ) -> SIMD3<Float> {
+        let transformed = matrix * SIMD4<Float>(point, 1)
+        return SIMD3<Float>(transformed.x, transformed.y, transformed.z)
+    }
+
+    private func isFinite(_ value: SIMD3<Float>) -> Bool {
+        value.x.isFinite && value.y.isFinite && value.z.isFinite
     }
 
     private func removeTrackedHand(for chirality: HandAnchor.Chirality) {

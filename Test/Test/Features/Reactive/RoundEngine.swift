@@ -152,6 +152,9 @@ final class RoundEngine {
     @ObservationIgnored private var previousGuardSample: HandSample?
     @ObservationIgnored private var draftLeftGuard: SIMD3<Float>?
     @ObservationIgnored private var draftRightGuard: SIMD3<Float>?
+    /// Body-relative forward captured with the guard, used to judge whether a
+    /// reach repetition is a straight extension.
+    @ObservationIgnored private var draftStanceForward: SIMD3<Float>?
     @ObservationIgnored private let functionalCalibrationThresholds =
         FunctionalCalibrationThresholds.provisional
     @ObservationIgnored private var reachCycleStartedAt: TimeInterval?
@@ -178,6 +181,9 @@ final class RoundEngine {
     @ObservationIgnored private var trackingInterruptionCount = 0
     @ObservationIgnored private var systemInterrupted = false
     @ObservationIgnored private var lastAcceptedSampleTimestamp: TimeInterval?
+    /// Sample time at which the second hand dropped out, used to ride out a
+    /// brief single-hand gap instead of pausing mid-punch.
+    @ObservationIgnored private var singleHandSince: TimeInterval?
 
     init(configuration: DrillConfiguration? = nil) {
         let resolvedConfiguration = configuration ?? .provisional
@@ -262,18 +268,55 @@ final class RoundEngine {
             break
         }
 
-        let wasAvailable = trackingAvailable
-        trackingAvailable = state.hasBothHands
+        updateHandAvailability(
+            trackedHandCount: state.trackedHandCount,
+            at: ProcessInfo.processInfo.systemUptime
+        )
+    }
 
-        if wasAvailable,
-           !trackingAvailable,
-           isRoundActive,
-           phase != .pausedForTracking {
-            pauseForTracking(at: ProcessInfo.processInfo.systemUptime)
+    /// Decides whether a hand-count change should pause the round.
+    ///
+    /// Pausing on the first frame with fewer than two hands discarded the
+    /// punch that was already in flight, because throwing a jab is precisely
+    /// when the opposite fist drops out: it sits under the headset while the
+    /// lead fist travels toward the edge of the camera envelope. One hand
+    /// still tracked therefore gets a short grace window. Losing both hands
+    /// remains an immediate pause.
+    private func updateHandAvailability(
+        trackedHandCount: Int,
+        at timestamp: TimeInterval
+    ) {
+        // `trackingAvailable` is observed, and `ingest` runs at frame rate, so
+        // only write it on a genuine change.
+        if trackedHandCount >= 2 {
+            singleHandSince = nil
+            if !trackingAvailable {
+                trackingAvailable = true
+            }
+            return
         }
 
-        if !trackingAvailable {
-            resumeGuardStartedAt = nil
+        if trackedHandCount == 1 {
+            let lostSince = singleHandSince ?? timestamp
+            singleHandSince = lostSince
+            guard timestamp >= lostSince,
+                  timestamp - lostSince >= configuration.singleHandGraceDuration else {
+                return
+            }
+        } else {
+            singleHandSince = nil
+        }
+
+        let wasAvailable = trackingAvailable
+        if wasAvailable {
+            trackingAvailable = false
+        }
+        resumeGuardStartedAt = nil
+
+        if wasAvailable,
+           isRoundActive,
+           phase != .pausedForTracking {
+            pauseForTracking(at: timestamp)
         }
     }
 
@@ -281,6 +324,7 @@ final class RoundEngine {
         guard !systemInterrupted else { return }
         systemInterrupted = true
         trackingAvailable = false
+        singleHandSince = nil
 
         switch phase {
         case .calibratingGuard:
@@ -460,6 +504,7 @@ final class RoundEngine {
         roundTask?.cancel()
         roundTask = nil
         trackingAvailable = false
+        singleHandSince = nil
         activeCue = nil
         cueIsVisuallyActive = false
         lastResolvedBoardIndex = nil
@@ -470,6 +515,7 @@ final class RoundEngine {
         calibration = nil
         draftLeftGuard = nil
         draftRightGuard = nil
+        draftStanceForward = nil
         resetGuardCapture()
         resetReachCapture()
         jabTargetPosition = SIMD3<Float>(-0.16, 1.35, -0.82)
@@ -510,6 +556,7 @@ final class RoundEngine {
         validationMessage = nil
         draftLeftGuard = nil
         draftRightGuard = nil
+        draftStanceForward = nil
         resetGuardCapture()
         resetReachCapture()
         jabTargetPosition = SIMD3<Float>(-0.16, 1.35, -0.82)
@@ -598,18 +645,10 @@ final class RoundEngine {
         }
         lastAcceptedSampleTimestamp = sample.timestamp
 
-        let sampleHasBothHands = sample.left != nil && sample.right != nil
-        if trackingAvailable != sampleHasBothHands {
-            let wasAvailable = trackingAvailable
-            trackingAvailable = sampleHasBothHands
-
-            if wasAvailable,
-               !sampleHasBothHands,
-               isRoundActive,
-               phase != .pausedForTracking {
-                pauseForTracking(at: sample.timestamp)
-            }
-        }
+        updateHandAvailability(
+            trackedHandCount: [sample.left, sample.right].compactMap { $0 }.count,
+            at: sample.timestamp
+        )
 
         switch phase {
         case .calibratingGuard:
@@ -674,8 +713,14 @@ final class RoundEngine {
             return
         }
 
-        draftLeftGuard = guardLeftSum / Float(guardSampleCount)
-        draftRightGuard = guardRightSum / Float(guardSampleCount)
+        let leftGuard = guardLeftSum / Float(guardSampleCount)
+        let rightGuard = guardRightSum / Float(guardSampleCount)
+        draftLeftGuard = leftGuard
+        draftRightGuard = rightGuard
+        draftStanceForward = Self.stanceForward(
+            leftGuard: leftGuard,
+            rightGuard: rightGuard
+        )
         phase = .awaitingReach
         instruction = "Next, capture two controlled straight extensions and returns with each hand. No bag or partner."
     }
@@ -870,6 +915,36 @@ final class RoundEngine {
         return "Choose either fist for its first of \(count) straight extension-and-return repetitions."
     }
 
+    /// Body-relative forward derived from the two calibrated guard fists.
+    ///
+    /// Reach straightness used to be measured against world −Z, which only
+    /// points in front of the boxer when they happen to face the immersive
+    /// origin's forward axis. Facing any other way made every extension read
+    /// as sideways, so reach capture never completed. The horizontal normal of
+    /// the line between the guard fists rotates with the boxer instead. A
+    /// bladed stance tilts this toward the lead side by roughly the blade
+    /// angle, which stays well inside the `minimumForwardRatio` cone.
+    private static func stanceForward(
+        leftGuard: SIMD3<Float>,
+        rightGuard: SIMD3<Float>
+    ) -> SIMD3<Float>? {
+        let lateral = SIMD3<Float>(
+            rightGuard.x - leftGuard.x,
+            0,
+            rightGuard.z - leftGuard.z
+        )
+        let lateralLength = simd_length(lateral)
+        // Fists closer than this do not define a usable stance axis.
+        guard lateralLength.isFinite, lateralLength >= 0.05 else { return nil }
+
+        let forward = simd_cross(SIMD3<Float>(0, 1, 0), lateral / lateralLength)
+        let forwardLength = simd_length(forward)
+        guard forwardLength.isFinite, forwardLength > Float.ulpOfOne else {
+            return nil
+        }
+        return forward / forwardLength
+    }
+
     private func updateReachCycle(
         hand: HandSide,
         sample: HandSample,
@@ -880,7 +955,8 @@ final class RoundEngine {
 
         let delta = pose.fistCenter - guardPosition
         let distance = simd_length(delta)
-        let forwardRatio = -delta.z / max(distance, 0.0001)
+        let forward = draftStanceForward ?? SIMD3<Float>(0, 0, -1)
+        let forwardRatio = simd_dot(delta, forward) / max(distance, 0.0001)
         let isStraight = forwardRatio >= configuration.minimumForwardRatio
 
         if isStraight,
@@ -1467,6 +1543,7 @@ final class RoundEngine {
         roundTask?.cancel()
         roundTask = nil
         trackingAvailable = false
+        singleHandSince = nil
         activeCue = nil
         cueIsVisuallyActive = false
         pendingGuardReturns = [:]

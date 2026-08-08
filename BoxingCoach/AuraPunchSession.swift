@@ -49,13 +49,17 @@ final class AuraPunchSession {
     /// beginner to complete a punch faster than they can perceive the cue to start it.
     var minimumGuidedSpeedFactor: Double = 0.55
 
-    /// Fraction of the reference's peak reach the user must hit for the ghost to accept the
-    /// extension and start coming back. Relative to the reference rather than absolute because a
-    /// hook peaks near 0.70 by design — an absolute threshold would be unreachable for it.
-    var followExtensionFraction: Float = 0.80
-
-    /// Fraction of peak reach the user must drop back under to count as returned to guard.
-    var followGuardFraction: Float = 0.45
+    /// How close (in arm-reach units) the user's fist must get to the ghost's *actual position* —
+    /// not just how far it has extended — before a hold is considered matched.
+    ///
+    /// Matching on reach alone cannot tell a hook from a jab: both can hit the same distance from
+    /// the shoulder while pointing in completely different directions, which is exactly how a
+    /// hook gets "finessed" — punched straight instead of arced. Comparing full 3D position
+    /// against the reference's own pose at that instant closes that gap while automatically
+    /// respecting a hook's lower ~0.70 peak reach, since the target is the reference's own point
+    /// in space rather than an absolute threshold. Looser than the scorer's `pathGood` (0.11)
+    /// because this checks one live, possibly-noisy instant rather than an averaged trajectory.
+    var followPositionTolerance: Float = 0.16
 
     /// How long the ghost holds a position waiting for the user before moving on anyway.
     ///
@@ -188,18 +192,13 @@ final class AuraPunchSession {
 
     private func runSession() async {
         let solver = ArmPoseSolver(measurements: measurements)
-        let demoSide = technique.hand.side(for: stance)
-        let demoReference = ReferencePunchLibrary.punch(
-            for: technique,
-            stance: stance,
-            measurements: measurements,
-            side: demoSide
-        )
 
         guard await acquireTracking() else { return }
         guard !Task.isCancelled else { return }
 
-        await runGuidedFollowAlong(reference: demoReference, side: demoSide, solver: solver)
+        // Reference/side are resolved per rep inside the guided loop rather than once here, so
+        // an `.either`-hand technique like the hook can alternate which arm it demonstrates.
+        await runGuidedFollowAlong(solver: solver)
         guard !Task.isCancelled else { return }
 
         await runCountdown()
@@ -256,19 +255,35 @@ final class AuraPunchSession {
         return false
     }
 
-    /// What the user has to do before the ghost will move on from a hold.
-    private enum ReachGoal {
-        /// Reach at least this far — the user is matching full extension.
-        case extend(Float)
-        /// Come back under this — the user is returning to guard.
-        case retract(Float)
+    /// What the user has to do before the ghost will move on from a hold: get their fist to the
+    /// ghost's actual position, not just match its distance from the shoulder.
+    ///
+    /// This is deliberately position-based rather than magnitude-based. A magnitude-only check
+    /// (matching `reachFraction` — see `ArmPoseSolver.MotionSample`) cannot distinguish a hook
+    /// from a jab, since both can reach the same distance from the shoulder while pointing in
+    /// totally different directions. Comparing the full normalized fist vector forces the user to
+    /// actually trace the arc instead of punching straight to wherever satisfies a number.
+    private struct HoldGoal {
+        /// The reference's normalized fist position at this instant.
+        let targetFist: SIMD3<Float>
+        let tolerance: Float
 
-        func isMet(by reach: Float) -> Bool {
-            switch self {
-            case .extend(let target): return reach >= target
-            case .retract(let target): return reach <= target
-            }
+        func isMet(by fist: SIMD3<Float>) -> Bool {
+            simd_distance(fist, targetFist) <= tolerance
         }
+    }
+
+    /// Which arm rep `rep` of the guided follow-along should demonstrate.
+    ///
+    /// Techniques thrown with a specific hand (`.lead`/`.rear`) always demonstrate on that side.
+    /// `.either`-hand techniques — currently just the hook — alternate sides rep to rep, so the
+    /// tutorial actually trains both arms instead of only ever showing the lead side (which is
+    /// what a single fixed `PunchHand.side(for:)` lookup would otherwise do for every rep).
+    private func demoSide(forRep rep: Int, technique: Technique, stance: Stance) -> BodySide {
+        guard technique.hand == .either else {
+            return technique.hand.side(for: stance)
+        }
+        return rep.isMultiple(of: 2) ? stance.rearSide : stance.leadSide
     }
 
     /// Leads the user through the punch call-and-response, one waypoint at a time.
@@ -280,17 +295,10 @@ final class AuraPunchSession {
     ///
     /// This replaces the old fire-and-forget demo, which played at fixed speed whether or not the
     /// user was anywhere near keeping up.
-    private func runGuidedFollowAlong(
-        reference: ReferencePunch,
-        side: BodySide,
-        solver: ArmPoseSolver
-    ) async {
+    private func runGuidedFollowAlong(solver: ArmPoseSolver) async {
         phase = .guiding
         mirrorArm?.isVisible = false
 
-        let peak = max(reference.peakReach, 0.001)
-        let extendTarget = peak * followExtensionFraction
-        let guardTarget = peak * followGuardFraction
         let reps = max(1, guidedRepetitions)
         var speedFactor: Double = 1
 
@@ -298,8 +306,19 @@ final class AuraPunchSession {
             if Task.isCancelled { return }
             currentDemoRep = rep
 
+            // Resolved per rep, not once for the whole set, so an `.either`-hand technique can
+            // alternate which arm the ghost demonstrates on.
+            let side = demoSide(forRep: rep, technique: technique, stance: stance)
+            let reference = ReferencePunchLibrary.punch(
+                for: technique,
+                stance: stance,
+                measurements: measurements,
+                side: side
+            )
+            let handLabel = technique.hand == .either ? " — \(side.rawValue) \(technique.name.lowercased())" : ""
+
             let pace = rep == 1 ? "" : " — faster"
-            statusMessage = "Rep \(rep) of \(reps)\(pace): follow the ghost out"
+            statusMessage = "Rep \(rep) of \(reps)\(pace)\(handLabel): follow the ghost out"
             await playGhost(
                 reference: reference,
                 side: side,
@@ -315,8 +334,7 @@ final class AuraPunchSession {
                 reference: reference,
                 side: side,
                 solver: solver,
-                at: reference.peakTime,
-                until: .extend(extendTarget)
+                at: reference.peakTime
             )
             if Task.isCancelled { return }
 
@@ -336,8 +354,7 @@ final class AuraPunchSession {
                 reference: reference,
                 side: side,
                 solver: solver,
-                at: reference.duration,
-                until: .retract(guardTarget)
+                at: reference.duration
             )
             if Task.isCancelled { return }
 
@@ -388,7 +405,8 @@ final class AuraPunchSession {
         }
     }
 
-    /// Freezes the ghost at one point in the trajectory until the user's own arm satisfies `goal`.
+    /// Freezes the ghost at one point in the trajectory until the user's fist actually reaches
+    /// that point in space — not just until it reaches the same distance from the shoulder.
     ///
     /// The pose is re-solved every frame rather than held as a fixed world position, so the ghost
     /// stays attached to the user's shoulder while they wait — otherwise it would detach and drift
@@ -397,9 +415,10 @@ final class AuraPunchSession {
         reference: ReferencePunch,
         side: BodySide,
         solver: ArmPoseSolver,
-        at referenceTime: TimeInterval,
-        until goal: ReachGoal
+        at referenceTime: TimeInterval
     ) async {
+        guard let targetFist = reference.sample(at: referenceTime)?.fist else { return }
+        let goal = HoldGoal(targetFist: targetFist, tolerance: followPositionTolerance)
         let deadline = CACurrentMediaTime() + followHoldTimeout
 
         while CACurrentMediaTime() < deadline {
@@ -407,7 +426,7 @@ final class AuraPunchSession {
 
             poseGhost(reference: reference, side: side, solver: solver, at: referenceTime)
 
-            if let reach = updateLiveReach(side: side, solver: solver), goal.isMet(by: reach) {
+            if let fist = updateLiveReach(side: side, solver: solver), goal.isMet(by: fist) {
                 return
             }
 
@@ -443,24 +462,27 @@ final class AuraPunchSession {
         demoArm?.setTint(sample.reachFraction >= emphasisThreshold ? .emphasis : .demo)
     }
 
-    /// Current normalized reach of one arm, also published for the UI's punch meter.
+    /// Current normalized fist position of one arm — shoulder-relative, arm-reach units, same
+    /// space as `ReferencePunch` samples. Also publishes `reachFraction` for the UI's punch
+    /// meter, but callers that need to know *where* the fist is (not just how far it travelled)
+    /// should use the returned position rather than re-deriving it from `liveReach`.
     @discardableResult
-    private func updateLiveReach(side: BodySide, solver: ArmPoseSolver) -> Float? {
+    private func updateLiveReach(side: BodySide, solver: ArmPoseSolver) -> SIMD3<Float>? {
         guard let frame = currentBodyFrame(solver: solver),
               let hand = hands.observation(for: side) else {
             return nil
         }
 
         let pose = solver.solve(hand: hand, frame: frame)
-        let reach = solver.normalize(
+        let sample = solver.normalize(
             pose: pose,
             guardHand: nil,
             frame: frame,
             startTime: 0
-        ).reachFraction
+        )
 
-        liveReach = reach
-        return reach
+        liveReach = sample.reachFraction
+        return sample.fist
     }
 
     private func runCountdown() async {

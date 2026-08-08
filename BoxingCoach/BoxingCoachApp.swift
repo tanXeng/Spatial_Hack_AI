@@ -1,7 +1,9 @@
 import SwiftUI
 
 enum BoxingCoachSceneID {
-    static let controlWindow = "BoxingCoachControlWindow"
+    // Versioned once to prevent visionOS from restoring WindowGroup sessions created by builds
+    // before the control scene became single-instance.
+    static let controlWindow = "BoxingCoachControlWindow.Single"
     static let immersiveSpace = "ReactiveStrike"
 }
 
@@ -11,7 +13,10 @@ struct BoxingCoachApp: App {
     @State private var flow = TrainingFlowCoordinator()
 
     var body: some Scene {
-        WindowGroup(id: BoxingCoachSceneID.controlWindow) {
+        // `Window` is intentionally single-instance. A named `WindowGroup` creates another
+        // window each time `openWindow(id:)` is called, which stacked duplicate control layers
+        // when both explicit and system-driven immersive cleanup restored the UI.
+        Window("Boxing Coach", id: BoxingCoachSceneID.controlWindow) {
             BoxingCoachRootView()
                 .environment(session)
                 .environment(flow)

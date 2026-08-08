@@ -17,8 +17,21 @@ enum HandSide: String, CaseIterable, Hashable, Sendable {
 enum PunchKind: String, CaseIterable, Hashable, Sendable {
     case jab
     case cross
+    case leftUppercut
+    case rightUppercut
 
-    var title: String { rawValue.capitalized }
+    var title: String {
+        switch self {
+        case .jab: "Jab"
+        case .cross: "Cross"
+        case .leftUppercut: "Left Uppercut"
+        case .rightUppercut: "Right Uppercut"
+        }
+    }
+
+    var isUppercut: Bool {
+        self == .leftUppercut || self == .rightUppercut
+    }
 }
 
 enum Stance: String, CaseIterable, Hashable, Sendable {
@@ -30,7 +43,12 @@ enum Stance: String, CaseIterable, Hashable, Sendable {
     var rearHand: HandSide { self == .orthodox ? .right : .left }
 
     func hand(for punch: PunchKind) -> HandSide {
-        punch == .jab ? leadHand : rearHand
+        switch punch {
+        case .jab: leadHand
+        case .cross: rearHand
+        case .leftUppercut: .left
+        case .rightUppercut: .right
+        }
     }
 
     func punch(for hand: HandSide) -> PunchKind {
@@ -41,9 +59,29 @@ enum Stance: String, CaseIterable, Hashable, Sendable {
 struct HandPose: Equatable, Sendable {
     let fistCenter: SIMD3<Float>
     let wrist: SIMD3<Float>?
+    /// Processed forearm joints supplied by visionOS hand tracking. These are
+    /// useful technique cues, but they are not direct elbow/shoulder captures.
+    let forearmWrist: SIMD3<Float>?
+    let forearmArm: SIMD3<Float>?
     let trackedKnuckleCount: Int
     /// Capture time for this hand anchor on the system monotonic clock.
     let capturedAt: TimeInterval
+
+    init(
+        fistCenter: SIMD3<Float>,
+        wrist: SIMD3<Float>?,
+        forearmWrist: SIMD3<Float>? = nil,
+        forearmArm: SIMD3<Float>? = nil,
+        trackedKnuckleCount: Int,
+        capturedAt: TimeInterval
+    ) {
+        self.fistCenter = fistCenter
+        self.wrist = wrist
+        self.forearmWrist = forearmWrist
+        self.forearmArm = forearmArm
+        self.trackedKnuckleCount = trackedKnuckleCount
+        self.capturedAt = capturedAt
+    }
 }
 
 struct HandSample: Equatable, Sendable {
@@ -158,11 +196,55 @@ struct CalibrationProfile: Equatable, Sendable {
         configuration: DrillConfiguration
     ) -> SIMD3<Float> {
         let expectedHand = hand(for: punch)
-        return guardPosition(for: expectedHand)
-            + straightPunchDirection(for: expectedHand)
-                * (targetPlacementReach(for: expectedHand)
-                    * configuration.targetReachFraction)
-            + SIMD3<Float>(0, configuration.targetVerticalOffset, 0)
+        let reach = targetPlacementReach(for: expectedHand)
+            * configuration.targetReachFraction
+
+        switch punch {
+        case .jab, .cross:
+            return guardPosition(for: expectedHand)
+                + straightPunchDirection(for: expectedHand) * reach
+                + SIMD3<Float>(0, configuration.targetVerticalOffset, 0)
+
+        case .leftUppercut, .rightUppercut:
+            // A straight-punch target inherits the rear guard's full lateral
+            // offset. That makes an uppercut appear well left/right of the
+            // user's centerline. Build both left and right uppercut endpoints
+            // from the bilateral guard center instead.
+            let center = (leftGuard + rightGuard) * 0.5
+            var bodyRight = rightGuard - leftGuard
+            bodyRight.y = 0
+            bodyRight = Self.normalizedOrFallback(
+                bodyRight,
+                fallback: SIMD3<Float>(1, 0, 0)
+            )
+            var bodyForward = leftHand.straightPunchDirection
+                + rightHand.straightPunchDirection
+            bodyForward.y = 0
+            bodyForward -= bodyRight * simd_dot(bodyForward, bodyRight)
+            bodyForward = Self.normalizedOrFallback(
+                bodyForward,
+                fallback: straightPunchDirection(for: expectedHand)
+            )
+
+            let rise = min(0.28, max(0.18, reach * 0.42))
+            return center
+                + bodyForward * (reach * 0.58)
+                + SIMD3<Float>(0, rise, 0)
+        }
+    }
+
+    private static func normalizedOrFallback(
+        _ vector: SIMD3<Float>,
+        fallback: SIMD3<Float>
+    ) -> SIMD3<Float> {
+        let length = simd_length(vector)
+        if length.isFinite, length > 0.000_1 {
+            return vector / length
+        }
+        let fallbackLength = simd_length(fallback)
+        return fallbackLength > 0.000_1
+            ? fallback / fallbackLength
+            : SIMD3<Float>(0, 0, -1)
     }
 }
 

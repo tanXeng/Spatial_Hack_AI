@@ -16,11 +16,17 @@ struct AuraCoachingCue: Equatable, Sendable {
 @MainActor
 enum AuraCoachingFeedback {
     static func cue(for result: AuraPunchRepetitionResult) -> AuraCoachingCue {
-        let strengths: [(score: Double, text: String)] = [
+        var strengths: [(score: Double, text: String)] = [
             (result.pathScore, "Your hand stayed close to the guide path."),
             (result.extensionScore, "Your extension matched the calibrated target depth."),
             (result.otherHandGuardScore, "Your other hand stayed close to its guard reference."),
         ]
+        if let forearmAlignmentScore = result.forearmAlignmentScore {
+            strengths.append((
+                forearmAlignmentScore,
+                "Your forearm stayed aligned through the uppercut rise."
+            ))
+        }
         let strongest = strengths.max(by: { $0.score < $1.score })
         let positive: String
         if let strongest, strongest.score >= 0.70 {
@@ -30,7 +36,12 @@ enum AuraCoachingFeedback {
         }
 
         let focus: String
-        if result.pathScore <= result.extensionScore,
+        if let forearmAlignmentScore = result.forearmAlignmentScore,
+           forearmAlignmentScore <= result.pathScore,
+           forearmAlignmentScore <= result.extensionScore,
+           forearmAlignmentScore <= result.otherHandGuardScore {
+            focus = "Next set: keep the forearm more vertical as the uppercut rises through center."
+        } else if result.pathScore <= result.extensionScore,
            result.pathScore <= result.otherHandGuardScore {
             focus = "Next set: trace the center of the ghost-glove path with less lateral drift."
         } else if result.extensionScore <= result.otherHandGuardScore {

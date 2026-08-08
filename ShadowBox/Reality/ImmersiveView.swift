@@ -83,7 +83,10 @@ struct ImmersiveView: View {
                 guard !Task.isCancelled else { return }
                 roundEngine.ingest(sample)
                 if appModel.activeExperience == .auraPunch {
-                    auraPunch.ingest(sample)
+                    auraPunch.ingest(
+                        sample,
+                        devicePose: handTracking.latestDevicePose
+                    )
                 }
             }
         }
@@ -471,8 +474,7 @@ struct ImmersiveView: View {
             point.scale = SIMD3<Float>(repeating: isEndpoint ? 2 : 1)
             point.components.set(OpacityComponent(opacity: isEndpoint ? 0.9 : 0.48))
             let progress = Float(index) / Float(max(1, visiblePointCount - 1))
-            point.position = guide.guardPosition
-                + (guide.targetPosition - guide.guardPosition) * progress
+            point.position = guide.outboundPosition(at: progress)
         }
     }
 

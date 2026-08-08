@@ -225,11 +225,10 @@ final class HandTrackingService {
         } else {
             handProvider = nil
         }
-        // Keep providers mutually exclusive for this MVP. ARKit reports
-        // provider-state events as a collection; a hand-only or world-only
-        // session makes every pause/error unambiguous and avoids a secondary
-        // provider terminating an otherwise healthy active feature.
-        let worldProvider = !requiresHandTracking && WorldTrackingProvider.isSupported
+        // Run device pose alongside hand tracking. ARKit sessions are designed
+        // to combine providers; Aura uses this pose only to estimate a
+        // shoulder reference because visionOS exposes no shoulder joint.
+        let worldProvider = WorldTrackingProvider.isSupported
             ? WorldTrackingProvider()
             : nil
         if !requiresHandTracking, worldProvider == nil {
@@ -365,10 +364,8 @@ final class HandTrackingService {
                 lifecycleID: lifecycleID
             )
         }
-        if !requiresHandTracking {
-            devicePoseTask = Task { [weak self] in
-                await self?.emitOfflineDevicePose(lifecycleID: lifecycleID)
-            }
+        devicePoseTask = Task { [weak self] in
+            await self?.emitOfflineDevicePose(lifecycleID: lifecycleID)
         }
     }
 
@@ -422,6 +419,8 @@ final class HandTrackingService {
                     pose: HandPose(
                         fistCenter: left,
                         wrist: left + SIMD3<Float>(0, -0.09, 0.07),
+                        forearmWrist: left + SIMD3<Float>(0, -0.13, 0.09),
+                        forearmArm: left + SIMD3<Float>(0, -0.30, 0.12),
                         trackedKnuckleCount: 6,
                         capturedAt: timestamp
                     ),
@@ -431,6 +430,8 @@ final class HandTrackingService {
                     pose: HandPose(
                         fistCenter: right,
                         wrist: right + SIMD3<Float>(0, -0.09, 0.07),
+                        forearmWrist: right + SIMD3<Float>(0, -0.13, 0.09),
+                        forearmArm: right + SIMD3<Float>(0, -0.30, 0.12),
                         trackedKnuckleCount: 6,
                         capturedAt: timestamp
                     ),
@@ -482,7 +483,9 @@ final class HandTrackingService {
                 rightDirection: SIMD3<Float>(1.0, 0.0, 0.0),
                 capturedAt: timestamp
             )
-            state = .worldTracking
+            if !activeRequiresHandTracking {
+                state = .worldTracking
+            }
             try? await Task.sleep(for: .seconds(Self.offlineFrameInterval))
         }
     }
@@ -687,6 +690,16 @@ final class HandTrackingService {
             jointPosition($0, skeleton: skeleton, anchor: anchor)
         }
         let wrist = jointPosition(.wrist, skeleton: skeleton, anchor: anchor)
+        let forearmWrist = jointPosition(
+            .forearmWrist,
+            skeleton: skeleton,
+            anchor: anchor
+        )
+        let forearmArm = jointPosition(
+            .forearmArm,
+            skeleton: skeleton,
+            anchor: anchor
+        )
         let receivedAt = ProcessInfo.processInfo.systemUptime
 
         if let fistCenter = FistCenterEstimator.centroid(
@@ -697,6 +710,8 @@ final class HandTrackingService {
                 pose: HandPose(
                     fistCenter: fistCenter,
                     wrist: wrist,
+                    forearmWrist: forearmWrist,
+                    forearmArm: forearmArm,
                     trackedKnuckleCount: knuckles.compactMap { $0 }.count,
                     capturedAt: capturedAt
                 ),

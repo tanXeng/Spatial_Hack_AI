@@ -23,8 +23,10 @@ extension ContentView {
                 ) {
                     Text("Jab").tag(PunchKind.jab)
                     Text("Cross").tag(PunchKind.cross)
+                    Text("Left Uppercut").tag(PunchKind.leftUppercut)
+                    Text("Right Uppercut").tag(PunchKind.rightUppercut)
                 }
-                .pickerStyle(.segmented)
+                .pickerStyle(.menu)
                 .disabled(appModel.immersiveSpaceState != .closed)
 
                 HStack(spacing: 10) {
@@ -35,7 +37,6 @@ extension ContentView {
 
                 HStack(spacing: 10) {
                     Text("Hook — later")
-                    Text("Uppercut — later")
                 }
                 .font(.caption.weight(.semibold))
                 .foregroundStyle(.secondary)
@@ -45,7 +46,7 @@ extension ContentView {
             informationCard(
                 title: "Observable coaching boundary",
                 symbol: "scope",
-                message: "This MVP evaluates the selected hand’s path, extension, other-hand guard, and return to guard. Pace is not rewarded. It does not measure shoulders, hips, knees, feet, force, or professional technique."
+                message: "This MVP evaluates hand path, extension, other-hand guard, and return to guard. Uppercuts also use processed forearm joints. Shoulder position is estimated from headset pose and local profile width because visionOS does not expose a shoulder joint; hips, knees, feet, and force are not measured."
             )
 
             informationCard(
@@ -114,6 +115,8 @@ extension ContentView {
                         using: calibration,
                         at: ProcessInfo.processInfo.systemUptime,
                         difficulty: trainingSettings.difficulty,
+                        shoulderWidthMeters: profileStore.boxerProfile?
+                            .shoulderWidthMeters,
                         trackingReady: handTracking.isTrackingReady
                     )
                 }
@@ -161,6 +164,13 @@ extension ContentView {
                 "\(Int((summary.averageExtensionRatio * 100).rounded()))% of guide"
             )
             metricLine("Other-hand guard", percent(summary.averageOtherHandGuardScore))
+            if let forearm = summary.averageForearmAlignmentScore {
+                metricLine("Uppercut forearm alignment", percent(forearm))
+            }
+            metricLine(
+                "Estimated shoulder reference coverage",
+                percent(summary.averageShoulderReferenceCoverage)
+            )
             if let trajectory = summary.averageTrajectoryShapeScore {
                 metricLine("Trajectory shape · diagnostic", percent(trajectory))
             }
@@ -174,7 +184,7 @@ extension ContentView {
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }
-            Text("Trajectory shape is speed-invariant and fail-closed, but remains a hand-path diagnostic—not a full-body technique assessment.")
+            Text("Shoulder reference is estimated from headset pose, not directly tracked. Trajectory shape and forearm alignment remain partial technique diagnostics, not a full-body assessment.")
                 .font(.footnote)
                 .foregroundStyle(.secondary)
         }

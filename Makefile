@@ -18,14 +18,6 @@ build:
 build-offline:
 	$(OFFLINE_FLAGS) $(XCODEBUILD) -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIGURATION) -destination '$(SIM_DESTINATION)' -derivedDataPath $(DERIVED_DATA_ROOT)/simulator CODE_SIGNING_ALLOWED=NO build
 
-.PHONY: build-ios
-build-ios:
-	$(XCODEBUILD) -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIGURATION) -destination 'generic/platform=iOS Simulator' -derivedDataPath $(DERIVED_DATA_ROOT)/ios-simulator CODE_SIGNING_ALLOWED=NO build
-
-.PHONY: build-ios-offline
-build-ios-offline:
-	$(OFFLINE_FLAGS) $(XCODEBUILD) -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIGURATION) -destination 'generic/platform=iOS Simulator' -derivedDataPath $(DERIVED_DATA_ROOT)/ios-simulator CODE_SIGNING_ALLOWED=NO build
-
 .PHONY: build-device
 build-device:
 	$(XCODEBUILD) -project $(PROJECT) -scheme $(SCHEME) -configuration $(CONFIGURATION) -destination '$(DEVICE_DESTINATION)' -derivedDataPath $(DERIVED_DATA_ROOT)/device CODE_SIGNING_ALLOWED=NO build

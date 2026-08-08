@@ -30,13 +30,17 @@ ARKit hand tracking is unavailable in the simulator, so live punch validation re
 
 ```text
 BoxingCoach/
-├── Models/       stance, technique, and body-measurement domain models
-├── Resources/    locally authored reference punch trajectories
-├── Scoring/      motion recording, path comparison, scoring, and feedback
-├── Spatial/      body-relative arm solving and silhouette rendering
+├── Models/        stance, technique, and body-measurement domain models
+├── Resources/     locally authored reference punch trajectories
+├── Scoring/       motion recording, path comparison, scoring, and feedback
+├── Spatial/       body-relative arm solving and silhouette rendering
+├── UI/
+│   ├── Flow/      typed navigation and immersive-space lifecycle
+│   ├── Selection/ feature, mode, stance, and technique setup
+│   ├── Experience/ live guidance, controls, scores, and results
+│   └── Shared/    reusable status, error, progress, and metric components
 ├── *Session.swift
-├── HandTrackingService.swift
-└── BoxingCoach*View.swift
+└── HandTrackingService.swift
 ```
 
 `BoxingCoach.xcodeproj`, `Info.plist`, and the `BoxingCoach/` source tree are the complete active

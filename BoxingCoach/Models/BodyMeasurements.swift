@@ -2,7 +2,7 @@ import Foundation
 import simd
 
 /// Which side leads. Orthodox = left hand forward, Southpaw = right hand forward.
-enum Stance: String, CaseIterable, Identifiable, Sendable, Codable {
+enum Stance: String, CaseIterable, Identifiable, Hashable, Sendable, Codable {
     case orthodox
     case southpaw
 

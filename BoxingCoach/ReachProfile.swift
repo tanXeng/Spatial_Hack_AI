@@ -3,7 +3,7 @@ import simd
 
 /// Reactive Strike modes from the project brief.
 /// Bag Mode does not recognize a real bag yet — targets spawn in a tighter "bag zone" volume.
-enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Sendable {
+enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Hashable, Sendable {
     case air
     case bag
 

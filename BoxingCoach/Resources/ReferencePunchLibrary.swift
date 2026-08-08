@@ -76,7 +76,7 @@ private struct ReferenceKeyframe {
 
 /// Builds reference trajectories for each technique.
 ///
-/// **Authoring note** (CLAUDE.md open question — record vs. hand-author): these are hand-authored
+/// **Authoring note:** these are hand-authored
 /// from boxing fundamentals rather than recorded, so the pipeline works with no capture session.
 /// `recordedPunch(for:)` is the seam for swapping in real captured data later; when a JSON file
 /// exists in the bundle it wins over the synthetic version automatically, so recording a team
@@ -102,7 +102,7 @@ enum ReferencePunchLibrary {
             return recorded
         }
 
-        let keyframes = keyframes(for: technique, side: side)
+        let keyframes = keyframes(for: technique, side: side, measurements: measurements)
         return ReferencePunch(
             techniqueID: technique.id,
             side: side,
@@ -121,7 +121,11 @@ enum ReferencePunchLibrary {
     //     for straights and ~0.70 for hooks — nobody hyperextends, and scoring against 1.0
     //     would mark a technically correct punch down.
 
-    private static func keyframes(for technique: Technique, side: BodySide) -> [ReferenceKeyframe] {
+    private static func keyframes(
+        for technique: Technique,
+        side: BodySide,
+        measurements: BodyMeasurements
+    ) -> [ReferenceKeyframe] {
         let lateral = side.lateralSign
         let inward = -lateral
 
@@ -174,15 +178,19 @@ enum ReferencePunchLibrary {
                 ReferenceKeyframe(time: 0.62, fist: guardFist, elbowPole: elbowDown, guardHand: guardHand)
             ]
 
-        case "uppercut":
+        case "uppercut", "left-uppercut", "right-uppercut":
             // Small dip, then drive upward. The elbow stays pinned near the ribs throughout —
-            // hence a pole pointing down and *inward* rather than down and outward.
+            // hence a pole pointing down and *inward* rather than down and outward. The peak X
+            // exactly cancels this side's half-shoulder offset, so both hands land on the same
+            // body centerline instead of remaining displaced left or right.
             let elbowTucked = SIMD3<Float>(inward * 0.30, -1.0, -0.20)
+            let centerlineX = inward * (measurements.shoulderWidth * 0.5 / max(measurements.armReach, 1e-3))
+            let dipX = guardFist.x + (centerlineX - guardFist.x) * 0.55
             return [
                 ReferenceKeyframe(time: 0.00, fist: guardFist, elbowPole: elbowTucked, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.14, fist: SIMD3(inward * 0.12, -0.08, 0.32), elbowPole: elbowTucked, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.34, fist: SIMD3(inward * 0.06, 0.48, 0.56), elbowPole: elbowTucked, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.44, fist: SIMD3(inward * 0.06, 0.46, 0.54), elbowPole: elbowTucked, guardHand: guardHand),
+                ReferenceKeyframe(time: 0.14, fist: SIMD3(dipX, -0.08, 0.32), elbowPole: elbowTucked, guardHand: guardHand),
+                ReferenceKeyframe(time: 0.34, fist: SIMD3(centerlineX, 0.48, 0.56), elbowPole: elbowTucked, guardHand: guardHand),
+                ReferenceKeyframe(time: 0.44, fist: SIMD3(centerlineX, 0.46, 0.54), elbowPole: elbowTucked, guardHand: guardHand),
                 ReferenceKeyframe(time: 0.70, fist: guardFist, elbowPole: elbowTucked, guardHand: guardHand)
             ]
 

@@ -5,6 +5,8 @@ import Foundation
 enum PunchHand: String, Sendable, Codable {
     case lead
     case rear
+    case left
+    case right
     /// Thrown correctly from either side — hooks are drilled off both hands.
     case either
 
@@ -16,6 +18,8 @@ enum PunchHand: String, Sendable, Codable {
         switch self {
         case .lead, .either: return stance.leadSide
         case .rear: return stance.rearSide
+        case .left: return .left
+        case .right: return .right
         }
     }
 
@@ -32,7 +36,7 @@ enum PunchHand: String, Sendable, Codable {
 
 /// A punch the user can train.
 ///
-/// Techniques are **data, not screens** (see CLAUDE.md). Adding a punch means appending to
+/// Techniques are **data, not screens**. Adding a punch means appending to
 /// `all` and adding a matching entry in `ReferencePunchLibrary` — no view code changes.
 nonisolated struct Technique: Identifiable, Sendable, Hashable, Codable {
     let id: String
@@ -89,11 +93,11 @@ nonisolated struct Technique: Identifiable, Sendable, Hashable, Codable {
         ]
     )
 
-    static let uppercut = Technique(
-        id: "uppercut",
-        name: "Uppercut",
-        summary: "Rear-hand punch driving upward from below.",
-        hand: .rear,
+    static let leftUppercut = Technique(
+        id: "left-uppercut",
+        name: "Left Uppercut",
+        summary: "Left-hand punch driving upward toward the body's centerline.",
+        hand: .left,
         isImplemented: true,
         coachingCues: [
             "Dip slightly, then drive upward",
@@ -103,7 +107,21 @@ nonisolated struct Technique: Identifiable, Sendable, Hashable, Codable {
         ]
     )
 
-    static let all: [Technique] = [.jab, .cross, .hook, .uppercut]
+    static let rightUppercut = Technique(
+        id: "right-uppercut",
+        name: "Right Uppercut",
+        summary: "Right-hand punch driving upward toward the body's centerline.",
+        hand: .right,
+        isImplemented: true,
+        coachingCues: [
+            "Dip slightly, then drive upward",
+            "Palm faces you through the rise",
+            "Keep the elbow close to your ribs",
+            "Do not drop the hand before you throw"
+        ]
+    )
+
+    static let all: [Technique] = [.jab, .cross, .hook, .leftUppercut, .rightUppercut]
 
     static func technique(id: String) -> Technique? {
         all.first { $0.id == id }

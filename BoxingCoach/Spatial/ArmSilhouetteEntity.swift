@@ -11,7 +11,7 @@ private typealias PlatformColor = NSColor
 
 /// Visual treatment for a ghost arm.
 ///
-/// The governing constraint (CLAUDE.md): the silhouette **must not obscure the user's view of
+/// The governing constraint: the silhouette **must not obscure the user's view of
 /// their real arms**. That rules out an opaque limb. The treatment chosen here is an unlit,
 /// low-opacity glow — unlit so it reads as a hologram rather than a physical object competing
 /// with real lighting, and low-opacity so the user's actual arm stays visible straight through

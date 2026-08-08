@@ -138,7 +138,7 @@ nonisolated struct TechniqueScore: Sendable {
 /// running anything.
 ///
 /// ⚠️ These are hand-tuned from the geometry, **not** calibrated against real attempts yet
-/// (CLAUDE.md open question). Expect to adjust them once real punches have been recorded.
+/// They are provisional and should be adjusted once real punches have been recorded.
 struct ScoringThresholds: Sendable {
     var extensionGood: Float = 0.06
     var extensionBad: Float = 0.34

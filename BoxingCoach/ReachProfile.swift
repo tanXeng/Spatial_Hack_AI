@@ -6,6 +6,7 @@ import simd
 enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Sendable {
     case air
     case bag
+    case combination
 
     var id: String { rawValue }
 
@@ -13,6 +14,7 @@ enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .air: return "Air Mode"
         case .bag: return "Bag Mode"
+        case .combination: return "Combination Mode"
         }
     }
 
@@ -20,6 +22,7 @@ enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .air: return "Targets float in front of you"
         case .bag: return "Targets appear in a punching-bag zone"
+        case .combination: return "Hit targets in sequence"
         }
     }
 
@@ -27,6 +30,7 @@ enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Sendable {
         switch self {
         case .air: return .air
         case .bag: return .bagZone
+        case .combination: return .air
         }
     }
 }

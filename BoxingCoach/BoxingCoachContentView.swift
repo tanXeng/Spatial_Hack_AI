@@ -37,6 +37,7 @@ struct BoxingCoachContentView: View {
 
     @State private var selectedFeature: TrainingFeature?
     @State private var selectedMode: ReactiveStrikeMode?
+    @State private var selectedCombo: Combination?
     @State private var selectedTechnique: Technique?
     @State private var isBusy = false
     /// The in-flight immersive-space dismissal, if any. Anything that wants to open a space must
@@ -175,7 +176,11 @@ struct BoxingCoachContentView: View {
         switch feature {
         case .reactiveStrike:
             if let selectedMode {
-                reactiveStrikePanel(mode: selectedMode)
+                if selectedMode == .combination, selectedCombo == nil {
+                    comboPicker
+                } else {
+                    reactiveStrikePanel(mode: selectedMode)
+                }
             } else {
                 reactiveStrikeModePicker
             }
@@ -204,6 +209,34 @@ struct BoxingCoachContentView: View {
                                 .font(.headline)
                                 .foregroundStyle(.primary)
                             Text(mode.subtitle)
+                                .font(.subheadline)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                        Image(systemName: "chevron.right")
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(18)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+                }
+                .buttonStyle(.plain)
+            }
+        }
+    }
+
+    private var comboPicker: some View {
+        VStack(spacing: 12) {
+            ForEach(Combination.all) { combo in
+                Button {
+                    selectedCombo = combo
+                    session.selectedCombination = combo
+                } label: {
+                    HStack(spacing: 16) {
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(combo.name)
+                                .font(.headline)
+                                .foregroundStyle(.primary)
+                            Text("\(combo.numberNotation) · \(combo.summary)")
                                 .font(.subheadline)
                                 .foregroundStyle(.secondary)
                         }
@@ -452,6 +485,9 @@ struct BoxingCoachContentView: View {
             Text("Results")
                 .font(.headline)
 
+            if session.mode == .combination {
+                labeledRow("Combos", "\(session.comboRepsCompleted) / \(session.comboRepeatCount)")
+            }
             labeledRow("Hits", "\(session.metrics.hitCount)")
             labeledRow("Misses", "\(session.metrics.missCount)")
             labeledRow("Accuracy", String(format: "%.0f%%", session.metrics.accuracy * 100))
@@ -470,6 +506,9 @@ struct BoxingCoachContentView: View {
     }
 
     private var backLabel: String {
+        if selectedFeature == .reactiveStrike, selectedMode == .combination, selectedCombo != nil {
+            return "Combos"
+        }
         if selectedFeature == .reactiveStrike, selectedMode != nil {
             return "Modes"
         }
@@ -491,7 +530,10 @@ struct BoxingCoachContentView: View {
 
     private func detailSubtitle(for feature: TrainingFeature) -> String {
         if feature == .reactiveStrike, selectedMode == nil {
-            return "Choose Air Mode or Bag Mode"
+            return "Choose Air Mode, Bag Mode, or Combination Mode"
+        }
+        if feature == .reactiveStrike, selectedMode == .combination, selectedCombo == nil {
+            return "Choose a combination to practice"
         }
         if feature == .auraPunch, selectedTechnique == nil {
             return "Choose a punch to learn"
@@ -516,10 +558,16 @@ struct BoxingCoachContentView: View {
             return "Extend your arm fully to reach the target — this calibrates your reach"
         }
         if session.phase == .running {
+            if session.mode == .combination {
+                return "\(session.progressLabel) · \(session.lastFeedback)"
+            }
             return "\(session.progressLabel) · \(session.lastFeedback)"
         }
         if session.phase == .finished {
             return "Round complete"
+        }
+        if session.mode == .combination {
+            return "Tap Start Drill to practice \(session.selectedCombination.numberNotation)"
         }
         return "Tap Start Drill to begin"
     }
@@ -545,8 +593,12 @@ struct BoxingCoachContentView: View {
     private func goBack() {
         let wasOpen = immersiveOpened
 
-        if selectedFeature == .reactiveStrike, selectedMode != nil {
+        if selectedFeature == .reactiveStrike, selectedMode == .combination, selectedCombo != nil {
+            selectedCombo = nil
+            session.clearError()
+        } else if selectedFeature == .reactiveStrike, selectedMode != nil {
             selectedMode = nil
+            selectedCombo = nil
             session.clearError()
         } else if selectedFeature == .auraPunch, selectedTechnique != nil {
             selectedTechnique = nil
@@ -555,6 +607,7 @@ struct BoxingCoachContentView: View {
         } else {
             selectedFeature = nil
             selectedMode = nil
+            selectedCombo = nil
             selectedTechnique = nil
             session.auraPunch.reset()
             session.clearError()

@@ -40,6 +40,8 @@ final class ReactiveStrikeSession {
     var config = DrillConfig()
     var mode: ReactiveStrikeMode = .air
     var reachProfile = ReachProfile.air
+    var selectedCombination: Combination = .oneTwo
+    var comboRepeatCount: Int = 5
 
     let metrics = DrillMetrics()
     let hands = HandTrackingService()
@@ -58,6 +60,10 @@ final class ReactiveStrikeSession {
     private var activeAttemptID: UUID?
     private var spawnTime: Date?
     private var fistPositionAtSpawn: SIMD3<Float>?
+    private var currentComboStepIndex = 0
+    private var comboAttemptIDs: [UUID] = []
+    private var comboStepSpawnTimes: [Date] = []
+    private(set) var comboRepsCompleted = 0
 
     var progressLabel: String {
         guard phase == .running || phase == .calibrating else {
@@ -65,6 +71,10 @@ final class ReactiveStrikeSession {
         }
         if phase == .calibrating {
             return "Calibrating…"
+        }
+        if mode == .combination {
+            let comboTotal = selectedCombination.punchCount
+            return "Rep \(min(currentTargetIndex + 1, comboRepeatCount)) / \(comboRepeatCount)"
         }
         return "Target \(min(currentTargetIndex + 1, config.targetCount)) / \(config.targetCount)"
     }
@@ -84,6 +94,10 @@ final class ReactiveStrikeSession {
         reachProfile = mode.reachProfile
         metrics.reset()
         currentTargetIndex = 0
+        currentComboStepIndex = 0
+        comboAttemptIDs.removeAll()
+        comboStepSpawnTimes.removeAll()
+        comboRepsCompleted = 0
         phase = .running
         lastFeedback = "Get ready…"
         errorMessage = nil
@@ -102,9 +116,12 @@ final class ReactiveStrikeSession {
         drillTask?.cancel()
         drillTask = nil
         targets.removeActiveTarget()
+        targets.removeComboTargets()
         activeAttemptID = nil
         spawnTime = nil
         fistPositionAtSpawn = nil
+        comboAttemptIDs.removeAll()
+        comboStepSpawnTimes.removeAll()
         if phase == .running || phase == .calibrating {
             phase = metrics.attempts.isEmpty ? .idle : .finished
         }
@@ -143,18 +160,23 @@ final class ReactiveStrikeSession {
         await calibrateReach()
         guard !Task.isCancelled, phase == .running else { return }
 
-        for index in 0..<config.targetCount {
-            guard !Task.isCancelled, phase == .running else { return }
-            currentTargetIndex = index
-            await presentTarget()
-            guard !Task.isCancelled, phase == .running else { return }
+        if mode == .combination {
+            await runCombinationLoop()
+        } else {
+            for index in 0..<config.targetCount {
+                guard !Task.isCancelled, phase == .running else { return }
+                currentTargetIndex = index
+                await presentTarget()
+                guard !Task.isCancelled, phase == .running else { return }
 
-            if index < config.targetCount - 1 {
-                try? await Task.sleep(for: .seconds(config.interTargetDelay))
+                if index < config.targetCount - 1 {
+                    try? await Task.sleep(for: .seconds(config.interTargetDelay))
+                }
             }
         }
 
         targets.removeActiveTarget()
+        targets.removeComboTargets()
         phase = .finished
         lastFeedback = summaryFeedback()
     }
@@ -199,6 +221,85 @@ final class ReactiveStrikeSession {
 
         phase = .running
         lastFeedback = "Get ready…"
+    }
+
+    private func runCombinationLoop() async {
+        let combo = selectedCombination
+        let forwardBase = reachProfile.forwardMax * 0.92
+
+        for rep in 0..<comboRepeatCount {
+            guard !Task.isCancelled, phase == .running else { return }
+            currentTargetIndex = rep
+
+            let positions = combo.targetPositions(forwardBase: forwardBase)
+            targets.spawnCombo(at: positions, radius: config.targetRadius)
+            targets.activateComboTarget(at: 0)
+
+            comboAttemptIDs = (0..<combo.punchCount).map { _ in UUID() }
+            comboStepSpawnTimes.removeAll()
+
+            for step in 0..<combo.punchCount {
+                guard !Task.isCancelled, phase == .running else { return }
+                currentComboStepIndex = step
+                let stepSpawn = Date()
+                comboStepSpawnTimes.append(stepSpawn)
+                activeAttemptID = comboAttemptIDs[step]
+                spawnTime = stepSpawn
+                fistPositionAtSpawn = hands.nearestFistPosition(to: positions[step])
+
+                let punchName = combo.punches[step].displayName
+                lastFeedback = "\(punchName)! (\(step + 1)/\(combo.punchCount))"
+
+                let deadline = Date().addingTimeInterval(config.timeout)
+                var stepHit = false
+
+                while !Task.isCancelled, phase == .running {
+                    if Date() >= deadline {
+                        finishAttempt(
+                            result: .miss,
+                            hitTime: nil,
+                            fistAtHit: hands.nearestFistPosition(to: positions[step])
+                        )
+                        targets.flashComboTarget(at: step, result: .miss)
+                        break
+                    }
+
+                    if let fist = hands.nearestFistPosition(to: positions[step]) {
+                        if distance(fist, positions[step]) <= config.hitRadius {
+                            finishAttempt(result: .hit, hitTime: Date(), fistAtHit: fist)
+                            targets.flashComboTarget(at: step, result: .hit)
+                            stepHit = true
+                            break
+                        }
+                    }
+
+                    try? await Task.sleep(for: .milliseconds(16))
+                }
+
+                if Task.isCancelled || phase != .running { return }
+
+                if !stepHit {
+                    break
+                }
+
+                if step < combo.punchCount - 1 {
+                    targets.activateComboTarget(at: step + 1)
+                    try? await Task.sleep(for: .milliseconds(120))
+                } else {
+                    comboRepsCompleted += 1
+                }
+            }
+
+            comboAttemptIDs.removeAll()
+            comboStepSpawnTimes.removeAll()
+
+            try? await Task.sleep(for: .milliseconds(350))
+            targets.removeComboTargets()
+
+            if rep < comboRepeatCount - 1 {
+                try? await Task.sleep(for: .seconds(config.interTargetDelay))
+            }
+        }
     }
 
     private func presentTarget() async {
@@ -263,7 +364,13 @@ final class ReactiveStrikeSession {
             hitTime: hitTime,
             result: result,
             distanceAtHit: fistAtHit.flatMap { end in
-                targets.activeTargetPosition.map { distance(end, $0) }
+                let targetPos: SIMD3<Float>?
+                if mode == .combination, currentComboStepIndex < targets.comboTargetPositions.count {
+                    targetPos = targets.comboTargetPositions[currentComboStepIndex]
+                } else {
+                    targetPos = targets.activeTargetPosition
+                }
+                return targetPos.map { distance(end, $0) }
             },
             fistTravelDistance: travel,
             estimatedSpeedMetersPerSecond: speed
@@ -291,6 +398,9 @@ final class ReactiveStrikeSession {
 
     private func summaryFeedback() -> String {
         let accuracyPercent = Int((metrics.accuracy * 100).rounded())
+        if mode == .combination {
+            return String(format: "Done · %d/%d combos · %d%% accuracy", comboRepsCompleted, comboRepeatCount, accuracyPercent)
+        }
         if let avg = metrics.averageReactionTime {
             return String(format: "Done · %d%% accuracy · avg %.0f ms", accuracyPercent, avg * 1000)
         }

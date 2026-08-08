@@ -17,7 +17,7 @@ struct HandObservation: Sendable {
     /// The `forearmArm` joint, which sits near the elbow.
     ///
     /// visionOS *does* expose this (hierarchy: `wrist` → `forearmWrist` → `forearmArm`), which
-    /// is better than CLAUDE.md assumed. Treat it as a strong hint rather than ground truth: it
+    /// is useful for elbow estimation. Treat it as a strong hint rather than ground truth: it
     /// is extrapolated from the hand, so it degrades as the elbow leaves the cameras' view —
     /// exactly what happens at the end of a fully extended punch. `ArmPoseSolver` falls back to
     /// IK when this is `nil`, and blends toward IK when it disagrees with the arm's known length.

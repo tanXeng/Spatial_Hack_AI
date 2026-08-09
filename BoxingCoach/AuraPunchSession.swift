@@ -197,7 +197,7 @@ final class AuraPunchSession {
         guard !Task.isCancelled else { return }
 
         // Reference/side are resolved per rep inside the guided loop rather than once here, so
-        // an `.either`-hand technique like the hook can alternate which arm it demonstrates.
+        // an `.either`-hand technique like the hook or uppercut can alternate its demo arm.
         await runGuidedFollowAlong(solver: solver)
         guard !Task.isCancelled else { return }
 
@@ -276,7 +276,7 @@ final class AuraPunchSession {
     /// Which arm rep `rep` of the guided follow-along should demonstrate.
     ///
     /// Techniques thrown with a specific hand (`.lead`/`.rear`) always demonstrate on that side.
-    /// `.either`-hand techniques — currently just the hook — alternate sides rep to rep, so the
+    /// `.either`-hand techniques — the hook and uppercut — alternate sides rep to rep, so the
     /// tutorial actually trains both arms instead of only ever showing the lead side (which is
     /// what a single fixed `PunchHand.side(for:)` lookup would otherwise do for every rep).
     private func demoSide(forRep rep: Int, technique: Technique, stance: Stance) -> BodySide {
@@ -325,7 +325,8 @@ final class AuraPunchSession {
                 solver: solver,
                 from: 0,
                 to: reference.peakTime,
-                speedFactor: speedFactor
+                speedFactor: speedFactor,
+                phaseMessage: statusMessage
             )
             if Task.isCancelled { return }
 
@@ -334,7 +335,8 @@ final class AuraPunchSession {
                 reference: reference,
                 side: side,
                 solver: solver,
-                at: reference.peakTime
+                at: reference.peakTime,
+                phaseMessage: statusMessage
             )
             if Task.isCancelled { return }
 
@@ -345,7 +347,8 @@ final class AuraPunchSession {
                 solver: solver,
                 from: reference.peakTime,
                 to: reference.duration,
-                speedFactor: speedFactor
+                speedFactor: speedFactor,
+                phaseMessage: statusMessage
             )
             if Task.isCancelled { return }
 
@@ -354,7 +357,8 @@ final class AuraPunchSession {
                 reference: reference,
                 side: side,
                 solver: solver,
-                at: reference.duration
+                at: reference.duration,
+                phaseMessage: statusMessage
             )
             if Task.isCancelled { return }
 
@@ -376,7 +380,8 @@ final class AuraPunchSession {
         solver: ArmPoseSolver,
         from start: TimeInterval,
         to end: TimeInterval,
-        speedFactor: Double
+        speedFactor: Double,
+        phaseMessage: String
     ) async {
         let span = max(0, end - start)
         guard span > 0 else {
@@ -385,13 +390,38 @@ final class AuraPunchSession {
         }
 
         let wallDuration = span * speedFactor
-        let began = CACurrentMediaTime()
+        var activeElapsed: TimeInterval = 0
+        var lastTick = CACurrentMediaTime()
 
-        while true {
+        while activeElapsed < wallDuration {
             if Task.isCancelled { return }
 
-            let elapsed = CACurrentMediaTime() - began
-            let progress = wallDuration > 0 ? min(1, elapsed / wallDuration) : 1
+            let now = CACurrentMediaTime()
+            let guardUp = nonPunchingGuardStatus(punchingSide: side, solver: solver)
+
+            if guardUp == false {
+                statusMessage = GuardCoach.waitMessage
+                let progress = wallDuration > 0 ? min(1, activeElapsed / wallDuration) : 1
+                poseGhost(
+                    reference: reference,
+                    side: side,
+                    solver: solver,
+                    at: start + span * progress
+                )
+                updateLiveReach(side: side, solver: solver)
+                lastTick = now
+                try? await Task.sleep(for: frameInterval)
+                continue
+            }
+
+            if statusMessage == GuardCoach.waitMessage {
+                statusMessage = phaseMessage
+            }
+
+            activeElapsed += now - lastTick
+            lastTick = now
+
+            let progress = wallDuration > 0 ? min(1, activeElapsed / wallDuration) : 1
             poseGhost(
                 reference: reference,
                 side: side,
@@ -415,7 +445,8 @@ final class AuraPunchSession {
         reference: ReferencePunch,
         side: BodySide,
         solver: ArmPoseSolver,
-        at referenceTime: TimeInterval
+        at referenceTime: TimeInterval,
+        phaseMessage: String
     ) async {
         guard let targetFist = reference.sample(at: referenceTime)?.fist else { return }
         let goal = HoldGoal(targetFist: targetFist, tolerance: followPositionTolerance)
@@ -423,6 +454,17 @@ final class AuraPunchSession {
 
         while CACurrentMediaTime() < deadline {
             if Task.isCancelled { return }
+
+            if nonPunchingGuardStatus(punchingSide: side, solver: solver) == false {
+                statusMessage = GuardCoach.waitMessage
+                poseGhost(reference: reference, side: side, solver: solver, at: referenceTime)
+                try? await Task.sleep(for: frameInterval)
+                continue
+            }
+
+            if statusMessage == GuardCoach.waitMessage {
+                statusMessage = phaseMessage
+            }
 
             poseGhost(reference: reference, side: side, solver: solver, at: referenceTime)
 
@@ -456,10 +498,9 @@ final class AuraPunchSession {
             fist: solver.denormalize(sample.fist, side: side, frame: frame)
         )
 
-        // Flash near peak extension so the user's eye lands on the moment that matters. Measured
-        // against this punch's own peak, since a hook never approaches a straight punch's reach.
-        let emphasisThreshold = max(reference.peakReach, 0.001) * 0.85
-        demoArm?.setTint(sample.reachFraction >= emphasisThreshold ? .emphasis : .demo)
+        // Flash near the punch's semantic landing. Most punches use radial reach; uppercuts use
+        // spatial proximity to the chin landing so the radially longer hip load does not flash.
+        demoArm?.setTint(reference.shouldEmphasize(sample) ? .emphasis : .demo)
     }
 
     /// Current normalized fist position of one arm — shoulder-relative, arm-reach units, same
@@ -500,7 +541,8 @@ final class AuraPunchSession {
     /// Both hands are recorded because the app cannot assume the user threw with the hand it asked
     /// for — recording only the expected arm would turn a cross thrown off the lead hand into a
     /// capture of a stationary guard, which scores as a failed punch instead of the hand mistake
-    /// it actually was. The arm that reached furthest is taken as the one that threw.
+    /// it actually was. The arm with the strongest technique-specific extension is taken as the
+    /// one that threw: radial reach for most punches, ordered low-to-high rise for an uppercut.
     ///
     /// Returns `nil` when neither arm produced a gradeable punch.
     private func recordAttempt(
@@ -508,26 +550,31 @@ final class AuraPunchSession {
     ) async -> (side: BodySide, attempt: RecordedAttempt)? {
         phase = .attempting
         statusMessage = "Throw it!"
+        let throwMessage = statusMessage
 
         let startTime = CACurrentMediaTime()
         for recorder in recorders.values { recorder.begin(at: startTime) }
 
-        while CACurrentMediaTime() - startTime < attemptWindow {
+        var activeElapsed: TimeInterval = 0
+        var lastTick = CACurrentMediaTime()
+        var punchingSide: BodySide?
+
+        while activeElapsed < attemptWindow {
             if Task.isCancelled { break }
 
             let now = CACurrentMediaTime()
 
             guard let frame = currentBodyFrame(solver: solver) else {
-                // Tracking is gone this frame. Record the gap — see MotionRecorder for why this
-                // matters more than it looks like it should.
                 for recorder in recorders.values { recorder.recordDropout(at: now) }
                 mirrorArm?.isVisible = false
+                lastTick = now
                 try? await Task.sleep(for: frameInterval)
                 continue
             }
 
             var leadingPose: ArmPose?
             var leadingReach: Float = -1
+            var leadingSide: BodySide?
 
             for side in [BodySide.left, .right] {
                 guard let recorder = recorders[side] else { continue }
@@ -548,13 +595,35 @@ final class AuraPunchSession {
                 if sample.reachFraction > leadingReach {
                     leadingReach = sample.reachFraction
                     leadingPose = pose
+                    leadingSide = side
                 }
             }
 
-            // Mirror whichever arm is currently reaching furthest, so the user sees their own
-            // punch drawn back to them regardless of which hand they chose. Beyond looking good,
-            // this makes IK error visible on-device: if the ghost doesn't sit on their real arm,
-            // the shoulder estimate or the measurements are off.
+            punchingSide = leadingSide ?? punchingSide
+
+            if let punchingSide, nonPunchingGuardStatus(punchingSide: punchingSide, solver: solver) == false {
+                statusMessage = GuardCoach.waitMessage
+                if let leadingPose {
+                    liveReach = leadingReach
+                    mirrorArm?.isVisible = true
+                    mirrorArm?.pose(
+                        shoulder: leadingPose.shoulder,
+                        elbow: leadingPose.elbow,
+                        fist: leadingPose.fist
+                    )
+                }
+                lastTick = now
+                try? await Task.sleep(for: frameInterval)
+                continue
+            }
+
+            if statusMessage == GuardCoach.waitMessage {
+                statusMessage = throwMessage
+            }
+
+            activeElapsed += now - lastTick
+            lastTick = now
+
             if let leadingPose {
                 liveReach = leadingReach
                 mirrorArm?.isVisible = true
@@ -573,8 +642,11 @@ final class AuraPunchSession {
         mirrorArm?.isVisible = false
 
         let captured = recorders.mapValues { $0.finish() }
-        guard let thrown = captured.max(by: { $0.value.peakReach < $1.value.peakReach }),
-              thrown.value.peakReach > 0 else {
+        guard let thrown = captured.max(by: {
+            $0.value.extensionMagnitude(for: technique.id)
+                < $1.value.extensionMagnitude(for: technique.id)
+        }),
+              thrown.value.extensionMagnitude(for: technique.id) > 0 else {
             return nil
         }
         return (thrown.key, thrown.value)
@@ -597,7 +669,7 @@ final class AuraPunchSession {
         ) else {
             // Refusing to score a bad capture is deliberate: a confident number built on
             // interpolated motion would coach the user on a punch they never threw.
-            fail("Couldn't track that attempt cleanly enough to score it. Keep your hands in view and try again.")
+            fail("Couldn't track the punch itself cleanly enough to score it. Throw when ready — guard at your cheeks is fine.")
             return
         }
 
@@ -615,6 +687,21 @@ final class AuraPunchSession {
     private func currentBodyFrame(solver: ArmPoseSolver) -> BodyFrame? {
         guard let head = hands.deviceTransform else { return nil }
         return solver.bodyFrame(headTransform: head)
+    }
+
+    /// `true` = guard up, `false` = dropped, `nil` = guard hand not visible (do not pause).
+    private func nonPunchingGuardStatus(
+        punchingSide: BodySide,
+        solver: ArmPoseSolver
+    ) -> Bool? {
+        guard let frame = currentBodyFrame(solver: solver) else { return nil }
+        let guardSide = punchingSide.opposite
+        return GuardCoach.isGuardUp(
+            guardFistWorld: hands.observation(for: guardSide)?.fistPosition,
+            frame: frame,
+            measurements: measurements,
+            guardSide: guardSide
+        )
     }
 
     private func fail(_ message: String) {

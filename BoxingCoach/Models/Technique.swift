@@ -109,6 +109,11 @@ nonisolated struct Technique: Identifiable, Sendable, Hashable, Codable {
     static let all: [Technique] = [.jab, .cross, .hook, .uppercut]
 
     static func technique(id: String) -> Technique? {
-        all.first { $0.id == id }
+        switch id {
+        case "left-uppercut", "right-uppercut":
+            return .uppercut
+        default:
+            return all.first { $0.id == id }
+        }
     }
 }

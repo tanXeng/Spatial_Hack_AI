@@ -16,14 +16,21 @@ Context file for Claude Code. Keep this updated as decisions get made during the
 
 ## Feature Set
 
-Four features are planned. Two are built. Do not implement the others unless explicitly asked.
+All three features in `TrainingFeature` are now built.
 
 | Feature | Status | Description |
 |---|---|---|
 | **Aura Punch** | **Built** | Ghost arm silhouette overlaid on the user's body demonstrates a punch; user replicates it; app scores technique and gives feedback. |
-| Reactive Strike | Built | Spawns floating targets and times the user's reaction. Shares `HandTrackingService` and the immersive scene root with Aura Punch — see `ReactiveStrikeSession`. |
-| Punching Bag | Not yet — do not build | Virtual bag to strike. |
-| Anthropometry | Not yet — do not build | Body measurement capture used to scale the silhouette to the user. Everything downstream already reads `BodyMeasurements`, so this only has to produce one. |
+| Reactive Strike | Built | Spawns floating targets and times the user's reaction. Has three modes — see below. Owns `HandTrackingService` and the immersive scene root, and hosts `AuraPunchSession`. |
+| Anthropometry | Built | Measures forward reach per arm and captures the guard pose. **Gates the app** — an uncalibrated launch opens straight into it and no other feature is reachable until it produces a measurement. Feeds both the Reactive Strike spawn volume and Aura Punch's `BodyMeasurements`. |
+
+**Punching Bag is no longer a separate feature.** It became `ReactiveStrikeMode.bag`, one of three modes on Reactive Strike:
+
+| Mode | Description |
+|---|---|
+| `.air` | Targets float in front of you. |
+| `.bag` | Targets appear in a punching-bag zone. |
+| `.combination` | Throw a stance-aware punch sequence, validated punch by punch. |
 
 ### Aura Punch — detailed spec
 
@@ -32,34 +39,70 @@ Four features are planned. Two are built. Do not implement the others unless exp
 3. The user then attempts the same punch, trying to match the silhouette's motion.
 4. The app evaluates how closely the user's motion matched the reference and returns:
    - a **score**, and
-   - **specific feedback** on what to improve (e.g. "your elbow flared out", "you dropped your guard hand").
+   - **specific feedback** on what to improve (e.g. "your elbow flared out").
+
+### Combination Mode — detailed spec
+
+`Combination.swift` defines `PunchType` using conventional boxing numbering (1 jab, 2 cross, 3 lead hook, 4 rear hook, 5 lead uppercut, 6 rear uppercut) and a catalogue of `Combination` values (Jab-Cross, Double Jab-Cross, Jab-Cross-Hook, Jab-Cross-Hook-Cross, Jab-Cross-Uppercut-Cross).
+
+`CombinationPunchValidator` is a pure state machine that validates one `CombinationTarget` at a time. It requires, in order:
+
+1. The required fist near guard.
+2. Meaningful outbound movement from guard with positive velocity toward the target.
+3. Contact with the target **by the required fist** on a later sample.
+
+The caller passes the required-hand fist and the other fist as separate arguments, so the validator never infers hand identity from target proximity — contact by the wrong hand is reported distinctly and never advances validation. `PunchType.requiredHand(for: stance)` resolves lead/rear against the user's stance.
 
 ## UI Flow
 
-**As built** (`BoxingCoachContentView`) — there is no Start Screen and no Anthropometry prompt; the feature menu is the root:
+Navigation is a route enum owned by `TrainingFlowCoordinator`, rendered by `BoxingCoachRootView`. There is no Start Screen. **Calibration is the root on an uncalibrated launch**; the feature menu is the root thereafter.
 
 ```
-Feature Menu  ───────→ [Anthropometry (coming soon), Aura Punch, Reactive Strike]
-    ↓ (Aura Punch)
-Technique Picker  ───→ [jab, cross, hook, uppercut, ...]  ← ForEach(Technique.all)
-    ↓
-Aura Punch Session  ─→ guided follow-along → countdown → attempt → score + feedback
+launch (uncalibrated) → .experience(.calibration)   ← mandatory, Back hidden
+                              ↓ Continue to Training
+.features  ──────────→ [Anthropometry, Aura Punch, Reactive Strike]
+   ├─ .auraSetup      → stance picker + technique picker (ForEach(Technique.all))
+   ├─ .reactiveSetup  → mode picker (air / bag / combination)
+   │     └─ .combinationSetup → stance picker + combination picker
+   ├─ Anthropometry   → .experience(.calibration)   ← re-measure, Back shown
+   └─ .experience(TrainingSelection) → ready → immersive drill → score + feedback
 ```
 
-Entering a session opens the mixed `ImmersiveSpace`; the 2D window stays up and drives it.
+`TrainingSelection` is the committed choice — `.aura(technique:stance:)`, `.reactive(mode:combination:stance:)`, or `.calibration`.
 
-### Navigation — partially built
-The detail screens carry a **Back** and an **Exit** button, pinned outside a `ScrollView`. That pinning is load-bearing, not styling: when the content stack outgrows the window, SwiftUI centres the overflow and pushes an unpinned nav bar outside the window's bounds, where it renders but is **not hit-tested** — the button looks present and is completely untappable.
+`chooseFeature` refuses any non-Anthropometry feature while uncalibrated and bounces back to calibration. `TrainingFeature.isAvailable` is now `true` for everything; the `.unavailableFeature` route and `UnavailableFeatureView` are unreachable leftovers.
 
-Still unbuilt: **home** and **settings**, and the reusable `NavigationChrome` component. Nav is currently inline in `featureDetail`.
+### Scene management — read before touching navigation
+
+`TrainingFlowCoordinator` **serializes every immersive-space transition**, and this is load-bearing. Selection and experience views only emit user intent; they never open a scene, dismiss one, or mutate a drill engine directly. Overlapping SwiftUI tasks previously left the app half-open.
+
+Specific invariants that were each fixed after a real bug — do not undo them:
+
+- The control scene is a single-instance `Window`, **not** a `WindowGroup`. A named `WindowGroup` creates a new window on every `openWindow(id:)`, which stacked duplicate control layers when both explicit and system-driven cleanup restored the UI. The scene ID is versioned (`BoxingCoachControlWindow.Single`) so visionOS won't restore pre-fix sessions.
+- Starting a drill waits for **real scene readiness** (`immersiveSceneDidBecomeReady`, 5 s timeout), not a fixed sleep. The selection is applied to the engine only after the scene is usable, so a failed retry leaves the previous score intact instead of erasing it.
+- Ending a drill waits for the restored window's actual `onAppear` (`waitForControlWindowReadiness`, 2 s timeout) before dismissing immersion. Dismissing early on a loaded device discards the final result — no scene exists yet to own it.
+- `endExperience` calls `session.stopDrill()` **before** restoring the window. Leaving the engine alive during that wait let it record another hit or finish scoring after the user explicitly ended training.
+- `finalizeImmersiveClosure` handles both explicit dismissal and the system taking the space away.
+
+### Navigation chrome
+
+`TrainingDetailScaffold` (in `UI/Shared/TrainingComponents.swift`) is the shared detail-screen wrapper: a **Back** button pinned in an `HStack` outside the `ScrollView`, then title/subtitle/content inside it.
+
+That pinning is load-bearing, not styling: when the content stack outgrows the window, SwiftUI centres the overflow and pushes an unpinned nav bar outside the window's bounds, where it renders but is **not hit-tested** — the button looks present and is completely untappable.
+
+All controls take a `controlsDisabled` flag driven by `flow.controlsDisabled` (true whenever a transition is in flight).
+
+Still unbuilt: **home** and **settings**.
 
 ## Tech Stack
 
-- **UI:** SwiftUI for 2D windows (Start, Home, Technique Selection, Anthropometry prompt, results).
+- **UI:** SwiftUI for 2D windows.
 - **Spatial content:** RealityKit + Reality Composer Pro for the arm silhouette entity.
 - **Session:** visionOS `ImmersiveSpace` in **mixed immersion** — the user must see their real room and their real arms for the overlay to make sense. Do not use full immersion for Aura Punch.
-- **Tracking:** ARKit `HandTrackingProvider` for hand/wrist joints, plus the device (head) transform for torso reference.
+- **Tracking:** ARKit `HandTrackingProvider` for hand/wrist joints, plus `WorldTrackingProvider` for the device (head) anchor used as torso reference.
 - **AI/scoring:** motion comparison against a reference trajectory (see below), with an LLM used to turn numeric scoring output into natural-language coaching feedback.
+
+`Info.plist` **must** carry `NSHandsTrackingUsageDescription`. Without it `session.requestAuthorization(for: [.handTracking])` never returns `.allowed` and every drill dies at "Hand tracking permission denied" — with no build error to warn you.
 
 ## ⚠️ Key Technical Constraint — read before designing the silhouette
 
@@ -72,51 +115,96 @@ This means the "arm silhouette overlaid on the user's body" has to be **construc
 - Elbow position → **solved via inverse kinematics** from the estimated shoulder and the tracked wrist.
 
 Practical implications for Claude Code:
-- Build an `ArmPoseSolver` that takes `(headTransform, wristTransform, bodyMeasurements) -> (shoulder, elbow, wrist)` and keep the IK isolated there so it can be tuned independently.
-- While Anthropometry is unimplemented, feed `ArmPoseSolver` **hardcoded average adult measurements** from a `BodyMeasurements` struct with sensible defaults. This keeps the pipeline complete and swappable later.
-- Hand-tracking update rate and occlusion (hands leaving the field of view mid-punch) will materially affect quality. Handle dropped-tracking frames explicitly rather than assuming continuous data.
+- `ArmPoseSolver` takes `(headTransform, wristTransform, bodyMeasurements) -> (shoulder, elbow, wrist)`. Keep the IK isolated there so it can be tuned independently.
+- `ArmPoseSolver` is fed `BodyCalibration.measurements` — the measured reach rescales the arm chain, with the scale clamped to `0.80...1.25` of average adult so a bad measurement leaves the ghost inaccurate rather than visibly detached. Everything else (shoulder width, eye-to-shoulder offsets) is still average-adult.
+- ARKit data providers are **single-use**: once their session stops they enter `.stopped` and can never run again. The immersive space opens and closes on every back-out, so `HandTrackingService.start()` builds a **fresh `ARKitSession` and fresh providers each time**. Reusing the originals meant tracking worked exactly once per launch and every drill after the first silently received no anchors.
+- Hand-tracking update rate and occlusion (hands leaving the field of view mid-punch) materially affect quality. Dropped frames are handled explicitly.
 
-Verify the current visionOS ARKit hand-tracking API surface against Apple's docs before writing the tracking layer — do not rely on memory for exact type and property names.
+Verify the current visionOS ARKit hand-tracking API surface against Apple's docs before writing tracking code — do not rely on memory for exact type and property names.
 
 ## Scoring Approach (Aura Punch)
 
-Recommended approach for a hackathon timeframe:
-
-1. Record the reference punch as a **time-series of wrist/elbow/shoulder positions** in body-relative space (normalized by the user's measurements so it's scale-invariant).
-2. Record the user's attempt the same way.
-3. Compare with **Dynamic Time Warping (DTW)** so a slower or faster punch isn't unfairly penalized — you're grading form, not speed (unless speed is an explicit sub-metric).
-4. Break the score into a few named sub-metrics so feedback can be specific rather than a single opaque number. Suggested:
+1. Reference punch = a **time-series of wrist/elbow/shoulder positions** in body-relative space, normalized by the user's measurements so it's scale-invariant.
+2. The user's attempt is recorded the same way.
+3. Compared with **Dynamic Time Warping (DTW)** so a slower or faster punch isn't unfairly penalized — this grades form, not speed.
+4. **Four** scored sub-metrics (`TechniqueScore.swift`):
    - **Extension** — did the punch reach full extension?
-   - **Path** — did the fist travel in a straight line (jab/cross) vs. loop out?
+   - **Path** — did the fist travel a correct line vs. loop out?
    - **Elbow alignment** — did the elbow stay tucked or flare?
-   - **Guard** — did the non-punching hand stay up near the chin?
    - **Retraction** — did the hand return to guard afterward?
-5. Feed the sub-metric values to the LLM to generate natural-language coaching feedback. **The LLM should not invent the score** — it explains scores computed deterministically. This keeps feedback trustworthy and reproducible on stage.
+5. Sub-metric values feed the LLM, which generates natural-language coaching. **The LLM does not invent the score** — it explains scores computed deterministically. This keeps feedback trustworthy and reproducible on stage.
+
+### Guard is coached, not scored
+
+Guard was removed from the scored sub-metrics. `Scoring/GuardCoach.swift` now handles it **live**: `isGuardUp` returns `true` / `false` / `nil` (hand not visible — do **not** pause on `nil`). When the non-punching hand drops, both `AuraPunchSession` and `ReactiveStrikeSession` pause and show `GuardCoach.waitMessage` until it comes back up.
+
+### Reach calibration — measure the hold, never the ramp
+
+`BodyCalibration` (`Models/BodyCalibration.swift`) holds one measurement per launch: forward reach per arm plus the guard pose. It is created in `BoxingCoachApp.init` and handed to both `ReactiveStrikeSession` and `TrainingFlowCoordinator`, so there is exactly one instance. **In-memory only, deliberately** — a persisted measurement would apply one person's arms to whoever put the headset on next.
+
+Two rules here were each fixed after targets spawned at roughly two-thirds of arm's length:
+
+- **`ReachCalibration.settledForwardReach`** requires a *plateau*: the longest run of samples within `plateauTolerance` (1.5 cm) of the peak must span `plateauDuration` (0.30 s). The rule it replaced finalized 0.25 s after the fist first cleared guard and then took the 75th percentile — both halves measured the outbound ramp, and a punch needs ~0.3–0.5 s to reach lockout, so the window closed mid-flight. `robustForwardReach` survives only as the timeout fallback.
+- **`ReachProfile.calibrated`** anchors `forwardMax` to the measurement and puts `forwardMin` an **absolute** depth behind it. Scaling every bound by `usableReach / forwardMax` shrank the near edge faster than the far edge. Lateral bounds are not scaled at all — how wide a user punches has no dimensional relationship to how far forward they reach.
+
+Also: the calibration cue spawns at `BodyMeasurements.averageAdult.armReach`, never at the profile's `forwardMax`. Air's 0.75 m far edge is past most people's reach, so cueing there made users lean, which moves `BodyFrame.origin` and corrupts the measurement being taken.
+
+One measurement serves all three Reactive Strike modes — `mode.reachProfile.calibrated(...)` preserves each mode's shape, so there is no per-mode calibration cache and switching Air → Bag → Combination never re-measures.
+
+### Uppercut extension is measured differently — do not "simplify" this
+
+Most punches peak at maximum radial shoulder-to-fist distance. An uppercut does not: loading beside the hip is radially **farther** from the shoulder than the centreline finish at the chin.
+
+`PunchExtensionSemantics.magnitude(samples:techniqueID:)` (in `MotionRecorder.swift`) is the single shared rule used by both recorded attempts and authored references:
+
+- Uppercut → `orderedVerticalRise`, the largest upward displacement whose **low sample occurs before** its high sample. Order matters: a plain `maxY - minY` would credit a hand that starts high and merely drops to the hip without ever punching upward.
+- Everything else → peak `reachFraction`.
+
+The same asymmetry drives `ReferencePunch.peakSample` / `peakTime` / `shouldEmphasize(_:)`. Treating radial distance as the uppercut's peak made the guide hold at the hip and play the actual strike during "bring it back."
 
 ## Project Structure (as built)
 
 ```
 BoxingCoach/
-  BoxingCoachApp.swift             # WindowGroup + ImmersiveSpace setup
-  BoxingCoachContentView.swift     # Every 2D screen — menu, pickers, results
-  BoxingCoachImmersiveView.swift   # RealityView root; reports open/close to the session
+  BoxingCoachApp.swift             # BoxingCoachSceneID; single-instance Window + ImmersiveSpace
   AuraPunchSession.swift           # Guided follow-along → attempt → score → feedback
-  ReactiveStrikeSession.swift      # Target drill; owns HandTrackingService + AuraPunchSession
-  HandTrackingService.swift        # ARKit wrapper, handles dropped frames
+  ReactiveStrikeSession.swift      # Target drills; owns HandTrackingService + AuraPunchSession
+  HandTrackingService.swift        # ARKit wrapper; fresh session/providers per start
+  Combination.swift                # PunchType (1–6), Combination catalogue, CombinationTarget
+  CombinationPunchValidator.swift  # Pure per-target punch validation state machine
   TargetController.swift  ReachProfile.swift  DrillMetrics.swift
   Models/
     Technique.swift                # Data-driven technique list + PunchHand
-    BodyMeasurements.swift         # Defaults now, Anthropometry-populated later
+    BodyMeasurements.swift         # Proportions + Stance, BodySide
+    BodyCalibration.swift          # One measured body per launch, shared by every feature
   Spatial/
     ArmSilhouetteEntity.swift      # RealityKit ghost arms
     ArmPoseSolver.swift            # head + wrist + measurements -> shoulder/elbow/fist
   Scoring/
-    MotionRecorder.swift  DTWComparator.swift  TechniqueScore.swift  FeedbackGenerator.swift
+    MotionRecorder.swift           # RecordedAttempt + PunchExtensionSemantics
+    DTWComparator.swift  TechniqueScore.swift  FeedbackGenerator.swift
+    GuardCoach.swift               # Live guard coaching (not scored)
   Resources/
     ReferencePunchLibrary.swift    # Hand-authored trajectories + JSON drop-in seam
+  UI/
+    Flow/
+      BoxingCoachRootView.swift    # Window composition root; routes -> views
+      TrainingFlowCoordinator.swift # Routes + serialized immersive transitions
+    Selection/
+      TrainingSelectionViews.swift # Feature, Reactive, Combination, Aura, Unavailable
+    Experience/
+      TrainingExperienceView.swift    # Ready / running / results
+      BoxingCoachImmersiveView.swift  # RealityView root; reports readiness to the coordinator
+      ImmersiveInstructionBanner.swift
+    Shared/
+      TrainingComponents.swift     # TrainingDetailScaffold, status/error cards, meters
+
+BoxingCoachTests/
+  BoxingCoachBaselineTests.swift  CombinationPunchValidatorTests.swift
+  ReachProfileTests.swift  TrainingFlowCoordinatorTests.swift
 ```
 
-No `Navigation/` or `Screens/` split — the 2D UI is one file. There is no `Feature.swift`; the feature list is a private enum inside `BoxingCoachContentView`.
+There is no `Feature.swift` — the feature list is the `TrainingFeature` enum in `TrainingFlowCoordinator.swift`.
 
 ## Building
 
@@ -131,34 +219,50 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild \
 
 Build for **device** (`generic/platform=visionOS`), not just the simulator — a simulator build skips everything inside `#if !targetEnvironment(simulator)`, which is most of `HandTrackingService`'s ARKit code.
 
+Tests (`make test`, or directly):
+
+```sh
+DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild \
+  -project BoxingCoach.xcodeproj -scheme BoxingCoach -configuration Debug \
+  -destination 'platform=visionOS Simulator,name=Apple Vision Pro,OS=27.0' \
+  -parallel-testing-enabled NO CODE_SIGNING_ALLOWED=NO test
+```
+
+Both targets use `PBXFileSystemSynchronizedRootGroup`, so **new files under `BoxingCoach/` or `BoxingCoachTests/` are picked up automatically** — no `project.pbxproj` edit needed when adding a source file.
+
 ## Coding Conventions
 
 - Swift + SwiftUI + RealityKit idioms.
-- Prefer `@Observable` over legacy `ObservableObject` — but confirm the deployment target first, since this depends on the visionOS/Swift version.
-- **Features and techniques are data, not screens.** Define all four features in `Feature.swift` with an `isImplemented` flag; unimplemented ones render as visibly disabled / "coming soon" cards. Adding a technique should be a data change, not a new view.
-- **Anthropometry is a stub.** Build the prompt screen and the `BodyMeasurements` struct with default values, and wire the flow through it — but no measurement capture logic.
-- Isolate anything network/LLM-backed behind a protocol with a mock implementation (e.g. `FeedbackGenerating`), so UI work isn't blocked and the demo has a fallback if conference wifi fails.
-- Comment the IK and coordinate-space math heavily. Coordinate frames (world vs. head-relative vs. body-relative) are where this project is most likely to break, and teammates will be reading this code cold.
+- `@Observable` throughout, not legacy `ObservableObject`.
+- The project sets `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. Pure data/math types that must be readable from off-main code need an explicit `nonisolated` — see `PunchType`, `Stance`, `BodySide`, `Technique`, `CombinationPunchValidator`.
+- **Features and techniques are data, not screens.** Adding a technique or a combination should be a data change, not a new view.
+- **Anthropometry is a stub.** `BodyMeasurements` has default values and the flow routes through `UnavailableFeatureView` — no measurement capture logic.
+- Anything network/LLM-backed sits behind `FeedbackGenerating` with a mock implementation, so UI work isn't blocked and the demo has a fallback if conference wifi fails.
+- Comment the IK and coordinate-space math heavily. Coordinate frames (world vs. head-relative vs. body-relative) are where this project is most likely to break, and teammates read this code cold.
 
 ## Priorities (in order)
 
-1. Silhouette arms render aligned to the user's real arms and play a jab demo — this is the whole idea, and everything else is decoration without it.
-2. Full flow works without crashing: Start → Home → Technique → Anthropometry stub → Session → Score.
+1. Silhouette arms render aligned to the user's real arms and play a jab demo — this is the whole idea.
+2. Full flow works without crashing: Features → setup → Session → Score.
 3. Scoring produces a defensible number with sub-metrics, even if thresholds are hand-tuned.
 4. LLM feedback layer.
-5. Anything else (the other three features) — bonus only.
+5. Anything else — bonus only.
 
 ## Decided
 
 - **Reference punch authoring** — hand-authored keyframes in `ReferencePunchLibrary`, resampled at 60 Hz with the elbow solved by the same IK used on live data. `recordedPunch(for:)` is the drop-in seam: a `ReferencePunches/<techniqueID>.json` in the bundle wins over the synthetic version automatically.
-- **Ready-to-attempt signal** — no gesture. Guided follow-along, then a 3-2-1 countdown, then a fixed `attemptWindow`.
+- **Ready-to-attempt signal** — no gesture. Guided follow-along, then a 3-2-1 countdown, then a fixed `attemptWindow` (3.0 s).
 - **Demo reps** — 4 guided reps (`guidedRepetitions`), each played ~15% faster than the last down to a 0.55 floor. The ghost holds at full extension and again at guard until the user's fist reaches its actual position, so a slow first rep costs real time.
+- **Alternating hands** — `.either`-hand techniques (hook, uppercut) alternate sides rep to rep. Which arm actually threw is inferred from the strongest technique-specific extension, not assumed.
+- **Guard pauses the drill instead of costing points** (see above).
+- **Calibration runs once per launch, before anything else.** Anthropometry gates the app rather than living as an optional menu item, and its result is in-memory only — every launch re-measures. See the calibration section above.
 - **`@Observable`** — in use throughout.
 
 ## Open Questions / TODO
 
 - [ ] **Feedback is offline-only today.** `ClaudeFeedbackGenerator` is written and current, but nothing constructs it — `AuraPunchSession.init` defaults to `MockFeedbackGenerator` and `ReactiveStrikeSession` never overrides it. Wiring it up needs an API key, and a key compiled into the binary is extractable by anyone with the `.app`.
-- [ ] **Scoring thresholds are hand-tuned from geometry, not calibrated** against real attempts (`ScoringThresholds`). Same for the reference trajectories.
-- [ ] **`BodyMeasurements` is assumed, not measured** — everyone gets `averageAdult` (0.66 m reach). Normalization divides by that assumed reach, so a shorter-armed user reads below full extension even at true lockout and loses Extension points they cannot recover. This is the biggest source of unfairness in the score, and the reason Anthropometry matters.
+- [ ] **Scoring thresholds are hand-tuned from geometry, not calibrated** against real attempts (`ScoringThresholds`). Same for the reference trajectories, `GuardCoach.dropThreshold` (0.46), and `ReachCalibration`'s plateau constants.
+- [ ] **Calibration measures the arm chain only.** `shoulderWidth`, `eyeToShoulderDrop`, and `eyeToShoulderSetback` are still `averageAdult`, and the measured value is fist-forward-of-shoulder-line rather than true shoulder-to-fist. Good enough to place targets and normalize scoring; not a real anthropometric capture.
+- [ ] **Calibration has only been verified in the simulator and by unit test.** The plateau detector's tolerance and duration need a real device pass — a user who never quite holds still falls through to the old percentile rule and gets an under-measured volume.
 - [ ] Silhouette visual treatment — must not obscure the user's view of their real arms.
 - [ ] Confirm deployment target visionOS version.

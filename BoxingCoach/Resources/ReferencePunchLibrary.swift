@@ -15,17 +15,53 @@ struct ReferencePunch: Sendable {
         samples.last?.time ?? 0
     }
 
+    /// The authored moment the punch lands.
+    ///
+    /// Most punches land at maximum shoulder-to-fist distance. An uppercut is the important
+    /// exception: loading beside the hip can be radially farther from the shoulder than the
+    /// centreline finish. Treating radial distance as its peak makes the guide hold at the hip and
+    /// play the actual strike during "bring it back," so its landing is the first highest sample.
+    private var peakSample: MotionSample? {
+        if techniqueID == Technique.uppercut.id,
+           let highestY = samples.map(\.fist.y).max() {
+            return samples.first { abs($0.fist.y - highestY) < 1e-5 }
+        }
+        return samples.max(by: { $0.reachFraction < $1.reachFraction })
+    }
+
     /// Reach at the moment of full extension. The follow-along guide holds the ghost here, and
     /// the user's own reach is judged against it rather than against a hardcoded 1.0 — a hook
     /// peaks near 0.70 by design, so an absolute threshold would be unreachable for it.
     var peakReach: Float {
-        samples.map(\.reachFraction).max() ?? 1
+        peakSample?.reachFraction ?? 1
+    }
+
+    /// Technique-aware magnitude used by the Extension sub-score. Straights and hooks retain their
+    /// radial shoulder-to-fist peak; an uppercut measures the ordered rise from its earlier hip load
+    /// to its later chin landing, because the load is actually farther from the shoulder radially.
+    var extensionMagnitude: Float {
+        PunchExtensionSemantics.magnitude(samples: samples, techniqueID: techniqueID)
     }
 
     /// Time of full extension — the boundary between the outward and return halves of the punch.
     var peakTime: TimeInterval {
-        guard let peak = samples.max(by: { $0.reachFraction < $1.reachFraction }) else { return 0 }
-        return peak.time
+        peakSample?.time ?? 0
+    }
+
+    /// Whether this sample should receive the guide's landing emphasis.
+    ///
+    /// Radial reach remains the useful cue for straights and hooks. For an uppercut it would also
+    /// light the radially longer hip load, so that punch instead checks full 3D proximity to the
+    /// semantic landing sample selected above.
+    func shouldEmphasize(_ sample: MotionSample) -> Bool {
+        if techniqueID == Technique.uppercut.id {
+            guard let landing = peakSample else { return false }
+            let distanceToLanding = simd_distance(sample.fist, landing.fist)
+            return distanceToLanding.isFinite && distanceToLanding <= 0.10
+        }
+
+        let emphasisThreshold = max(peakReach, 0.001) * 0.85
+        return sample.reachFraction.isFinite && sample.reachFraction >= emphasisThreshold
     }
 
     /// Interpolated pose at an arbitrary time. Used to drive the demo silhouette, which renders

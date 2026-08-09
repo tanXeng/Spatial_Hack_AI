@@ -5,7 +5,8 @@ import simd
 struct RecordedAttempt: Sendable {
     /// Normalized samples covering just the punch itself (idle time at either end trimmed).
     var samples: [MotionSample]
-    /// Fraction of frames that came from real tracking rather than being filled across a dropout.
+    /// Fraction of frames in the **trimmed punch** that came from real tracking rather than
+    /// interpolation across a dropout. Idle guard time in the capture window is excluded.
     var trackedFraction: Float
     /// Wall-clock length of the trimmed punch.
     var duration: TimeInterval
@@ -21,6 +22,51 @@ struct RecordedAttempt: Sendable {
 
     var peakReach: Float {
         samples.map(\.reachFraction).max() ?? 0
+    }
+
+    /// Technique-aware magnitude used by the Extension score and to decide which arm threw.
+    /// Uppercuts are defined by the ordered rise from their low load to their later landing; their
+    /// hip load can be radially farther from the shoulder than the fist is at the chin. Every
+    /// other punch keeps the established shoulder-to-fist peak-reach measure.
+    func extensionMagnitude(for techniqueID: String) -> Float {
+        PunchExtensionSemantics.magnitude(samples: samples, techniqueID: techniqueID)
+    }
+}
+
+/// Pure punch-extension rules shared by recorded attempts and authored references.
+enum PunchExtensionSemantics {
+    static func magnitude(samples: [MotionSample], techniqueID: String) -> Float {
+        if techniqueID == Technique.uppercut.id {
+            return orderedVerticalRise(in: samples)
+        }
+
+        return samples.lazy
+            .map(\.reachFraction)
+            .filter(\.isFinite)
+            .max() ?? 0
+    }
+
+    /// Largest upward displacement whose low sample occurs before its high sample.
+    ///
+    /// Order matters: `maxY - minY` would credit a hand that starts high and only drops to the hip,
+    /// even though it never performs the upward half of an uppercut.
+    static func orderedVerticalRise(in samples: [MotionSample]) -> Float {
+        var lowestEarlierY: Float?
+        var largestRise: Float = 0
+
+        for sample in samples {
+            let y = sample.fist.y
+            guard y.isFinite else { continue }
+
+            if let priorLowestY = lowestEarlierY {
+                largestRise = max(largestRise, y - priorLowestY)
+                lowestEarlierY = min(priorLowestY, y)
+            } else {
+                lowestEarlierY = y
+            }
+        }
+
+        return largestRise
     }
 }
 
@@ -73,13 +119,23 @@ final class MotionRecorder {
     func finish() -> RecordedAttempt {
         isRecording = false
 
-        let trackedCount = raw.filter { $0.sample != nil }.count
-        let trackedFraction = raw.isEmpty ? 0 : Float(trackedCount) / Float(raw.count)
-
         let filled = fillDropouts()
         let trimmed = trimToPunch(filled)
 
         let duration = (trimmed.last?.time ?? 0) - (trimmed.first?.time ?? 0)
+
+        // Measured on the trimmed punch only — not the full capture window. The attempt window
+        // includes seconds of cheek-height guard while the user waits to throw, and that pose
+        // often sits in the Vision Pro's side/bottom camera blind spot. Counting those idle frames
+        // against the 60 % threshold rejected technically fine punches with a tracking error.
+        // Guard discipline during the punch is coached live via `GuardCoach`, not scored here.
+        let trackedFraction: Float
+        if trimmed.isEmpty {
+            trackedFraction = 0
+        } else {
+            let trackedCount = trimmed.filter(\.isTracked).count
+            trackedFraction = Float(trackedCount) / Float(trimmed.count)
+        }
 
         // Rebase to zero so DTW compares two sequences that both start at t=0.
         let offset = trimmed.first?.time ?? 0

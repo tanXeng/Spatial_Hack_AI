@@ -115,8 +115,6 @@ struct CoachingCycleSessionTests {
         #expect(cycle.baselineAttempts.isEmpty)
         #expect(cycle.retestAttempts.isEmpty)
         #expect(cycle.correction == nil)
-        #expect(cycle.baselineSnapshot == nil)
-        #expect(cycle.retestSnapshot == nil)
         #expect(cycle.proof == nil)
         #expect(cycle.proofMetric == nil)
         #expect(cycle.result == nil)

@@ -205,7 +205,7 @@ nonisolated struct TechniqueScore: Sendable {
 ///
 /// ⚠️ These are hand-tuned from the geometry, **not** calibrated against real attempts yet
 /// They are provisional and should be adjusted once real punches have been recorded.
-struct ScoringThresholds: Sendable {
+nonisolated struct ScoringThresholds: Sendable {
     var extensionGood: Float = 0.06
     var extensionBad: Float = 0.34
 
@@ -233,7 +233,7 @@ struct ScoringThresholds: Sendable {
 }
 
 /// Turns a recorded attempt plus a reference punch into a `TechniqueScore`.
-struct TechniqueScorer: Sendable {
+nonisolated struct TechniqueScorer: Sendable {
     var thresholds: ScoringThresholds = .default
 
     /// Returns `nil` when the capture was too poor to grade honestly.
@@ -410,8 +410,10 @@ struct TechniqueScorer: Sendable {
 
     /// Did the hand come back?
     private func retractionMetric(attempt: RecordedAttempt, reference: ReferencePunch) -> SubMetric {
-        guard let attemptEnd = attempt.samples.last,
-              let referenceEnd = reference.samples.last
+        guard let selection = PunchRetractionSemantics.selection(
+            attempt: attempt.samples,
+            reference: reference.samples
+        )
         else {
             return SubMetric(
                 kind: .retraction,
@@ -432,13 +434,15 @@ struct TechniqueScorer: Sendable {
             )
         }
 
-        let error = simd_distance(attemptEnd.fist, referenceEnd.fist)
-
         return SubMetric(
             kind: .retraction,
-            score: falloff(error, good: thresholds.retractionGood, bad: thresholds.retractionBad),
-            measured: error,
-            detail: String(format: "%.2f from guard at finish", error),
+            score: falloff(
+                selection.error,
+                good: thresholds.retractionGood,
+                bad: thresholds.retractionBad
+            ),
+            measured: selection.error,
+            detail: String(format: "%.2f from guard at finish", selection.error),
             quality: .measured
         )
     }

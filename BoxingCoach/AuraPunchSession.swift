@@ -3,6 +3,75 @@ import QuartzCore
 import RealityKit
 import simd
 
+@MainActor
+protocol CoachAudioPlaying: AnyObject {
+    func prepare()
+    func play(id: CoachClipID)
+    func stop()
+}
+
+extension CoachAudioPlayer: CoachAudioPlaying {}
+
+/// The live Aura loop depends on accepted tracking observations, not on ARKit ownership. Keeping
+/// that boundary injectable lets the entire cycle run against a deterministic provider while the
+/// app continues to share one concrete `HandTrackingService` with Reactive Strike.
+@MainActor
+protocol AuraHandTracking: AnyObject {
+    var providerGeneration: UInt64 { get }
+    var continuityEpoch: UInt64 { get }
+    var statusMessage: String { get }
+    var deviceTransform: simd_float4x4? { get }
+    var isRunning: Bool { get }
+    var hasFullUpperBodyTracking: Bool { get }
+
+    func start() async
+    func beginAttemptCapture()
+    func endAttemptCapture()
+    func observation(for side: BodySide) -> HandObservation?
+    func freshObservation(for side: BodySide, maxAge: TimeInterval) -> HandObservation?
+}
+
+extension AuraHandTracking {
+    func freshObservation(for side: BodySide) -> HandObservation? {
+        freshObservation(for: side, maxAge: 0.1)
+    }
+}
+
+extension HandTrackingService: AuraHandTracking {}
+
+@MainActor
+protocol AuraSessionClock: AnyObject {
+    var now: TimeInterval { get }
+    func sleep(for duration: Duration) async
+}
+
+@MainActor
+private final class ContinuousAuraSessionClock: AuraSessionClock {
+    var now: TimeInterval { CACurrentMediaTime() }
+
+    func sleep(for duration: Duration) async {
+        try? await Task.sleep(for: duration)
+    }
+}
+
+/// A capture override receives the same fitted reference and tracking identity as the live
+/// recorder. Production leaves this nil and therefore still passes through the semantic punch
+/// validator; deterministic integration exercises can substitute this single sensor boundary
+/// while retaining Aura's real scoring, admission, proof, transfer, and persistence path.
+struct AuraPunchCaptureRequest {
+    let technique: Technique
+    let stance: Stance
+    let side: BodySide
+    let reference: ReferencePunch
+    let providerGeneration: UInt64
+    let continuityEpoch: UInt64
+}
+
+struct AuraCapturedPunch {
+    let side: BodySide
+    let attempt: RecordedAttempt
+    let punch: ValidatedPunchEvidence
+}
 enum AuraPunchPhase: String, Sendable {
     case idle
     /// Waiting for hands and head to be tracked well enough to place a shoulder.
@@ -50,7 +119,7 @@ final class AuraPunchSession {
     /// A same-participant Fit result may be reused; nil runs Fit in the immersive cycle.
     var persistedReach: BilateralReach?
     var reachDidFit: ((BilateralReach) -> Void)?
-    var cycleDidComplete: ((CoachingCycleResult, BilateralReach) -> Void)?
+    var cycleDidComplete: ((CoachingCycleResult, BilateralReach) async throws -> Void)?
 
     /// Anthropometry will populate this later; until then every user gets average proportions.
     var measurements: BodyMeasurements = .averageAdult
@@ -138,7 +207,7 @@ final class AuraPunchSession {
 
     // MARK: Collaborators
 
-    private let hands: HandTrackingService
+    private let hands: any AuraHandTracking
     /// One recorder per arm. Both run through the attempt so the session can tell which hand the
     /// user actually threw with instead of assuming they used the one that was asked for.
     private let recorders: [BodySide: MotionRecorder] = [
@@ -149,6 +218,8 @@ final class AuraPunchSession {
     private let feedbackGenerator: FeedbackGenerating
     private let audienceTrack: CoachLearnerLevel
     let audioCoordinator: TrainingAudioCoordinator
+    private let clock: any AuraSessionClock
+    private let captureOverride: (@MainActor (AuraPunchCaptureRequest) async -> AuraCapturedPunch?)?
     private let targets = TargetController()
     private let pathOverlay = PunchPathOverlayEntity()
 
@@ -158,6 +229,8 @@ final class AuraPunchSession {
 
     private var loopTask: Task<Void, Never>?
     private var voiceRecoveryTask: Task<Void, Never>?
+    private var recoveringVoiceCaptureID: UUID?
+    private var coachVoiceCyclePauseOwner = CoachVoiceCyclePauseOwner()
     /// At most one optional relay request may be associated with the visible result.
     private var phrasingTask: Task<Void, Never>?
     /// Monotonic local token. It never crosses the relay boundary.
@@ -179,15 +252,21 @@ final class AuraPunchSession {
     private let frameInterval: Duration = .milliseconds(11)
 
     init(
-        hands: HandTrackingService,
+        hands: any AuraHandTracking,
         feedbackGenerator: FeedbackGenerating = MockFeedbackGenerator(),
         audienceTrack: CoachLearnerLevel,
-        audioCoordinator: TrainingAudioCoordinator? = nil
+        audioCoordinator: TrainingAudioCoordinator? = nil,
+        coachAudio: (any CoachAudioPlaying)? = nil,
+        clock: (any AuraSessionClock)? = nil,
+        captureOverride: (@MainActor (AuraPunchCaptureRequest) async -> AuraCapturedPunch?)? = nil
     ) {
         self.hands = hands
         self.feedbackGenerator = feedbackGenerator
         self.audienceTrack = audienceTrack
         self.audioCoordinator = audioCoordinator ?? TrainingAudioCoordinator()
+        self.clock = clock ?? ContinuousAuraSessionClock()
+        self.captureOverride = captureOverride
+        _ = coachAudio
         let selectedTrack: TrainingTrack = audienceTrack == .beginner
             ? .firstRound
             : .technicalCamp
@@ -278,6 +357,7 @@ final class AuraPunchSession {
         loopTask?.cancel()
         voiceRecoveryTask?.cancel()
         voiceRecoveryTask = nil
+        coachVoiceCyclePauseOwner.reset()
         loopTask = Task { [weak self] in
             await self?.runSession()
         }
@@ -295,6 +375,8 @@ final class AuraPunchSession {
         loopTask = nil
         voiceRecoveryTask?.cancel()
         voiceRecoveryTask = nil
+        recoveringVoiceCaptureID = nil
+        coachVoiceCyclePauseOwner.reset()
         for recorder in recorders.values { recorder.cancel() }
         targets.removeActiveTarget()
         pathOverlay.hide()
@@ -321,6 +403,8 @@ final class AuraPunchSession {
         feedback = nil
         previousCorrectionFocus = nil
         scoredRoundScores.removeAll(keepingCapacity: true)
+        recoveringVoiceCaptureID = nil
+        coachVoiceCyclePauseOwner.reset()
         persistedReach = nil
         guardPositionsBody.removeAll(keepingCapacity: false)
         coachingCycle = CoachingCycleSession(
@@ -587,7 +671,35 @@ final class AuraPunchSession {
         )
     }
 
-    func trainingWillPauseForVoiceCapture() {
+    /// Consumes the exact lifecycle emitted by `CoachVoiceCoach`. Capture release is intentionally
+    /// non-terminal; recognition, routing, response playback, and a fresh fitted guard all remain
+    /// inside the same pause owned by this coaching cycle.
+    func handleCoachVoiceCycle(_ event: CoachVoiceCyclePauseOwner.Event) {
+        guard isRunning else {
+            coachVoiceCyclePauseOwner.reset()
+            return
+        }
+
+        switch coachVoiceCyclePauseOwner.observe(event) {
+        case .pauseTraining:
+            trainingWillPauseForVoiceCapture()
+        case .holdTraining, .ignore:
+            break
+        case .beginFreshGuardRecovery:
+            let captureID: UUID
+            switch event {
+            case .responseCompleted(let id), .responseCancelled(let id):
+                captureID = id
+            default:
+                return
+            }
+            trainingDidFinishVoiceResponse(captureID: captureID)
+        case .resumeTraining:
+            trainingDidConfirmVoiceGuardRecovery()
+        }
+    }
+
+    private func trainingWillPauseForVoiceCapture() {
         guard phase != .idle, phase != .results else { return }
         voiceRecoveryTask?.cancel()
         voiceRecoveryTask = nil
@@ -601,12 +713,20 @@ final class AuraPunchSession {
         )
     }
 
-    func trainingDidEndVoiceCapture() {
+    private func trainingDidFinishVoiceResponse(captureID: UUID) {
         guard coachingCycle.isTrainingPaused else { return }
         voiceRecoveryTask?.cancel()
+        recoveringVoiceCaptureID = captureID
         voiceRecoveryTask = Task { [weak self] in
             await self?.recoverAfterVoiceCapture()
         }
+    }
+
+    private func trainingDidConfirmVoiceGuardRecovery() {
+        guard coachingCycle.isTrainingPaused, recoveringVoiceCaptureID != nil else { return }
+        recoveringVoiceCaptureID = nil
+        AuraVoiceCaptureTrainingPolicy.guardRecoveryDidComplete(cycle: &coachingCycle)
+        applyCyclePresentation()
     }
 
     // MARK: Session loop
@@ -630,6 +750,7 @@ final class AuraPunchSession {
             if coachingCycle.stage == .correction {
                 await presentCorrection(solver: solver)
                 guard !Task.isCancelled else { return }
+                guard await waitForTrainingResume() else { return }
                 do {
                     try coachingCycle.beginCorrectiveDrill()
                 } catch {
@@ -640,6 +761,7 @@ final class AuraPunchSession {
 
             await runCorrectiveDrill(solver: solver)
             guard !Task.isCancelled else { return }
+            guard await waitForTrainingResume() else { return }
             do {
                 try coachingCycle.completeCorrectiveDrill()
             } catch {
@@ -652,6 +774,7 @@ final class AuraPunchSession {
 
             await presentProof()
             guard !Task.isCancelled else { return }
+            guard await waitForTrainingResume() else { return }
             if coachingCycle.proofMeetsTarget { break }
 
             do {
@@ -661,7 +784,7 @@ final class AuraPunchSession {
                     detail: "The selected metric did not improve enough yet. Practice it once more.",
                     status: "Proof held · correction remains active"
                 )
-                try? await Task.sleep(for: .seconds(1.2))
+                await pauseAwareDelay(seconds: 1.2)
             } catch {
                 fail("The correction could not be retried safely.")
                 return
@@ -669,6 +792,7 @@ final class AuraPunchSession {
         }
 
         do {
+            guard await waitForTrainingResume() else { return }
             try coachingCycle.continueFromProof()
         } catch {
             fail("Like-for-like proof was unavailable. Repeat the retest.")
@@ -678,16 +802,24 @@ final class AuraPunchSession {
         guard await runOneTwoTransfer(solver: solver) else { return }
         guard !Task.isCancelled else { return }
         do {
+            guard await waitForTrainingResume() else { return }
             try coachingCycle.completeTransfer()
         } catch {
             fail("The transfer could not be completed.")
             return
         }
 
+        guard await waitForTrainingResume() else { return }
         if let result = coachingCycle.result,
            let reach = coachingCycle.fittedReach {
-            cycleDidComplete?(result, reach)
+            do {
+                try await cycleDidComplete?(result, reach)
+            } catch {
+                fail("Your proof is complete, but athlete memory could not be saved.")
+                return
+            }
         }
+        guard await waitForTrainingResume() else { return }
 
         phase = .results
         currentScoredPunch = 0
@@ -731,7 +863,7 @@ final class AuraPunchSession {
             if hands.hasFullUpperBodyTracking, currentBodyFrame(solver: ArmPoseSolver(measurements: measurements)) != nil {
                 return true
             }
-            try? await Task.sleep(for: frameInterval)
+            await clock.sleep(for: frameInterval)
         }
         return false
     }
@@ -754,6 +886,7 @@ final class AuraPunchSession {
         }
 
         do {
+            guard await waitForTrainingResume() else { return false }
             try coachingCycle.completeFit(reach: reach)
             reachDidFit?(reach)
             applyCyclePresentation()
@@ -773,6 +906,14 @@ final class AuraPunchSession {
         var continuity = TrackingContinuityObserver(epoch: hands.continuityEpoch)
 
         while !Task.isCancelled {
+            if coachingCycle.isTrainingPaused {
+                guard await waitForTrainingResume() else { return nil }
+                totals = [.left: .zero, .right: .zero]
+                count = 0
+                lastPairTimestamp = nil
+                continuity = TrackingContinuityObserver(epoch: hands.continuityEpoch)
+                continue
+            }
             if continuity.observe(hands.continuityEpoch) {
                 totals = [.left: .zero, .right: .zero]
                 count = 0
@@ -791,13 +932,13 @@ final class AuraPunchSession {
                   left.fistState == .closed,
                   right.fistState == .closed
             else {
-                try? await Task.sleep(for: .milliseconds(25))
+                await clock.sleep(for: .milliseconds(25))
                 continue
             }
 
             let pairTimestamp = min(left.acquisitionTimestamp, right.acquisitionTimestamp)
             guard lastPairTimestamp.map({ pairTimestamp > $0 }) ?? true else {
-                try? await Task.sleep(for: .milliseconds(25))
+                await clock.sleep(for: .milliseconds(25))
                 continue
             }
             lastPairTimestamp = pairTimestamp
@@ -807,7 +948,7 @@ final class AuraPunchSession {
             let nearHead = simd_distance(left.fistPosition, frame.headPosition) <= 0.45
                 && simd_distance(right.fistPosition, frame.headPosition) <= 0.45
             guard leftBody.isFinite, rightBody.isFinite, nearHead else {
-                try? await Task.sleep(for: .milliseconds(25))
+                await clock.sleep(for: .milliseconds(25))
                 continue
             }
 
@@ -825,7 +966,7 @@ final class AuraPunchSession {
                 ]
             }
 
-            try? await Task.sleep(for: .milliseconds(25))
+            await clock.sleep(for: .milliseconds(25))
         }
         return nil
     }
@@ -847,6 +988,14 @@ final class AuraPunchSession {
         var continuity = TrackingContinuityObserver(epoch: hands.continuityEpoch)
 
         while !Task.isCancelled {
+            if coachingCycle.isTrainingPaused {
+                guard await waitForTrainingResume() else { return nil }
+                samples = [.left: [], .right: []]
+                lastTimestamp.removeAll(keepingCapacity: true)
+                reaches.removeAll(keepingCapacity: true)
+                continuity = TrackingContinuityObserver(epoch: hands.continuityEpoch)
+                continue
+            }
             if continuity.observe(hands.continuityEpoch) {
                 samples = [.left: [], .right: []]
                 lastTimestamp.removeAll(keepingCapacity: true)
@@ -861,7 +1010,7 @@ final class AuraPunchSession {
             }
 
             guard let frame = currentBodyFrame(solver: solver) else {
-                try? await Task.sleep(for: .milliseconds(16))
+                await clock.sleep(for: .milliseconds(16))
                 continue
             }
 
@@ -895,7 +1044,7 @@ final class AuraPunchSession {
                 playCoachCue(.reachCalibrated, caption: "Reach calibrated.")
                 return bilateral
             }
-            try? await Task.sleep(for: .milliseconds(16))
+            await clock.sleep(for: .milliseconds(16))
         }
         return nil
     }
@@ -920,7 +1069,7 @@ final class AuraPunchSession {
             speedFactor: pace,
             phaseMessage: statusMessage
         )
-        guard advanceLearningCycle() else { return }
+        guard await advanceLearningCycle() else { return }
 
         applyCyclePresentation()
         spawnLandingTarget(reference: reference, side: side, solver: solver)
@@ -934,7 +1083,7 @@ final class AuraPunchSession {
             phaseMessage: statusMessage,
             trackLandingTarget: true
         )
-        guard advanceLearningCycle() else { return }
+        guard await advanceLearningCycle() else { return }
 
         applyCyclePresentation()
         await holdGhost(
@@ -945,7 +1094,7 @@ final class AuraPunchSession {
             phaseMessage: statusMessage,
             trackLandingTarget: true
         )
-        guard advanceLearningCycle() else { return }
+        guard await advanceLearningCycle() else { return }
 
         targets.removeActiveTarget()
         applyCyclePresentation()
@@ -965,13 +1114,14 @@ final class AuraPunchSession {
             at: reference.duration,
             phaseMessage: statusMessage
         )
-        guard advanceLearningCycle() else { return }
+        guard await advanceLearningCycle() else { return }
 
         await runGuidedFollowAlong(solver: solver)
     }
 
-    private func advanceLearningCycle() -> Bool {
+    private func advanceLearningCycle() async -> Bool {
         guard !Task.isCancelled else { return false }
+        guard await waitForTrainingResume() else { return false }
         do {
             try coachingCycle.completeLearningStep()
             return true
@@ -1149,6 +1299,7 @@ final class AuraPunchSession {
                 continue demoLoop
             }
 
+            guard await waitForTrainingResume() else { return }
             do {
                 try coachingCycle.completeGuidedRehearsal()
             } catch {
@@ -1190,33 +1341,33 @@ final class AuraPunchSession {
         }
 
         let wallDuration = span * speedFactor / demonstrationRate.playbackMultiplier
-        var clock = AuraGuidanceActiveClock()
+        var activeClock = AuraGuidanceActiveClock()
 
-        while clock.activeElapsed < wallDuration {
+        while activeClock.activeElapsed < wallDuration {
             guard !Task.isCancelled,
                   continuationGeneration == demoContinuationGeneration else { return }
 
-            let now = CACurrentMediaTime()
+            let now = clock.now
             if coachingCycle.isTrainingPaused {
-                _ = clock.observe(at: now, availability: .guardUnavailable)
-                try? await Task.sleep(for: frameInterval)
+                _ = activeClock.observe(at: now, availability: .guardUnavailable)
+                await clock.sleep(for: frameInterval)
                 continue
             }
             let availability = guidanceAvailability(punchingSide: side, solver: solver)
 
             if availability == .trackingUnavailable {
-                _ = clock.observe(at: now, availability: .trackingUnavailable)
+                _ = activeClock.observe(at: now, availability: .trackingUnavailable)
                 guard await recoverGuidanceTracking(solver: solver) else { return }
                 continue
             }
 
             if availability == .guardUnavailable {
-                _ = clock.observe(at: now, availability: .guardUnavailable)
+                _ = activeClock.observe(at: now, availability: .guardUnavailable)
                 if statusMessage != GuardCoach.waitMessage {
                     playCoachCue(.guardUp, caption: GuardCoach.waitMessage)
                 }
                 statusMessage = GuardCoach.waitMessage
-                let progress = wallDuration > 0 ? min(1, clock.activeElapsed / wallDuration) : 1
+                let progress = wallDuration > 0 ? min(1, activeClock.activeElapsed / wallDuration) : 1
                 poseGhost(
                     reference: reference,
                     side: side,
@@ -1227,7 +1378,7 @@ final class AuraPunchSession {
                 if trackLandingTarget {
                     updateLandingTarget(reference: reference, side: side, solver: solver)
                 }
-                try? await Task.sleep(for: frameInterval)
+                await clock.sleep(for: frameInterval)
                 continue
             }
 
@@ -1235,9 +1386,9 @@ final class AuraPunchSession {
                 statusMessage = phaseMessage
             }
 
-            _ = clock.observe(at: now, availability: .ready)
+            _ = activeClock.observe(at: now, availability: .ready)
 
-            let progress = wallDuration > 0 ? min(1, clock.activeElapsed / wallDuration) : 1
+            let progress = wallDuration > 0 ? min(1, activeClock.activeElapsed / wallDuration) : 1
             poseGhost(
                 reference: reference,
                 side: side,
@@ -1250,7 +1401,7 @@ final class AuraPunchSession {
             }
 
             if progress >= 1 { return }
-            try? await Task.sleep(for: frameInterval)
+            await clock.sleep(for: frameInterval)
         }
     }
 
@@ -1272,36 +1423,36 @@ final class AuraPunchSession {
         let continuationGeneration = continuationGeneration ?? demoContinuationGeneration
         guard let targetFist = reference.sample(at: referenceTime)?.fist else { return }
         let goal = HoldGoal(targetFist: targetFist, tolerance: followPositionTolerance)
-        var clock = AuraGuidanceActiveClock()
+        var activeClock = AuraGuidanceActiveClock()
 
-        while clock.activeElapsed < followHoldTimeout {
+        while activeClock.activeElapsed < followHoldTimeout {
             guard !Task.isCancelled,
                   continuationGeneration == demoContinuationGeneration else { return }
 
-            let now = CACurrentMediaTime()
+            let now = clock.now
             if coachingCycle.isTrainingPaused {
-                _ = clock.observe(at: now, availability: .guardUnavailable)
-                try? await Task.sleep(for: frameInterval)
+                _ = activeClock.observe(at: now, availability: .guardUnavailable)
+                await clock.sleep(for: frameInterval)
                 continue
             }
             let availability = guidanceAvailability(punchingSide: side, solver: solver)
             if availability == .trackingUnavailable {
-                _ = clock.observe(at: now, availability: .trackingUnavailable)
+                _ = activeClock.observe(at: now, availability: .trackingUnavailable)
                 guard await recoverGuidanceTracking(solver: solver) else { return }
                 continue
             }
             if availability == .guardUnavailable {
-                _ = clock.observe(at: now, availability: .guardUnavailable)
+                _ = activeClock.observe(at: now, availability: .guardUnavailable)
                 if statusMessage != GuardCoach.waitMessage {
                     playCoachCue(.guardUp, caption: GuardCoach.waitMessage)
                 }
                 statusMessage = GuardCoach.waitMessage
                 poseGhost(reference: reference, side: side, solver: solver, at: referenceTime)
-                try? await Task.sleep(for: frameInterval)
+                await clock.sleep(for: frameInterval)
                 continue
             }
 
-            _ = clock.observe(at: now, availability: .ready)
+            _ = activeClock.observe(at: now, availability: .ready)
 
             if statusMessage == GuardCoach.waitMessage {
                 statusMessage = phaseMessage
@@ -1316,7 +1467,7 @@ final class AuraPunchSession {
                 return
             }
 
-            try? await Task.sleep(for: frameInterval)
+            await clock.sleep(for: frameInterval)
         }
     }
 
@@ -1391,7 +1542,7 @@ final class AuraPunchSession {
                 detail: count == 1 ? "\(scoredPunchCount) punches — hit each target" : "Starting in \(count)…",
                 status: "Your turn in \(count)…"
             )
-            try? await Task.sleep(for: .seconds(1))
+            await clock.sleep(for: .seconds(1))
         }
     }
 
@@ -1432,7 +1583,7 @@ final class AuraPunchSession {
                   )
             else {
                 statusMessage = "Tracking changed · punch discarded"
-                try? await Task.sleep(for: .milliseconds(220))
+                await clock.sleep(for: .milliseconds(220))
                 continue
             }
 
@@ -1475,7 +1626,7 @@ final class AuraPunchSession {
                     )
                     guard await waitForTrackingRecovery(solver: solver) else { return false }
                 }
-                try? await Task.sleep(for: .seconds(interScoredPunchDelay))
+                await clock.sleep(for: .seconds(interScoredPunchDelay))
                 continue
             }
 
@@ -1487,9 +1638,10 @@ final class AuraPunchSession {
                 thrownSide: capture.side,
                 stance: stance
             ) else {
+                AuraScoringAdmissionPolicy.scorerRejectedAttempt(cycle: &coachingCycle)
                 statusMessage = "Punch evidence was invalid · reset in guard"
                 targets.removeActiveTarget()
-                try? await Task.sleep(for: .milliseconds(220))
+                await clock.sleep(for: .milliseconds(220))
                 continue
             }
             let metricQuality = Dictionary(uniqueKeysWithValues: computed.metrics.map { metric in
@@ -1513,15 +1665,15 @@ final class AuraPunchSession {
                 coachingCycle.rejectPartialAttempt(.invalidEvidence)
                 statusMessage = "Punch evidence was invalid · reset in guard"
                 targets.removeActiveTarget()
-                try? await Task.sleep(for: .milliseconds(220))
+                await clock.sleep(for: .milliseconds(220))
                 continue
             }
 
-            try? await Task.sleep(for: .milliseconds(220))
+            await clock.sleep(for: .milliseconds(220))
             targets.removeActiveTarget()
 
             if coachingCycle.stage == .baseline || coachingCycle.stage == .retest {
-                try? await Task.sleep(for: .seconds(interScoredPunchDelay))
+                await clock.sleep(for: .seconds(interScoredPunchDelay))
             }
         }
 
@@ -1576,7 +1728,7 @@ final class AuraPunchSession {
             )
             coachingDetail = "\(correction.localCue) · \(overlay.actualLabel) in coral · \(overlay.referenceLabel) in cyan · \(Int((overlay.trackedFraction * 100).rounded()))% tracked · \(correction.evidenceLabel.rawValue) · \(overlay.sourceBadge)"
         }
-        try? await Task.sleep(for: .seconds(2.5))
+        await pauseAwareDelay(seconds: 2.5)
     }
 
     private func runCorrectiveDrill(solver: ArmPoseSolver) async {
@@ -1695,7 +1847,7 @@ final class AuraPunchSession {
             coachingDetail = "\(proof.kind.title) \(Int(proof.baseline.rounded())) to \(Int(proof.retest.rounded())) · \(direction) · \(proof.sourceBadge)"
             statusMessage = coachingDetail
         }
-        try? await Task.sleep(for: .seconds(2.5))
+        await pauseAwareDelay(seconds: 2.5)
     }
 
     /// Transfers the frozen proof into the existing stance-aware 1–2 semantic contract. The same
@@ -1725,6 +1877,9 @@ final class AuraPunchSession {
         }
 
         for target in resolved {
+            if coachingCycle.isTrainingPaused {
+                guard await waitForTrainingResume() else { return false }
+            }
             setCoaching(
                 headline: "TRANSFER · SET GUARD",
                 detail: "Hold both closed fists in your fitted guard before the next 1–2 step",
@@ -1733,6 +1888,10 @@ final class AuraPunchSession {
             guard await waitForFittedGuard(solver: solver) else { return false }
             applyCyclePresentation()
             while !Task.isCancelled {
+                if coachingCycle.isTrainingPaused {
+                    guard await waitForTrainingResume() else { return false }
+                    continue
+                }
                 guard let frame = currentBodyFrame(solver: solver) else {
                     coachingCycle.trackingDidPause()
                     setCoaching(
@@ -1768,89 +1927,82 @@ final class AuraPunchSession {
     }
 
     private func waitForFittedGuard(solver: ArmPoseSolver) async -> Bool {
-        var stableSamples = 0
-        var lastPairTimestamp: TimeInterval?
+        var gate = AuraGuardRecoveryGate()
 
         while !Task.isCancelled {
-            guard let frame = currentBodyFrame(solver: solver),
-                  let left = hands.freshObservation(for: .left),
-                  let right = hands.freshObservation(for: .right),
-                  let leftGuard = guardPositionsBody[.left],
-                  let rightGuard = guardPositionsBody[.right]
-            else {
-                stableSamples = 0
-                try? await Task.sleep(for: .milliseconds(25))
+            if coachingCycle.isTrainingPaused {
+                await clock.sleep(for: .milliseconds(25))
                 continue
             }
-
-            let pairTimestamp = min(left.acquisitionTimestamp, right.acquisitionTimestamp)
-            guard lastPairTimestamp.map({ pairTimestamp > $0 }) ?? true else {
-                try? await Task.sleep(for: .milliseconds(25))
-                continue
+            if gate.observe(guardRecoverySample(solver: solver, requiresFittedGuard: true)) {
+                return true
             }
-            lastPairTimestamp = pairTimestamp
-            let ready = left.fistState == .closed
-                && right.fistState == .closed
-                && CombinationPunchValidator.isRetracted(
-                    fist: frame.toBody(left.fistPosition),
-                    guardPosition: leftGuard,
-                    radius: CombinationPunchValidator.guardRadius
-                )
-                && CombinationPunchValidator.isRetracted(
-                    fist: frame.toBody(right.fistPosition),
-                    guardPosition: rightGuard,
-                    radius: CombinationPunchValidator.guardRadius
-                )
-            stableSamples = ready ? stableSamples + 1 : 0
-            if stableSamples >= 3 { return true }
-            try? await Task.sleep(for: .milliseconds(25))
+            await clock.sleep(for: .milliseconds(25))
         }
         return false
     }
 
     private func waitForTrackingRecovery(solver: ArmPoseSolver) async -> Bool {
-        var stableSamples = 0
-        var lastPairTimestamp: TimeInterval?
+        var gate = AuraGuardRecoveryGate()
 
         while !Task.isCancelled {
-            guard let frame = currentBodyFrame(solver: solver),
-                  let left = hands.freshObservation(for: .left),
-                  let right = hands.freshObservation(for: .right),
-                  let leftGuard = guardPositionsBody[.left],
-                  let rightGuard = guardPositionsBody[.right]
-            else {
-                stableSamples = 0
-                try? await Task.sleep(for: .milliseconds(25))
-                continue
-            }
-
-            let pairTimestamp = min(left.acquisitionTimestamp, right.acquisitionTimestamp)
-            guard lastPairTimestamp.map({ pairTimestamp > $0 }) ?? true else {
-                try? await Task.sleep(for: .milliseconds(25))
-                continue
-            }
-            lastPairTimestamp = pairTimestamp
-            let closedAndGuarded = left.fistState == .closed
-                && right.fistState == .closed
-                && CombinationPunchValidator.isRetracted(
-                    fist: frame.toBody(left.fistPosition),
-                    guardPosition: leftGuard,
-                    radius: CombinationPunchValidator.guardRadius
-                )
-                && CombinationPunchValidator.isRetracted(
-                    fist: frame.toBody(right.fistPosition),
-                    guardPosition: rightGuard,
-                    radius: CombinationPunchValidator.guardRadius
-                )
-            stableSamples = closedAndGuarded ? stableSamples + 1 : 0
-            if stableSamples >= 3 {
+            if gate.observe(guardRecoverySample(
+                solver: solver,
+                requiresFittedGuard: !guardPositionsBody.isEmpty
+            )) {
                 coachingCycle.trackingDidResume()
                 applyCyclePresentation()
                 return true
             }
-            try? await Task.sleep(for: .milliseconds(25))
+            await clock.sleep(for: .milliseconds(25))
         }
         return false
+    }
+
+    private func guardRecoverySample(
+        solver: ArmPoseSolver,
+        requiresFittedGuard: Bool
+    ) -> AuraGuardRecoveryGate.Sample {
+        guard let frame = currentBodyFrame(solver: solver),
+              let left = hands.freshObservation(for: .left),
+              let right = hands.freshObservation(for: .right)
+        else {
+            return .init(
+                providerGeneration: hands.providerGeneration,
+                continuityEpoch: hands.continuityEpoch,
+                pairTimestamp: nil,
+                observationsFresh: false,
+                freshClosedAndGuarded: false
+            )
+        }
+
+        let guarded: Bool
+        if requiresFittedGuard,
+           let leftGuard = guardPositionsBody[.left],
+           let rightGuard = guardPositionsBody[.right] {
+            guarded = CombinationPunchValidator.isRetracted(
+                fist: frame.toBody(left.fistPosition),
+                guardPosition: leftGuard,
+                radius: CombinationPunchValidator.guardRadius
+            ) && CombinationPunchValidator.isRetracted(
+                fist: frame.toBody(right.fistPosition),
+                guardPosition: rightGuard,
+                radius: CombinationPunchValidator.guardRadius
+            )
+        } else {
+            guarded = simd_distance(left.fistPosition, frame.headPosition) <= 0.45
+                && simd_distance(right.fistPosition, frame.headPosition) <= 0.45
+        }
+
+        return .init(
+            providerGeneration: hands.providerGeneration,
+            continuityEpoch: hands.continuityEpoch,
+            pairTimestamp: min(left.acquisitionTimestamp, right.acquisitionTimestamp),
+            observationsFresh: true,
+            freshClosedAndGuarded: left.fistState == .closed
+                && right.fistState == .closed
+                && guarded
+        )
     }
 
     private func recoverAfterVoiceCapture() async {
@@ -1862,9 +2014,7 @@ final class AuraPunchSession {
             status: "Ask Coach complete · waiting for fresh guard"
         )
 
-        if !guardPositionsBody.isEmpty {
-            guard await waitForTrackingRecovery(solver: solver), !Task.isCancelled else { return }
-        }
+        guard await waitForTrackingRecovery(solver: solver), !Task.isCancelled else { return }
 
         for count in [3, 2, 1] {
             guard !Task.isCancelled else { return }
@@ -1873,18 +2023,31 @@ final class AuraPunchSession {
                 detail: "Fresh guard confirmed · \(count)",
                 status: "Training resumes in \(count)"
             )
-            try? await Task.sleep(for: .milliseconds(300))
+            await clock.sleep(for: .milliseconds(300))
         }
         guard !Task.isCancelled else { return }
-        AuraVoiceCaptureTrainingPolicy.guardRecoveryDidComplete(cycle: &coachingCycle)
-        applyCyclePresentation()
+        guard let recoveringVoiceCaptureID else { return }
+        handleCoachVoiceCycle(.freshGuardRecovered(recoveringVoiceCaptureID))
     }
 
     private func waitForTrainingResume() async -> Bool {
         while coachingCycle.isTrainingPaused, !Task.isCancelled {
-            try? await Task.sleep(for: .milliseconds(25))
+            await clock.sleep(for: .milliseconds(25))
         }
         return !Task.isCancelled
+    }
+
+    private func pauseAwareDelay(seconds: TimeInterval) async {
+        var activeElapsed: TimeInterval = 0
+        var previous = clock.now
+        while activeElapsed < seconds, !Task.isCancelled {
+            let now = clock.now
+            if !coachingCycle.isTrainingPaused {
+                activeElapsed += max(0, now - previous)
+            }
+            previous = now
+            await clock.sleep(for: .milliseconds(25))
+        }
     }
 
     /// Records one fixed physical hand through validated outbound contact and return to guard.
@@ -1892,13 +2055,13 @@ final class AuraPunchSession {
         solver: ArmPoseSolver,
         side: BodySide,
         punchTechnique: Technique
-    ) async -> (side: BodySide, attempt: RecordedAttempt, punch: ValidatedPunchEvidence)? {
+    ) async -> AuraCapturedPunch? {
         let throwMessage = statusMessage
 
         cachedBodyFrame = nil
         cachedBodyFrameTime = 0
 
-        let startTime = CACurrentMediaTime()
+        let startTime = clock.now
         guard let targetPosition = targets.activeTargetPosition else {
             statusMessage = "Punch evidence was invalid · reset in guard"
             return nil
@@ -1932,6 +2095,36 @@ final class AuraPunchSession {
             generation: hands.providerGeneration,
             continuityEpoch: hands.continuityEpoch
         )
+        if let captureOverride {
+            let reference = ReferencePunchLibrary.punch(
+                for: punchTechnique,
+                stance: stance,
+                measurements: measurements,
+                side: side,
+                conservativeReach: coachingCycle.fittedReach?.conservative
+                    ?? persistedReach?.conservative
+            )
+            let request = AuraPunchCaptureRequest(
+                technique: punchTechnique,
+                stance: stance,
+                side: side,
+                reference: reference,
+                providerGeneration: captureChain.generation,
+                continuityEpoch: captureChain.continuityEpoch
+            )
+            guard let captured = await captureOverride(request),
+                  captured.side == side,
+                  captured.punch.technique == punchTechnique,
+                  captured.punch.stance == stance,
+                  captured.punch.side == side,
+                  captured.punch.generation == captureChain.generation,
+                  captured.attempt.isUsable
+            else {
+                statusMessage = "Punch evidence was invalid · reset in guard"
+                return nil
+            }
+            return captured
+        }
         var validator = PunchEvidenceValidator(
             configuration: .init(
                 technique: punchTechnique,
@@ -1951,10 +2144,10 @@ final class AuraPunchSession {
         for recorder in recorders.values { recorder.begin(at: startTime) }
         var trackingContinuity = TrackingContinuityObserver(epoch: captureChain.continuityEpoch)
 
-        let armingDeadline = CACurrentMediaTime() + scoredPunchSafetyTimeout
+        let armingDeadline = clock.now + scoredPunchSafetyTimeout
         var evidenceCursor = PunchEvidenceFrameCursor()
 
-        while CACurrentMediaTime() < armingDeadline {
+        while clock.now < armingDeadline {
             if Task.isCancelled { break }
             if coachingCycle.isTrainingPaused {
                 for recorder in recorders.values { recorder.cancel() }
@@ -1969,7 +2162,7 @@ final class AuraPunchSession {
                 return nil
             }
 
-            let now = CACurrentMediaTime()
+            let now = clock.now
             _ = recordAttemptFrame(
                 solver: solver,
                 startTime: startTime,
@@ -2019,7 +2212,7 @@ final class AuraPunchSession {
                             quality: .clean
                         ))
                         mirrorArm?.isVisible = false
-                        return (side, attempt, punch)
+                        return AuraCapturedPunch(side: side, attempt: attempt, punch: punch)
                     case let .retry(reason):
                         for recorder in recorders.values { recorder.cancel() }
                         mirrorArm?.isVisible = false
@@ -2047,7 +2240,7 @@ final class AuraPunchSession {
                 }
             }
 
-            try? await Task.sleep(for: frameInterval)
+            await clock.sleep(for: frameInterval)
         }
 
         mirrorArm?.isVisible = false

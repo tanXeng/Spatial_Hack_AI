@@ -22,6 +22,11 @@ final class CoachVoiceCoach {
     private var prepareTask: Task<Void, Never>?
     private var permissionsGranted = false
     private var interactionGeneration: UInt64 = 0
+    private var activeCaptureCycleID: UUID?
+
+    /// Training observes this whole capture/recognition/response lifecycle. Releasing the button
+    /// is deliberately non-terminal because recognition and response playback are still active.
+    var onCaptureCycleEvent: ((CoachVoiceCyclePauseOwner.Event) -> Void)?
 
     init(
         audioCoordinator: TrainingAudioCoordinator,
@@ -47,8 +52,13 @@ final class CoachVoiceCoach {
         }
     }
 
-    func beginPushToTalk(origin: TrainingAudioSceneOwner) {
-        guard !isListening, !isRouting, !isGeneratingResponse else { return }
+    @discardableResult
+    func beginPushToTalk(origin: TrainingAudioSceneOwner) -> Bool {
+        guard !isListening, !isRouting, !isGeneratingResponse,
+              activeCaptureCycleID == nil else { return false }
+        let captureID = UUID()
+        activeCaptureCycleID = captureID
+        onCaptureCycleEvent?(.captureBegan(captureID))
         lastError = nil
         isListening = true
         isCaptureReady = false
@@ -67,6 +77,7 @@ final class CoachVoiceCoach {
             guard permissionsGranted else {
                 self.isListening = false
                 self.lastError = "Microphone or speech recognition permission denied."
+                self.finishCaptureCycle(captureID, event: .responseCancelled(captureID))
                 return
             }
 
@@ -93,14 +104,17 @@ final class CoachVoiceCoach {
                 }
                 self.isListening = false
                 self.lastError = error.localizedDescription
+                self.finishCaptureCycle(captureID, event: .responseCancelled(captureID))
             }
         }
+        return true
     }
 
     func endPushToTalk() {
-        guard isListening else { return }
+        guard isListening, let captureID = activeCaptureCycleID else { return }
         isListening = false
         let generation = interactionGeneration
+        onCaptureCycleEvent?(.captureReleased(captureID))
 
         processingTask?.cancel()
         processingTask = Task { [weak self] in
@@ -117,6 +131,7 @@ final class CoachVoiceCoach {
                 isGeneratingResponse = true
                 finishVoiceResponse(with: .didntCatch)
                 isGeneratingResponse = false
+                finishCaptureCycle(captureID, event: .responseCompleted(captureID))
                 return
             }
 
@@ -126,6 +141,7 @@ final class CoachVoiceCoach {
             let result = await speechClient.stop()
             guard !Task.isCancelled, generation == interactionGeneration else {
                 isRouting = false
+                finishCaptureCycle(captureID, event: .responseCancelled(captureID))
                 return
             }
 
@@ -139,6 +155,7 @@ final class CoachVoiceCoach {
                 lastTranscript = transcript
                 lastRoutedClip = .didntCatch
                 finishVoiceResponse(with: .didntCatch)
+                finishCaptureCycle(captureID, event: .responseCompleted(captureID))
                 return
             }
 
@@ -151,6 +168,7 @@ final class CoachVoiceCoach {
             lastRoutedClip = clipID
             lastRoutedAt = Date()
             finishVoiceResponse(with: clipID)
+            finishCaptureCycle(captureID, event: .responseCompleted(captureID))
         }
     }
 
@@ -172,6 +190,12 @@ final class CoachVoiceCoach {
         isRouting = false
         isGeneratingResponse = false
         isCaptureReady = false
+        if let activeCaptureCycleID {
+            finishCaptureCycle(
+                activeCaptureCycleID,
+                event: .responseCancelled(activeCaptureCycleID)
+            )
+        }
     }
 
     private func endCoordinatorCaptureIfNeeded() {
@@ -219,5 +243,14 @@ final class CoachVoiceCoach {
         var errorDescription: String? {
             "Microphone audio is unavailable. Use the visible controls."
         }
+    }
+
+    private func finishCaptureCycle(
+        _ captureID: UUID,
+        event: CoachVoiceCyclePauseOwner.Event
+    ) {
+        guard activeCaptureCycleID == captureID else { return }
+        activeCaptureCycleID = nil
+        onCaptureCycleEvent?(event)
     }
 }

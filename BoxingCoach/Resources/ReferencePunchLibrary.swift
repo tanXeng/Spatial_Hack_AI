@@ -6,7 +6,7 @@ import simd
 /// Stored entirely in **normalized space** (shoulder-relative, arm-reach units — see the header
 /// of `ArmPoseSolver.swift`), which is what lets one authored trajectory drive the ghost arm for
 /// users of any size.
-struct ReferencePunch: Sendable {
+nonisolated struct ReferencePunch: Sendable {
     let techniqueID: String
     let side: BodySide
     let samples: [MotionSample]
@@ -122,7 +122,7 @@ private struct ReferenceKeyframe {
 /// `recordedPunch(for:)` is the seam for swapping in real captured data later; when a JSON file
 /// exists in the bundle it wins over the synthetic version automatically, so recording a team
 /// member becomes a drop-in upgrade rather than a code change.
-enum ReferencePunchLibrary {
+nonisolated enum ReferencePunchLibrary {
     /// Playback/authoring rate. Matches the rate the recorder captures at, so DTW is comparing
     /// sequences of similar density.
     static let sampleRate: Double = 60
@@ -161,9 +161,8 @@ enum ReferencePunchLibrary {
     }
 
     /// Fits every authored joint/path sample at or inside the shorter measured arm extension.
-    /// A longer measurement never enlarges the estimated skeleton; a shorter one scales the
-    /// reference uniformly, preserving shape while keeping both hero punches comfortably inside
-    /// measured reach.
+    /// Personalization is deliberately modest (70–108 percent of authored size), preserving the
+    /// authored shape while making both shorter and longer fitted reaches materially visible.
     private static func fitted(
         _ reference: ReferencePunch,
         measurements: BodyMeasurements,
@@ -180,8 +179,11 @@ enum ReferencePunchLibrary {
         else { return reference }
 
         let normalizedLimit = conservativeReach / measurements.armReach
-        let scale = min(1, normalizedLimit / authoredMaximum)
-        guard scale < 1 else { return reference }
+        let personalizedScale = min(max(normalizedLimit, 0.70), 1.08)
+        let safeScale = min(personalizedScale, normalizedLimit / authoredMaximum)
+        guard safeScale.isFinite, safeScale > 0, abs(safeScale - 1) > 1e-5 else {
+            return reference
+        }
 
         return ReferencePunch(
             techniqueID: reference.techniqueID,
@@ -189,9 +191,9 @@ enum ReferencePunchLibrary {
             samples: reference.samples.map { sample in
                 MotionSample(
                     time: sample.time,
-                    fist: sample.fist * scale,
-                    elbow: sample.elbow * scale,
-                    guardHand: sample.guardHand.map { $0 * scale },
+                    fist: sample.fist * safeScale,
+                    elbow: sample.elbow * safeScale,
+                    guardHand: sample.guardHand.map { $0 * safeScale },
                     isTracked: sample.isTracked
                 )
             }

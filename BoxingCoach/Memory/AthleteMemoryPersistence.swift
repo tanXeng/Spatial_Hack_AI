@@ -488,3 +488,42 @@ enum CompetitionSchemaV3: VersionedSchema {
         )
     }
 }
+
+/// Adds reconstructable coaching-cycle memory without changing the already-shipped V2 checksum.
+/// Existing V2 model types remain identical, so SwiftData can add the independent record with a
+/// lightweight migration.
+enum CompetitionSchemaV3: VersionedSchema {
+    static var versionIdentifier = Schema.Version(3, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        [
+            CompetitionSchemaV2.EventEditionRecord.self,
+            CompetitionSchemaV2.CompetitionPlayerRecord.self,
+            CompetitionSchemaV2.TechniqueAttemptRecord.self,
+            CompetitionSchemaV2.AthleteSkillMemoryRecord.self,
+            CoachingCycleRecord.self,
+            CompetitionSchemaV2.PendingTrainingRunRecord.self,
+            CompetitionSchemaV2.CompetitionSubmissionRecord.self,
+            CompetitionSchemaV2.EventAwardRecord.self,
+        ]
+    }
+
+    @Model
+    final class CoachingCycleRecord {
+        @Attribute(.unique) var id: UUID
+        var athleteID: UUID
+        var techniqueID: String
+        var snapshotData: Data
+
+        init(_ snapshot: CoachingCycleSnapshot) throws {
+            id = snapshot.id
+            athleteID = snapshot.athleteID
+            techniqueID = snapshot.techniqueID
+            snapshotData = try JSONEncoder().encode(snapshot)
+        }
+
+        var snapshot: CoachingCycleSnapshot? {
+            try? JSONDecoder().decode(CoachingCycleSnapshot.self, from: snapshotData)
+        }
+    }
+}

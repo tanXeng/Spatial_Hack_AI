@@ -148,22 +148,8 @@ struct BoxingCoachImmersiveView: View {
         .onChange(of: session.auraPunch.phase) { _, phase in
             guard case .experience(.aura) = flow.route,
                   phase == .results else { return }
-            Task {
-                if competitionStore.currentPlayer != nil,
-                   let result = session.auraPunch.cycleResult,
-                   let reach = session.auraPunch.fittedReach {
-                    do {
-                        try await competitionStore.persistCoachingCycle(
-                            result,
-                            fittedReach: reach
-                        )
-                    } catch {
-                        announce("Training complete. Athlete memory could not be saved.")
-                    }
-                }
-                announce("Aura Punch scoring complete")
-                finishTraining()
-            }
+            announce("Aura Punch scoring complete")
+            finishTraining()
         }
         .onChange(of: session.errorMessage) { _, message in
             guard isReactiveEngineExperience, let message else { return }
@@ -187,12 +173,20 @@ struct BoxingCoachImmersiveView: View {
             announce(message)
         }
         .onDisappear {
+            session.auraPunch.cycleDidComplete = nil
             // Idempotent whether closure was requested by the coordinator or by the system.
             session.detachSceneRoot()
             openWindow(id: BoxingCoachSceneID.controlWindow)
             flow.immersiveSceneDidClose(session: session)
         }
         .task {
+            session.auraPunch.cycleDidComplete = { result, reach in
+                guard competitionStore.currentPlayer != nil else { return }
+                try await competitionStore.persistCoachingCycle(
+                    result,
+                    fittedReach: reach
+                )
+            }
             session.voiceCoach.prepare()
             refreshVoiceCoachContext()
         }

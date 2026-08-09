@@ -122,8 +122,8 @@ struct LearningDomainTests {
 
     @Test("A coaching cycle carries the completed learning proof")
     func coachingCycleCarriesCompletedProof() throws {
-        let baseline = try makeAttempt(overall: 68, pathScore: 62)
-        let retest = try makeAttempt(overall: 81, pathScore: 79)
+        let baseline = try makeRound(overall: 68, pathScore: 62)
+        let retest = try makeRound(overall: 81, pathScore: 79)
         let correction = try CorrectionPlan(
             technique: .jab,
             focus: .path,
@@ -132,16 +132,27 @@ struct LearningDomainTests {
             rehearsalCount: 4,
             targetImprovement: 10
         )
-        let proof = try ProofComparison(baseline: baseline, retest: retest)
+        let proof = try CoachingRoundProof(baseline: baseline, retest: retest)
+        let selectedProof = CoachingProofMetric(
+            kind: .path,
+            baseline: 62,
+            retest: 79,
+            delta: 17,
+            trackedFraction: 0.96,
+            correctionCode: .path,
+            evidenceLabel: .measured,
+            sourceBadge: "Measured locally · Offline coach"
+        )
         let result = try CoachingCycleResult(
+            id: UUID(),
             track: .technicalCamp,
             technique: .jab,
             stance: .orthodox,
             completedStages: LearningStage.allCases,
-            baseline: baseline,
             correction: correction,
-            retest: retest,
             proof: proof,
+            selectedProof: selectedProof,
+            proofDisposition: .improved,
             completedAt: Date(timeIntervalSince1970: 100)
         )
 
@@ -150,12 +161,10 @@ struct LearningDomainTests {
         #expect(result.track == .technicalCamp)
     }
 
-    @Test("A coaching cycle rejects proof built from different attempt identities")
+    @Test("A coaching cycle rejects a selected proof that contradicts its round aggregate")
     func coachingCycleBindsProofToItsExactAttempts() throws {
-        let baseline = try makeAttempt(overall: 68, pathScore: 62)
-        let retest = try makeAttempt(overall: 81, pathScore: 79)
-        let otherBaseline = try makeAttempt(overall: 68, pathScore: 62)
-        let otherRetest = try makeAttempt(overall: 81, pathScore: 79)
+        let baseline = try makeRound(overall: 68, pathScore: 62)
+        let retest = try makeRound(overall: 81, pathScore: 79)
         let correction = try CorrectionPlan(
             technique: .jab,
             focus: .path,
@@ -164,21 +173,29 @@ struct LearningDomainTests {
             rehearsalCount: 4,
             targetImprovement: 10
         )
-        let proofFromOtherAttempts = try ProofComparison(
-            baseline: otherBaseline,
-            retest: otherRetest
+        let proof = try CoachingRoundProof(baseline: baseline, retest: retest)
+        let contradictorySelection = CoachingProofMetric(
+            kind: .path,
+            baseline: 60,
+            retest: 79,
+            delta: 19,
+            trackedFraction: 0.96,
+            correctionCode: .path,
+            evidenceLabel: .measured,
+            sourceBadge: "Measured locally · Offline coach"
         )
 
         #expect {
             try CoachingCycleResult(
+                id: UUID(),
                 track: .technicalCamp,
                 technique: .jab,
                 stance: .orthodox,
                 completedStages: LearningStage.allCases,
-                baseline: baseline,
                 correction: correction,
-                retest: retest,
-                proof: proofFromOtherAttempts,
+                proof: proof,
+                selectedProof: contradictorySelection,
+                proofDisposition: .improved,
                 completedAt: Date(timeIntervalSince1970: 100)
             )
         } throws: { error in
@@ -200,6 +217,36 @@ struct LearningDomainTests {
             attemptID: attemptID,
             version: version
         )
+    }
+
+    private func makeRound(
+        overall: Float,
+        pathScore: Float
+    ) throws -> CoachingRoundEvidence {
+        let samples = [
+            MotionSample(
+                time: 0,
+                fist: SIMD3(0, 0, 0.2),
+                elbow: SIMD3(0, 0, 0.1),
+                guardHand: SIMD3(0, 0.2, 0.1),
+                isTracked: true
+            ),
+            MotionSample(
+                time: 0.2,
+                fist: SIMD3(0, 0, 0.9),
+                elbow: SIMD3(0, 0, 0.5),
+                guardHand: SIMD3(0, 0.2, 0.1),
+                isTracked: true
+            ),
+        ]
+        let attempts = try (0..<CoachingCycleSession.requiredAttempts).map { _ in
+            try CoachingAttemptEvidence(
+                evidence: makeAttempt(overall: overall, pathScore: pathScore),
+                actualSamples: samples,
+                referenceSamples: samples
+            )
+        }
+        return try CoachingRoundEvidence(attempts: attempts, technique: .jab)
     }
 
     private func makePunchEvidence() throws -> ValidatedPunchEvidence {

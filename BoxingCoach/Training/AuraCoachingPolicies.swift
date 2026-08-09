@@ -166,6 +166,76 @@ nonisolated enum AuraVoiceCaptureTrainingPolicy {
     }
 }
 
+/// The capture button releases before recognition, command routing, and spoken response finish.
+/// This owner keeps that whole interval inside one training pause and ignores stale callbacks.
+nonisolated struct CoachVoiceCyclePauseOwner: Sendable {
+    nonisolated enum Event: Equatable, Sendable {
+        case captureBegan(UUID)
+        case captureReleased(UUID)
+        case responseCompleted(UUID)
+        case responseCancelled(UUID)
+        case freshGuardRecovered(UUID)
+    }
+
+    nonisolated enum Action: Equatable, Sendable {
+        case pauseTraining
+        case holdTraining
+        case beginFreshGuardRecovery
+        case resumeTraining
+        case ignore
+    }
+
+    private enum State: Sendable {
+        case idle
+        case capturing(UUID)
+        case processing(UUID)
+        case awaitingFreshGuard(UUID)
+    }
+
+    private var state: State = .idle
+
+    var isTrainingPaused: Bool {
+        if case .idle = state { return false }
+        return true
+    }
+
+    mutating func reset() {
+        state = .idle
+    }
+
+    mutating func observe(_ event: Event) -> Action {
+        switch (state, event) {
+        case (.idle, .captureBegan(let id)):
+            state = .capturing(id)
+            return .pauseTraining
+        case (.capturing(let current), .captureReleased(let id)) where current == id:
+            state = .processing(id)
+            return .holdTraining
+        case (.capturing(let current), .responseCompleted(let id)) where current == id,
+             (.capturing(let current), .responseCancelled(let id)) where current == id,
+             (.processing(let current), .responseCompleted(let id)) where current == id,
+             (.processing(let current), .responseCancelled(let id)) where current == id:
+            state = .awaitingFreshGuard(id)
+            return .beginFreshGuardRecovery
+        case (.awaitingFreshGuard(let current), .freshGuardRecovered(let id)) where current == id:
+            state = .idle
+            return .resumeTraining
+        default:
+            return .ignore
+        }
+    }
+}
+
+/// Aura deliberately shares the normal combination gate: three consecutive accepted bilateral
+/// pairs, all belonging to one provider generation and continuity epoch.
+typealias AuraGuardRecoveryGate = NormalCombinationGuardRecoveryGate
+
+nonisolated enum AuraScoringAdmissionPolicy {
+    static func scorerRejectedAttempt(cycle: inout CoachingCycleSession) {
+        cycle.rejectPartialAttempt(.invalidEvidence)
+    }
+}
+
 enum AuraImmersiveInstructionPolicy {
     static func instruction(
         phase: AuraPunchPhase,

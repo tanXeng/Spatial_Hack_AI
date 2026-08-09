@@ -307,6 +307,9 @@ final class ReactiveStrikeSession {
                 measuredForwardReach: reach.conservative
             )
         }
+        voiceCoach.onCaptureCycleEvent = { [weak self] event in
+            self?.auraPunch.handleCoachVoiceCycle(event)
+        }
     }
 
     var progressLabel: String {
@@ -371,13 +374,11 @@ final class ReactiveStrikeSession {
     }
 
     func beginCoachPushToTalk(origin: TrainingAudioSceneOwner) {
-        auraPunch.trainingWillPauseForVoiceCapture()
         voiceCoach.beginPushToTalk(origin: origin)
     }
 
     func endCoachPushToTalk() {
         voiceCoach.endPushToTalk()
-        auraPunch.trainingDidEndVoiceCapture()
     }
 
     func configure(

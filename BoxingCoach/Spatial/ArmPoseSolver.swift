@@ -26,7 +26,7 @@ import simd
 /// visionOS gives us no torso tracking at all, so this is an *estimate* built from the device
 /// transform plus `BodyMeasurements`. It is only as good as those measurements — which is the
 /// entire reason the Anthropometry feature exists.
-struct BodyFrame: Sendable {
+nonisolated struct BodyFrame: Sendable {
     /// Center of the shoulder line, in world space.
     var origin: SIMD3<Float>
     /// Unit vector pointing to the user's right, in world space.
@@ -339,7 +339,7 @@ struct ArmPoseSolver: Sendable {
 
 /// One frame of a punch, in normalized space. The unit the recorder collects and the scorer
 /// compares. See the coordinate-space note at the top of this file for what the axes mean.
-struct MotionSample: Sendable, Codable, Equatable {
+nonisolated struct MotionSample: Sendable, Codable, Equatable {
     /// Seconds since the attempt began.
     var time: TimeInterval
     /// Punching fist, relative to the punching shoulder, in arm-reach units.

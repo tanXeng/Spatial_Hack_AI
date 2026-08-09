@@ -2,13 +2,13 @@ import Foundation
 import simd
 
 /// One matched pair of frames between the reference punch and the user's attempt.
-struct AlignedPair: Sendable, Equatable {
+nonisolated struct AlignedPair: Sendable, Equatable {
     var reference: Int
     var attempt: Int
 }
 
 /// The result of warping the user's attempt onto the reference.
-struct DTWAlignment: Sendable {
+nonisolated struct DTWAlignment: Sendable {
     /// Mean per-pair distance along the warping path, in arm-reach units. Scale-free, and
     /// crucially independent of how many frames each sequence happened to contain.
     var normalizedDistance: Float
@@ -26,7 +26,7 @@ struct DTWAlignment: Sendable {
 /// find the best correspondence, so what gets graded is the **shape of the path** — the form —
 /// rather than the tempo. Speed, if we want to grade it, belongs in its own sub-metric where the
 /// user can see it named.
-enum DTWComparator {
+nonisolated enum DTWComparator {
     /// Aligns two trajectories.
     ///
     /// - Parameter bandFraction: Sakoe-Chiba band width as a fraction of the longer sequence.

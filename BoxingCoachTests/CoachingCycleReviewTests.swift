@@ -367,8 +367,8 @@ struct CoachingCycleReviewTests {
         let result = try #require(cycle.result)
         #expect(cycle.stage == .complete)
         #expect(result.technique == .uppercut)
-        #expect(result.roundProof?.baseline.attempts.count == 3)
-        #expect(result.roundProof?.retest.attempts.count == 3)
+        #expect(result.proof.baseline.attempts.count == 3)
+        #expect(result.proof.retest.attempts.count == 3)
     }
 
     @Test("Completed coaching proof and fitted reach persist for only the active participant")

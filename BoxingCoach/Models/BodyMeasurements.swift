@@ -50,7 +50,7 @@ nonisolated enum BodySide: String, Hashable, Sendable, Codable {
 /// built it should produce one of these and nothing downstream needs to change.
 ///
 /// All lengths are in meters.
-struct BodyMeasurements: Sendable, Equatable, Codable {
+nonisolated struct BodyMeasurements: Sendable, Equatable, Codable {
     /// Standing height. Used to scale every other measurement when only height is known.
     var height: Float
 

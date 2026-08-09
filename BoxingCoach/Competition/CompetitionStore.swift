@@ -349,9 +349,7 @@ final class CompetitionStore {
         fittedReach: BilateralReach
     ) async throws {
         guard var player = currentPlayer else { throw CompetitionStoreError.noPlayer }
-        guard let roundProof = result.roundProof else {
-            throw CompetitionStoreError.incompleteRun
-        }
+        let roundProof = result.proof
 
         let admitted = roundProof.baseline.attempts + roundProof.retest.attempts
         guard admitted.count == CoachingCycleSession.requiredAttempts * 2 else {
@@ -377,11 +375,18 @@ final class CompetitionStore {
             return snapshot
         }
 
-        try await repository.save(techniqueAttempts: snapshots)
-        let stored = try await repository.techniqueAttempts(
+        let existing = try await repository.techniqueAttempts(
             athleteID: player.id,
             techniqueID: result.technique.id
         )
+        var attemptsByID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+        for snapshot in snapshots {
+            if let existing = attemptsByID[snapshot.id], existing != snapshot {
+                throw CompetitionStoreError.incompleteRun
+            }
+            attemptsByID[snapshot.id] = snapshot
+        }
+        let stored = attemptsByID.values.sorted { $0.completedAt < $1.completedAt }
         let trace = roundProof.retest.attempts.last.flatMap(Self.pastSelfTrace)
         let updatedAt = max(now(), result.completedAt)
         guard let memory = AthleteSkillMemory(
@@ -392,13 +397,23 @@ final class CompetitionStore {
             pastSelfTrace: trace,
             updatedAt: updatedAt
         ) else { throw CompetitionStoreError.incompleteRun }
-        try await repository.save(skillMemory: memory)
-
         player.reach = fittedReach
         player.calibrationVersion = CompetitionPlayer.calibrationVersion
         player.calibratedAt = updatedAt
         player.lastSeenAt = updatedAt
-        try await repository.save(player: player)
+        let cycleSnapshot = try CoachingCycleSnapshot(
+            result: result,
+            athleteID: player.id,
+            eventID: player.publicHandle?.eventID,
+            fittedReach: fittedReach
+        )
+        let transaction = try CoachingCycleMemoryTransaction(
+            player: player,
+            legacyAttempts: snapshots,
+            skillMemory: memory,
+            cycle: cycleSnapshot
+        )
+        try await repository.save(coachingCycle: transaction)
         currentPlayer = player
     }
 

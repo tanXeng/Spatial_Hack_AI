@@ -368,31 +368,45 @@ nonisolated struct ProofComparison: Sendable {
     }
 }
 
+/// Honest terminal policy for the one selected proof metric.
+///
+/// A correction must gain the approved eight points. A reinforcement starts with no metric below
+/// 85, so asking it to gain eight more points can be mathematically impossible; it succeeds only
+/// by retaining that already-strong score without regression. `reinforced` is deliberately not
+/// described as improvement.
+nonisolated enum CoachingProofDisposition: String, Hashable, Sendable, Codable {
+    case improved
+    case reinforced
+    case retry
+}
+
 /// The immutable output of one complete coaching cycle.
+///
+/// There is exactly one proof contract here: the two three-attempt aggregates which authorized
+/// Transfer, plus the selected-focus projection shown to the athlete. No arbitrary punch is used
+/// as a stand-in for a round average.
 nonisolated struct CoachingCycleResult: Sendable {
+    let id: UUID
     let track: TrainingTrack
     let technique: Technique
     let stance: Stance
     let completedStages: [LearningStage]
-    let baseline: TechniqueAttemptEvidence
     let correction: CorrectionPlan
-    let retest: TechniqueAttemptEvidence
-    let proof: ProofComparison
-    /// Complete three-attempt like-for-like proof for coaching cycles. `nil` keeps the original
-    /// single-attempt result initializer source-compatible for standalone scoring callers.
-    let roundProof: CoachingRoundProof?
+    let proof: CoachingRoundProof
+    let selectedProof: CoachingProofMetric
+    let proofDisposition: CoachingProofDisposition
     let completedAt: Date
 
     init(
+        id: UUID,
         track: TrainingTrack,
         technique: Technique,
         stance: Stance,
         completedStages: [LearningStage],
-        baseline: TechniqueAttemptEvidence,
         correction: CorrectionPlan,
-        retest: TechniqueAttemptEvidence,
-        proof: ProofComparison,
-        roundProof: CoachingRoundProof? = nil,
+        proof: CoachingRoundProof,
+        selectedProof: CoachingProofMetric,
+        proofDisposition: CoachingProofDisposition,
         completedAt: Date
     ) throws {
         guard completedAt.timeIntervalSinceReferenceDate.isFinite else {
@@ -401,36 +415,32 @@ nonisolated struct CoachingCycleResult: Sendable {
         guard completedStages == LearningStage.allCases else {
             throw LearningEvidenceRejectionReason.incompleteCycle
         }
-        guard technique == baseline.technique,
+        guard let baseline = proof.baseline.attempts.first?.evidence,
+              let retest = proof.retest.attempts.first?.evidence,
+              technique == baseline.technique,
               technique == retest.technique,
               technique == correction.technique,
               stance == baseline.stance,
               stance == retest.stance,
-              proof.baseline.identity == baseline.identity,
-              proof.retest.identity == retest.identity,
-              proof.overallDelta == retest.score.overall - baseline.score.overall
+              correction.focus == selectedProof.kind,
+              let baselineValue = proof.baseline.score.metric(selectedProof.kind)?.score,
+              let retestValue = proof.retest.score.metric(selectedProof.kind)?.score,
+              selectedProof.baseline == baselineValue,
+              selectedProof.retest == retestValue,
+              selectedProof.delta == retestValue - baselineValue,
+              proof.metricDelta(for: selectedProof.kind) == selectedProof.delta,
+              proofDisposition != .retry
         else { throw LearningEvidenceRejectionReason.attemptIdentityMismatch }
-        if let roundProof {
-            guard roundProof.baseline.attempts.contains(where: {
-                      $0.evidence.identity == baseline.identity
-                  }),
-                  roundProof.retest.attempts.contains(where: {
-                      $0.evidence.identity == retest.identity
-                  }),
-                  roundProof.baseline.attempts.count == CoachingCycleSession.requiredAttempts,
-                  roundProof.retest.attempts.count == CoachingCycleSession.requiredAttempts
-            else { throw LearningEvidenceRejectionReason.attemptIdentityMismatch }
-        }
 
+        self.id = id
         self.track = track
         self.technique = technique
         self.stance = stance
         self.completedStages = completedStages
-        self.baseline = baseline
         self.correction = correction
-        self.retest = retest
         self.proof = proof
-        self.roundProof = roundProof
+        self.selectedProof = selectedProof
+        self.proofDisposition = proofDisposition
         self.completedAt = completedAt
     }
 }

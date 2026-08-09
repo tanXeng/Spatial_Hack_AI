@@ -2,7 +2,7 @@ import Foundation
 import simd
 
 /// A completed attempt, cleaned up and ready to score.
-struct RecordedAttempt: Sendable {
+nonisolated struct RecordedAttempt: Sendable {
     /// Normalized samples covering just the punch itself (idle time at either end trimmed).
     var samples: [MotionSample]
     /// Fraction of frames in the **trimmed punch** that came from real tracking rather than
@@ -41,16 +41,30 @@ struct RecordedAttempt: Sendable {
 }
 
 /// Pure punch-extension rules shared by recorded attempts and authored references.
-enum PunchExtensionSemantics {
-    static func magnitude(samples: [MotionSample], techniqueID: String) -> Float {
-        if techniqueID == Technique.uppercut.id {
-            return orderedVerticalRise(in: samples)
-        }
+nonisolated enum PunchExtensionSemantics {
+    nonisolated struct Selection: Equatable, Sendable {
+        let sampleIndices: [Int]
+        let magnitude: Float
+    }
 
-        return samples.lazy
-            .map(\.reachFraction)
-            .filter(\.isFinite)
-            .max() ?? 0
+    static func magnitude(samples: [MotionSample], techniqueID: String) -> Float {
+        selection(samples: samples, techniqueID: techniqueID)?.magnitude ?? 0
+    }
+
+    static func selection(
+        samples: [MotionSample],
+        techniqueID: String
+    ) -> Selection? {
+        if techniqueID == Technique.uppercut.id { return orderedVerticalSelection(in: samples) }
+
+        guard let selected = samples.indices
+            .filter({ samples[$0].reachFraction.isFinite })
+            .max(by: { samples[$0].reachFraction < samples[$1].reachFraction })
+        else { return nil }
+        return Selection(
+            sampleIndices: [selected],
+            magnitude: samples[selected].reachFraction
+        )
     }
 
     /// Largest upward displacement whose low sample occurs before its high sample.
@@ -58,22 +72,60 @@ enum PunchExtensionSemantics {
     /// Order matters: `maxY - minY` would credit a hand that starts high and only drops to the hip,
     /// even though it never performs the upward half of an uppercut.
     static func orderedVerticalRise(in samples: [MotionSample]) -> Float {
-        var lowestEarlierY: Float?
-        var largestRise: Float = 0
+        orderedVerticalSelection(in: samples)?.magnitude ?? 0
+    }
 
-        for sample in samples {
+    private static func orderedVerticalSelection(in samples: [MotionSample]) -> Selection? {
+        var lowestEarlier: (index: Int, y: Float)?
+        var best: (low: Int, high: Int, rise: Float)?
+
+        for (index, sample) in samples.enumerated() {
             let y = sample.fist.y
             guard y.isFinite else { continue }
 
-            if let priorLowestY = lowestEarlierY {
-                largestRise = max(largestRise, y - priorLowestY)
-                lowestEarlierY = min(priorLowestY, y)
+            if let priorLowest = lowestEarlier {
+                let rise = y - priorLowest.y
+                if best == nil || rise > best!.rise {
+                    best = (priorLowest.index, index, rise)
+                }
+                if y < priorLowest.y {
+                    lowestEarlier = (index, y)
+                }
             } else {
-                lowestEarlierY = y
+                lowestEarlier = (index, y)
             }
         }
 
-        return largestRise
+        guard let best else { return nil }
+        return Selection(sampleIndices: [best.low, best.high], magnitude: max(0, best.rise))
+    }
+
+}
+
+nonisolated enum PunchRetractionSemantics {
+    nonisolated struct Selection: Equatable, Sendable {
+        let attemptIndex: Int
+        let referenceIndex: Int
+        let error: Float
+    }
+
+    static func selection(
+        attempt: [MotionSample],
+        reference: [MotionSample]
+    ) -> Selection? {
+        guard let attemptIndex = attempt.indices.last,
+              let referenceIndex = reference.indices.last
+        else { return nil }
+        let error = simd_distance(
+            attempt[attemptIndex].fist,
+            reference[referenceIndex].fist
+        )
+        guard error.isFinite else { return nil }
+        return Selection(
+            attemptIndex: attemptIndex,
+            referenceIndex: referenceIndex,
+            error: error
+        )
     }
 }
 

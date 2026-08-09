@@ -16,7 +16,26 @@ nonisolated enum CompetitionRepositoryError: LocalizedError, Equatable, Sendable
 }
 
 @MainActor
-protocol CompetitionRepository: AnyObject {
+protocol AthleteMemoryRepository: AnyObject {
+    func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws
+    func coachingCycle(id: UUID) async throws -> CoachingCycleSnapshot?
+}
+
+@MainActor
+extension AthleteMemoryRepository {
+    func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws {
+        _ = transaction
+        throw CompetitionRepositoryError.saveFailed("Coaching-cycle persistence is unavailable.")
+    }
+
+    func coachingCycle(id: UUID) async throws -> CoachingCycleSnapshot? {
+        _ = id
+        return nil
+    }
+}
+
+@MainActor
+protocol CompetitionRepository: AthleteMemoryRepository {
     func player(normalizedName: String) async throws -> CompetitionPlayer?
     func player(id: UUID) async throws -> CompetitionPlayer?
     func save(player: CompetitionPlayer) async throws
@@ -37,6 +56,7 @@ final class InMemoryCompetitionRepository: CompetitionRepository {
     private var values: [UUID: CompetitionSubmission] = [:]
     private var attemptValues: [UUID: TechniqueAttemptSnapshot] = [:]
     private var memoryValues: [String: AthleteSkillMemory] = [:]
+    private var coachingCycleValues: [UUID: CoachingCycleSnapshot] = [:]
 
     func player(normalizedName: String) async throws -> CompetitionPlayer? {
         players.values.first { $0.normalizedName == normalizedName }
@@ -89,11 +109,47 @@ final class InMemoryCompetitionRepository: CompetitionRepository {
         memoryValues[Self.memoryKey(athleteID: athleteID, techniqueID: techniqueID)]
     }
 
+    func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws {
+        if let existing = coachingCycleValues[transaction.cycle.id] {
+            guard existing == transaction.cycle else {
+                throw CompetitionRepositoryError.invalidSubmission
+            }
+            return
+        }
+
+        var nextAttempts = attemptValues
+        for attempt in transaction.legacyAttempts {
+            if let existing = nextAttempts[attempt.id], existing != attempt {
+                throw CompetitionRepositoryError.invalidSubmission
+            }
+            nextAttempts[attempt.id] = attempt
+        }
+        var nextPlayers = players
+        var nextMemory = memoryValues
+        var nextCycles = coachingCycleValues
+        nextPlayers[transaction.player.id] = transaction.player
+        nextMemory[Self.memoryKey(
+            athleteID: transaction.skillMemory.athleteID,
+            techniqueID: transaction.skillMemory.techniqueID
+        )] = transaction.skillMemory
+        nextCycles[transaction.cycle.id] = transaction.cycle
+
+        attemptValues = nextAttempts
+        players = nextPlayers
+        memoryValues = nextMemory
+        coachingCycleValues = nextCycles
+    }
+
+    func coachingCycle(id: UUID) async throws -> CoachingCycleSnapshot? {
+        coachingCycleValues[id]
+    }
+
     func reset() async throws {
         players.removeAll()
         values.removeAll()
         attemptValues.removeAll()
         memoryValues.removeAll()
+        coachingCycleValues.removeAll()
     }
 
     private static func memoryKey(athleteID: UUID, techniqueID: String) -> String {
@@ -420,7 +476,71 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
         .snapshot(attempts: attempts)
     }
 
+    func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws {
+        do {
+            let cycles = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV3.CoachingCycleRecord>()
+            )
+            if let existing = cycles.first(where: { $0.id == transaction.cycle.id }) {
+                guard existing.snapshot == transaction.cycle else {
+                    throw CompetitionRepositoryError.invalidSubmission
+                }
+                return
+            }
+
+            if let existingPlayer = try playerRecord(id: transaction.player.id) {
+                existingPlayer.apply(transaction.player)
+            } else {
+                context.insert(CompetitionSchemaV3.CompetitionPlayerRecord(transaction.player))
+            }
+
+            let existingAttempts = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV3.TechniqueAttemptRecord>()
+            )
+            let existingByID = Dictionary(uniqueKeysWithValues: existingAttempts.map { ($0.id, $0) })
+            for attempt in transaction.legacyAttempts {
+                if let record = existingByID[attempt.id] {
+                    guard record.snapshot == attempt else {
+                        throw CompetitionRepositoryError.invalidSubmission
+                    }
+                } else {
+                    context.insert(CompetitionSchemaV3.TechniqueAttemptRecord(attempt))
+                }
+            }
+
+            let memoryRecords = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
+            )
+            if let existingMemory = memoryRecords.first(where: {
+                $0.athleteID == transaction.skillMemory.athleteID
+                    && $0.techniqueID == transaction.skillMemory.techniqueID
+            }) {
+                context.delete(existingMemory)
+            }
+            context.insert(try CompetitionSchemaV3.AthleteSkillMemoryRecord(
+                transaction.skillMemory
+            ))
+            context.insert(try CompetitionSchemaV3.CoachingCycleRecord(transaction.cycle))
+            try saveContext()
+        } catch {
+            context.rollback()
+            context = Self.makeContext(container: container)
+            if let repositoryError = error as? CompetitionRepositoryError {
+                throw repositoryError
+            }
+            throw CompetitionRepositoryError.saveFailed(
+                "The coaching cycle could not be saved. Nothing was changed."
+            )
+        }
+    }
+
+    func coachingCycle(id: UUID) async throws -> CoachingCycleSnapshot? {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.CoachingCycleRecord>())
+            .first { $0.id == id }?.snapshot
+    }
+
     func reset() async throws {
+        try context.delete(model: CompetitionSchemaV3.CoachingCycleRecord.self)
         try context.delete(model: CompetitionSchemaV3.AthleteSkillMemoryRecord.self)
         try context.delete(model: CompetitionSchemaV3.TechniqueAttemptRecord.self)
         try context.delete(model: CompetitionSchemaV3.CompetitionSubmissionRecord.self)

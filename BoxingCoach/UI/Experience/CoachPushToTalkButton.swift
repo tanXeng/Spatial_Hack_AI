@@ -1,5 +1,47 @@
 import SwiftUI
 
+nonisolated struct CoachPushToTalkInteractionPolicy: Sendable {
+    nonisolated enum Action: Equatable, Sendable {
+        case beginCapture
+        case endCapture
+        case none
+    }
+
+    private var pointerIsDown = false
+    private var holdIsActive = false
+    private var suppressNextActivation = false
+
+    mutating func pointerDidBegin() {
+        // A new physical interaction cannot be the delayed Button activation from the prior hold.
+        suppressNextActivation = false
+        pointerIsDown = true
+        holdIsActive = false
+    }
+
+    mutating func holdThresholdDidElapse(isVoiceActive: Bool) -> Action {
+        guard pointerIsDown, !holdIsActive, !isVoiceActive else { return .none }
+        holdIsActive = true
+        return .beginCapture
+    }
+
+    mutating func pointerDidEnd(isVoiceActive: Bool) -> Action {
+        pointerIsDown = false
+        guard holdIsActive else { return .none }
+        holdIsActive = false
+        suppressNextActivation = true
+        return isVoiceActive ? .endCapture : .none
+    }
+
+    mutating func accessibilityActivate(isVoiceActive: Bool) -> Action {
+        if suppressNextActivation {
+            suppressNextActivation = false
+            return .none
+        }
+        guard !holdIsActive else { return .none }
+        return isVoiceActive ? .endCapture : .beginCapture
+    }
+}
+
 /// Hold to capture speech; release to route and play a coach clip.
 struct CoachPushToTalkButton: View {
     enum Style {
@@ -17,6 +59,8 @@ struct CoachPushToTalkButton: View {
     let onRelease: () -> Void
 
     @State private var isPressed = false
+    @State private var interaction = CoachPushToTalkInteractionPolicy()
+    @State private var holdTask: Task<Void, Never>?
 
     private var isBusy: Bool { isRouting || isGeneratingResponse }
 
@@ -37,15 +81,18 @@ struct CoachPushToTalkButton: View {
                 compactButton
             }
         }
+        .frame(minWidth: 60, minHeight: 60)
+        .contentShape(Rectangle())
         .disabled(isDisabled || isBusy)
         .simultaneousGesture(pressGesture)
         .accessibilityLabel("Ask Coach")
-        .accessibilityHint("Hold while speaking, then release to hear a coaching response")
+        .accessibilityValue(accessibilityValue)
+        .accessibilityHint("Tap to start or stop, or hold while speaking and release to hear a coaching response")
         .accessibilityInputLabels(["Ask Coach", "Hold to Ask Coach", "Voice command"])
     }
 
     private var standardButton: some View {
-        Button(action: {}) {
+        Button(action: activate) {
             Label(label, systemImage: micSymbol)
                 .font(.body.weight(.semibold))
         }
@@ -54,7 +101,7 @@ struct CoachPushToTalkButton: View {
     }
 
     private var compactButton: some View {
-        Button(action: {}) {
+        Button(action: activate) {
             VStack(spacing: 6) {
                 Image(systemName: micSymbol)
                     .font(.title2.weight(.semibold))
@@ -88,19 +135,48 @@ struct CoachPushToTalkButton: View {
         return .blue
     }
 
+    private var accessibilityValue: String {
+        if isGeneratingResponse || isRouting { return "Response in progress" }
+        if isListening { return isCaptureReady ? "Listening" : "Preparing microphone" }
+        return "Not listening"
+    }
+
+    private func activate() {
+        guard !isDisabled, !isBusy else { return }
+        perform(interaction.accessibilityActivate(isVoiceActive: isListening))
+    }
+
     private var pressGesture: some Gesture {
         DragGesture(minimumDistance: 0)
             .onChanged { _ in
                 guard !isDisabled, !isBusy else { return }
                 if !isPressed {
                     isPressed = true
-                    onPress()
+                    interaction.pointerDidBegin()
+                    holdTask?.cancel()
+                    holdTask = Task { @MainActor in
+                        try? await Task.sleep(for: .milliseconds(350))
+                        guard !Task.isCancelled, isPressed else { return }
+                        perform(interaction.holdThresholdDidElapse(
+                            isVoiceActive: isListening
+                        ))
+                    }
                 }
             }
             .onEnded { _ in
                 guard isPressed else { return }
+                holdTask?.cancel()
+                holdTask = nil
                 isPressed = false
-                onRelease()
+                perform(interaction.pointerDidEnd(isVoiceActive: isListening))
             }
+    }
+
+    private func perform(_ action: CoachPushToTalkInteractionPolicy.Action) {
+        switch action {
+        case .beginCapture: onPress()
+        case .endCapture: onRelease()
+        case .none: break
+        }
     }
 }

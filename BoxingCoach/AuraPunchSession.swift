@@ -7,6 +7,8 @@ enum AuraPunchPhase: String, Sendable {
     case idle
     /// Waiting for hands and head to be tracked well enough to place a shoulder.
     case acquiring
+    /// The coach character demonstrates the punch once, at full speed, before the ghost appears.
+    case coachDemo
     /// The ghost leads the punch and waits at each end for the user to match it.
     case guiding
     /// Counting the user in before their attempt.
@@ -117,6 +119,7 @@ final class AuraPunchSession {
 
     private var demoArm: ArmSilhouetteEntity?
     private var mirrorArm: ArmSilhouetteEntity?
+    private let coach = CoachCharacterEntity()
     private weak var sceneRoot: Entity?
 
     private var loopTask: Task<Void, Never>?
@@ -154,6 +157,9 @@ final class AuraPunchSession {
         mirror.attach(to: root)
         mirrorArm = mirror
 
+        coach.attach(to: root)
+        coach.isVisible = false
+
         targets.attach(to: root)
     }
 
@@ -161,9 +167,16 @@ final class AuraPunchSession {
         targets.removeActiveTarget()
         demoArm?.removeFromScene()
         mirrorArm?.removeFromScene()
+        coach.removeFromScene()
         demoArm = nil
         mirrorArm = nil
         sceneRoot = nil
+    }
+
+    /// Loads the coach model up front so the first Aura Punch entry does not stall on a 17 MB
+    /// asset. Safe to call repeatedly; the loader is idempotent and fails soft.
+    func preloadCoach() async {
+        await coach.load()
     }
 
     // MARK: Control
@@ -200,6 +213,8 @@ final class AuraPunchSession {
         loopTask = nil
         for recorder in recorders.values { recorder.cancel() }
         targets.removeActiveTarget()
+        coach.stop()
+        coach.isVisible = false
         demoArm?.isVisible = false
         mirrorArm?.isVisible = false
         currentScoredPunch = 0
@@ -222,6 +237,9 @@ final class AuraPunchSession {
         let solver = ArmPoseSolver(measurements: measurements)
 
         guard await acquireTracking() else { return }
+        guard !Task.isCancelled else { return }
+
+        await runCoachDemo(solver: solver)
         guard !Task.isCancelled else { return }
 
         // Reference/side are resolved per rep inside the guided loop rather than once here, so
@@ -295,6 +313,57 @@ final class AuraPunchSession {
             return technique.hand.side(for: stance)
         }
         return rep.isMultiple(of: 2) ? stance.rearSide : stance.leadSide
+    }
+
+    /// The coach demonstrates the punch once at full speed before the ghost overlay appears.
+    ///
+    /// Deliberately a single uninterrupted clip. The ghost's hold-until-matched loop is what
+    /// teaches the motion; this is the "here is what it looks like" that comes first, so it does
+    /// not need segmenting into out/hold/return the way the ghost's trajectory does.
+    ///
+    /// Every failure path here is a silent skip. No coach asset, no clip for this technique, or no
+    /// body frame all fall through to the ghost exactly as before.
+    private func runCoachDemo(solver: ArmPoseSolver) async {
+        guard await coach.load() else { return }
+        guard !Task.isCancelled else { return }
+
+        let side = technique.hand.side(for: stance)
+        guard let resolved = CoachCharacterEntity.resolveClip(technique: technique, side: side),
+              let frame = currentBodyFrame(solver: solver) else { return }
+
+        phase = .coachDemo
+        demoArm?.isVisible = false
+        mirrorArm?.isVisible = false
+
+        coach.place(using: frame, measurements: measurements, reflected: resolved.reflected)
+        coach.isVisible = true
+        coach.playIdle()
+
+        let handLabel = technique.hand == .either ? " \(side.rawValue)" : ""
+        setCoaching(
+            headline: "WATCH THE COACH",
+            detail: "He throws the\(handLabel) \(technique.name.lowercased()) once — watch the whole motion",
+            status: "Watch the coach throw the\(handLabel) \(technique.name.lowercased())"
+        )
+
+        // A beat of idle first, so the punch reads as a deliberate action rather than starting
+        // mid-stride the instant the coach appears.
+        try? await Task.sleep(for: .milliseconds(600))
+        guard !Task.isCancelled else { return }
+
+        if let duration = coach.play(clip: resolved.clip) {
+            try? await Task.sleep(for: .seconds(duration))
+        }
+        guard !Task.isCancelled else {
+            coach.isVisible = false
+            return
+        }
+
+        coach.playIdle()
+        try? await Task.sleep(for: .milliseconds(400))
+
+        coach.stop()
+        coach.isVisible = false
     }
 
     /// Leads the user through the punch call-and-response, one waypoint at a time.

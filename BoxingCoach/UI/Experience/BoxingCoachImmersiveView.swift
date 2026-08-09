@@ -195,7 +195,7 @@ struct BoxingCoachImmersiveView: View {
                     message: "Raise your guard and keep both hands visible",
                     symbol: "hand.raised.fill"
                 )
-            case .guiding, .countdown, .attempting:
+            case .coachDemo, .guiding, .countdown, .attempting:
                 return ImmersiveInstruction(
                     stage: session.auraPunch.coachingHeadline,
                     message: session.auraPunch.coachingDetail,
@@ -287,6 +287,8 @@ struct BoxingCoachImmersiveView: View {
 
     private var auraCoachingSymbol: String {
         switch session.auraPunch.phase {
+        case .coachDemo:
+            return "figure.boxing"
         case .guiding:
             return "eye.fill"
         case .countdown:

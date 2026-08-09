@@ -257,6 +257,10 @@ final class ReactiveStrikeSession {
     }
 
     private func runCalibrationLoop() async {
+        // The user stands still for several seconds measuring their reach, which is free time to
+        // pull the 17 MB coach model into memory. Detached so a slow load never stalls calibration.
+        Task { [auraPunch] in await auraPunch.preloadCoach() }
+
         await hands.start()
         guard !Task.isCancelled else { return }
         guard hands.isRunning else {

@@ -61,3 +61,9 @@ local/
 *.txt
 *.docx
 *.pdf
+
+# Coach character sources. The Tripo FBX exports and the intermediate USDZ are ~79 MB and are
+# not needed to build — only BoxingCoach/Resources/Coach/*.usdz is. Regenerate with
+# Art/build_coach.py (tracked) from the FBX, which live outside git.
+Art/*.fbx
+Art/usdz/

@@ -33,6 +33,53 @@ All three features in `TrainingFeature` are now built.
 
 Both resolve to `ReachProfile.air`.
 
+### The coach character
+
+A rigged humanoid demonstrates the selected punch **once, at full speed, before** the ghost overlay
+starts. He is not part of the follow-along — the ghost's hold-until-matched loop is what teaches the
+motion; the coach is the "here is what it looks like" that precedes it. That ordering is why the
+clips do not need segmenting into out/hold/return the way the ghost's trajectory does.
+
+**He faces the user and mirrors, like a gym mirror.** `CoachCharacterEntity.shouldReflect` reflects
+exactly when the clip's authored side matches the side the user is about to throw. That rule is what
+lets **four one-sided clips cover all eight** technique/side combinations: facing the user, an
+unreflected left-arm clip already reads on the user's right, so only the matching-side case needs
+flipping. Reflection is a negative X scale on the container, never on the loaded model.
+
+`CoachCharacterEntity` **fails soft everywhere**. Missing asset, missing clip, or no body frame all
+skip the demo and fall through to the ghost unchanged. A missing model must never cost a demo.
+
+#### Asset pipeline — read before regenerating
+
+Sources live in `Art/` as Tripo FBX exports: one file per animation, with the skinned mesh embedded
+**only** in `Left_hand_jab.fbx`. All five share an identical 65-bone Mixamo skeleton rooted at a
+single `mixamorig10:Hips`, which is why the actions are interchangeable. `Art/build_coach.py` is the
+Blender script that converts them:
+
+```sh
+/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
+  --python Art/build_coach.py
+```
+
+Three things it works around, each of which cost a debugging cycle:
+
+- **Every clip file must carry the skinned mesh.** RealityKit only surfaces `availableAnimations`
+  for a skeleton that actually drives geometry. A skeleton-plus-`SkelAnimation` file loads with no
+  error and exposes *nothing*. Materials are dropped from the clip files instead, so they cost
+  ~3 MB each rather than 17 MB — they exist only to hand their animation to the base model and are
+  never rendered.
+- **Blender emits `SkelBindingAPI` under a plain `Xform`**, which `usdchecker` rejects and which can
+  make skeletal animation silently not bind. Only files that contain a mesh get a proper `SkelRoot`.
+- **Textures are capped at 2048** via `usdz_downscale_size`. Tripo shipped seven 4096×4096 maps;
+  uncompressed that is roughly half a gigabyte of VRAM.
+
+Run `usdchecker` on the output — filtering the `RegisterBehaviorForPrimTypeId` noise, which is
+plugin chatter, not an asset problem — and expect `Success!` on all five.
+
+`CoachCharacterEntityTests` loads every asset through RealityKit in the simulator and asserts the
+clips bind. That test is the only thing that catches a rig which imports cleanly and refuses to
+animate; `usdchecker` passing proves nothing about playback.
+
 ### Aura Punch — detailed spec
 
 1. A silhouette of a person's **arms** is overlaid directly on top of the user's own body, aligned to their real limbs.
@@ -185,6 +232,8 @@ BoxingCoach/
   Spatial/
     ArmSilhouetteEntity.swift      # RealityKit ghost arms
     ArmPoseSolver.swift            # head + wrist + measurements -> shoulder/elbow/fist
+    CoachCharacterEntity.swift     # Rigged coach; named clips, mirroring, fails soft
+  Resources/Coach/                 # coach.usdz (mesh + idle) + 4 clip assets, ~30 MB
   Scoring/
     MotionRecorder.swift           # RecordedAttempt + PunchExtensionSemantics
     DTWComparator.swift  TechniqueScore.swift  FeedbackGenerator.swift
@@ -269,5 +318,16 @@ Both targets use `PBXFileSystemSynchronizedRootGroup`, so **new files under `Box
 - [ ] **Scoring thresholds are hand-tuned from geometry, not calibrated** against real attempts (`ScoringThresholds`). Same for the reference trajectories, `GuardCoach.dropThreshold` (0.46), and `ReachCalibration`'s plateau constants.
 - [ ] **Calibration measures the arm chain only.** `shoulderWidth`, `eyeToShoulderDrop`, and `eyeToShoulderSetback` are still `averageAdult`, and the measured value is fist-forward-of-shoulder-line rather than true shoulder-to-fist. Good enough to place targets and normalize scoring; not a real anthropometric capture.
 - [ ] **Calibration has only been verified in the simulator and by unit test.** The plateau detector's tolerance and duration need a real device pass — a user who never quite holds still falls through to the old percentile rule and gets an under-measured volume.
+- [ ] **The coach's placement has never been seen on device.** Three constants in
+      `CoachCharacterEntity` are the tuning knobs: `standoffDistance` (1.6 m), `facingYaw` (a half
+      turn, assuming Mixamo faces -Z after Blender's Z-up → Y-up conversion), and the
+      `shoulderHeightFraction` used to find the floor from the shoulder-line body frame. If he
+      appears sunk into the floor, side-on, or behind the user, these are why.
+- [ ] **Mirroring renders with a negative scale**, which flips triangle winding. If the coach looks
+      inside-out or oddly lit, that is the cause — `shouldReflect` returning a constant `false`
+      disables it at the cost of the motion appearing on the user's opposite side.
+- [ ] Coach clips are Tripo/Mixamo presets, so they do **not** match `ReferencePunchLibrary`, which
+      is what the app actually scores against. The coach demonstrates one motion and the ghost grades
+      another. Driving the coach's arm by IK from the reference trajectory is the fix.
 - [ ] Silhouette visual treatment — must not obscure the user's view of their real arms.
 - [ ] Confirm deployment target visionOS version.

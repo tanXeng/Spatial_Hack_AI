@@ -268,9 +268,14 @@ enum CompetitionModelContainer {
 final class SwiftDataCompetitionRepository: CompetitionRepository {
     let container: ModelContainer
     private var context: ModelContext
+    private let afterParticipantProfileMutation: () throws -> Void
 
-    init(container: ModelContainer) {
+    init(
+        container: ModelContainer,
+        afterParticipantProfileMutation: @escaping () throws -> Void = {}
+    ) {
         self.container = container
+        self.afterParticipantProfileMutation = afterParticipantProfileMutation
         context = Self.makeContext(container: container)
     }
 
@@ -285,12 +290,16 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
 
     func save(player: CompetitionPlayer) async throws {
         do {
-            _ = try SwiftDataParticipantPersistence.upsert(player, in: context)
-            try saveContext()
-        } catch let error as AthleteMemoryRepositoryError {
+            _ = try SwiftDataParticipantPersistence.upsert(
+                player,
+                in: context,
+                afterProfileMutation: afterParticipantProfileMutation
+            )
+        } catch {
             rollbackContext()
             throw error
         }
+        try saveContext()
     }
 
     func submit(_ submission: CompetitionSubmission) async throws -> CompetitionSubmission {

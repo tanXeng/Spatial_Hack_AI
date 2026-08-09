@@ -408,6 +408,128 @@ struct CompetitionSwiftDataV2PersistenceTests {
             }
         }
     }
+
+    @Test("A non-domain live upsert failure cannot leak into a later save")
+    func liveRepositoryRollsBackUnknownUpsertFailureBeforeLaterSubmit() async throws {
+        try await FileBackedCompetitionFixture.use { storeURL in
+            let participant = makeLiveParticipant()
+            let event = makeLiveEvent(id: try #require(participant.eventID))
+            let attempt = makeLiveAttempt(participant: participant, event: event)
+            let key = try #require(attempt.memoryKey)
+            let submission = makePersistentSubmission(player: participant)
+
+            do {
+                let container = try CompetitionModelContainer.make(storeURL: storeURL)
+                let memoryRepository = SwiftDataAthleteMemoryRepository(container: container)
+                _ = try memoryRepository.createEvent(event)
+                _ = try memoryRepository.saveParticipant(participant)
+                _ = try memoryRepository.insertAttempt(attempt)
+            }
+
+            do {
+                let container = try CompetitionModelContainer.make(storeURL: storeURL)
+                let repository = SwiftDataCompetitionRepository(
+                    container: container,
+                    afterParticipantProfileMutation: {
+                        throw InjectedParticipantMutationError()
+                    }
+                )
+                let update = replacing(participant, experienceLevel: .intermediate)
+
+                await #expect(throws: InjectedParticipantMutationError.self) {
+                    try await repository.save(player: update)
+                }
+                #expect(try await repository.submit(submission) == submission)
+                #expect(try await repository.player(id: participant.id) == participant)
+            }
+
+            do {
+                let container = try CompetitionModelContainer.make(storeURL: storeURL)
+                let competitionRepository = CompetitionLiveRepositoryFactory.makeLiveRepository(
+                    container: container
+                )
+                let memoryRepository = SwiftDataAthleteMemoryRepository(container: container)
+                #expect(try await competitionRepository.player(id: participant.id) == participant)
+                #expect(try await competitionRepository.submissions() == [submission])
+                #expect(try memoryRepository.memory(for: key)?.experienceLevel == .beginner)
+                #expect(try memoryRepository.memory(for: key)?.attempts == [attempt])
+            }
+        }
+    }
+
+    @Test("The production live factory preserves eventless join participants")
+    func liveFactorySupportsEventlessInsertAndUpdateWithoutClaimingAHandle() async throws {
+        try await FileBackedCompetitionFixture.use { storeURL in
+            let original = makeEventlessParticipant()
+            let update = CompetitionPlayer(
+                id: original.id,
+                name: "Alex Updated",
+                normalizedName: original.normalizedName,
+                rememberedStance: .orthodox,
+                reach: BilateralReach(left: 0.65, right: 0.67),
+                calibrationVersion: CompetitionPlayer.calibrationVersion,
+                calibratedAt: Date(timeIntervalSince1970: 20),
+                createdAt: Date(timeIntervalSince1970: 999),
+                lastSeenAt: Date(timeIntervalSince1970: 21),
+                experienceLevel: .intermediate,
+                publicHandle: nil
+            )
+            let expected = CompetitionPlayer(
+                id: original.id,
+                name: update.name,
+                normalizedName: update.normalizedName,
+                rememberedStance: update.rememberedStance,
+                reach: update.reach,
+                calibrationVersion: update.calibrationVersion,
+                calibratedAt: update.calibratedAt,
+                createdAt: original.createdAt,
+                lastSeenAt: update.lastSeenAt,
+                experienceLevel: update.experienceLevel,
+                publicHandle: nil
+            )
+
+            do {
+                let container = try CompetitionModelContainer.make(storeURL: storeURL)
+                let repository = CompetitionLiveRepositoryFactory.makeLiveRepository(
+                    container: container
+                )
+                try await repository.save(player: original)
+                try await repository.save(player: update)
+                #expect(try await repository.player(id: original.id) == expected)
+
+                let claimed = CompetitionPlayer(
+                    id: original.id,
+                    name: expected.name,
+                    normalizedName: expected.normalizedName,
+                    rememberedStance: expected.rememberedStance,
+                    reach: expected.reach,
+                    calibrationVersion: expected.calibrationVersion,
+                    calibratedAt: expected.calibratedAt,
+                    createdAt: expected.createdAt,
+                    lastSeenAt: expected.lastSeenAt,
+                    experienceLevel: expected.experienceLevel,
+                    publicHandle: makeLiveHandle(
+                        eventID: UUID(uuidString: "00000000-0000-0000-0000-000000000224")!,
+                        displayName: expected.name,
+                        displayCode: "0044"
+                    )
+                )
+                await #expect(throws: AthleteMemoryRepositoryError.participantEventMismatch) {
+                    try await repository.save(player: claimed)
+                }
+                #expect(try await repository.player(id: original.id) == expected)
+            }
+
+            do {
+                let container = try CompetitionModelContainer.make(storeURL: storeURL)
+                let repository = CompetitionLiveRepositoryFactory.makeLiveRepository(
+                    container: container
+                )
+                #expect(try await repository.player(id: original.id) == expected)
+                #expect(try await repository.player(normalizedName: "alex eventless") == expected)
+            }
+        }
+    }
 }
 
 @MainActor
@@ -502,6 +624,25 @@ private func makeLiveParticipant() -> CompetitionPlayer {
         )
     )
 }
+
+@MainActor
+private func makeEventlessParticipant() -> CompetitionPlayer {
+    CompetitionPlayer(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000225")!,
+        name: "Alex Eventless",
+        normalizedName: "alex eventless",
+        rememberedStance: .southpaw,
+        reach: nil,
+        calibrationVersion: nil,
+        calibratedAt: nil,
+        createdAt: Date(timeIntervalSince1970: 1),
+        lastSeenAt: Date(timeIntervalSince1970: 1),
+        experienceLevel: .beginner,
+        publicHandle: nil
+    )
+}
+
+private struct InjectedParticipantMutationError: Error {}
 
 @MainActor
 private func makeLiveHandle(

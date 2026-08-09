@@ -79,7 +79,8 @@ nonisolated enum ParticipantMergePolicy {
 enum SwiftDataParticipantPersistence {
     static func upsert(
         _ participant: CompetitionPlayer,
-        in context: ModelContext
+        in context: ModelContext,
+        afterProfileMutation: () throws -> Void = {}
     ) throws -> CompetitionPlayer {
         let records = try context.fetch(
             FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>()
@@ -107,6 +108,7 @@ enum SwiftDataParticipantPersistence {
             proposed: participant
         )
         existing.apply(merged)
+        try afterProfileMutation()
         try refreshMemoryCaches(for: merged, in: context)
         return merged
     }

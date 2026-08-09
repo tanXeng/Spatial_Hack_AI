@@ -166,7 +166,8 @@ struct BoxingCoachImmersiveView: View {
                 drillPhase: session.phase,
                 techniqueName: nil
             ))
-        case .experience(.competitionCalibration), .experience(.competition):
+        case .experience(.reachCalibration), .experience(.competitionCalibration),
+             .experience(.competition):
             session.voiceCoach.updateContext(CoachVoiceContext(
                 feature: .reactiveStrike,
                 auraPhase: nil,

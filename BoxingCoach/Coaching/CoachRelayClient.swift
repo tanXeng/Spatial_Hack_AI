@@ -19,28 +19,6 @@ nonisolated enum CoachCorrectionCode: String, Codable, Sendable {
     case guardHand = "guard_hand"
     case retraction
     case repeatShape = "repeat_shape"
-
-    var drill: CoachRelayDrill {
-        switch self {
-        case .wrongHand: .correctHand
-        case .extensionReach: .fullExtension
-        case .path: .straightLine
-        case .elbow: .elbowTuck
-        case .guardHand: .guardAnchor
-        case .retraction: .snapBack
-        case .repeatShape: .repeatShape
-        }
-    }
-}
-
-nonisolated enum CoachRelayDrill: String, Codable, Sendable {
-    case correctHand = "correct_hand"
-    case fullExtension = "full_extension"
-    case straightLine = "straight_line"
-    case elbowTuck = "elbow_tuck"
-    case guardAnchor = "guard_anchor"
-    case snapBack = "snap_back"
-    case repeatShape = "repeat_shape"
 }
 
 nonisolated struct CoachRelayMetric: Codable, Equatable, Sendable {
@@ -68,9 +46,8 @@ nonisolated struct CoachRelayResponse: Equatable, Sendable {
     let schemaVersion: Int
     let requestID: String
     let correctionCode: CoachCorrectionCode
-    let drill: CoachRelayDrill
     let spokenCue: String
-    let why: String
+    let whyItMatters: String
     let encouragement: String
 }
 
@@ -80,10 +57,9 @@ nonisolated enum CoachRelayError: Error, Equatable, Sendable {
     case malformedResponse
     case unknownResponseFields
     case unsupportedSchemaVersion
+    case invalidRequestID
     case mismatchedRequestID
     case mismatchedCorrectionCode
-    case unknownDrill
-    case contradictoryResponse
     case emptyResponseField(field: String)
     case wordLimitExceeded(field: String, maximum: Int)
 }
@@ -105,11 +81,29 @@ nonisolated struct CoachRelayClient: Sendable {
         return URLSession(configuration: configuration)
     }
 
+    /// A request-scoped correlation token with no timestamp, device data, or participant data.
+    static func makeRequestID() -> String {
+        var generator = SystemRandomNumberGenerator()
+        let randomBytes = (0..<16).map { _ in
+            UInt8.random(in: .min ... .max, using: &generator)
+        }
+        return "req_" + randomBytes.map { String(format: "%02x", $0) }.joined()
+    }
+
+    static func isValidRequestID(_ value: String) -> Bool {
+        let bytes = Array(value.utf8)
+        guard bytes.count == 36, bytes.starts(with: Array("req_".utf8)) else { return false }
+        return bytes.dropFirst(4).allSatisfy { byte in
+            (UInt8(ascii: "0")...UInt8(ascii: "9")).contains(byte)
+                || (UInt8(ascii: "a")...UInt8(ascii: "f")).contains(byte)
+        }
+    }
+
     init(
         endpoint: URL?,
         session: URLSession = CoachRelayClient.liveSession(),
         clock: @escaping @Sendable () -> Date = Date.init,
-        requestID: @escaping @Sendable () -> String = { UUID().uuidString }
+        requestID: @escaping @Sendable () -> String = { CoachRelayClient.makeRequestID() }
     ) {
         self.endpoint = endpoint
         self.session = session
@@ -120,9 +114,14 @@ nonisolated struct CoachRelayClient: Sendable {
     func response(for facts: CoachRelayRequestFacts) async throws -> CoachRelayResponse {
         guard let endpoint else { throw CoachRelayError.offline }
 
+        let outboundRequestID = requestID()
+        guard Self.isValidRequestID(outboundRequestID) else {
+            throw CoachRelayError.invalidRequestID
+        }
+
         let envelope = RequestEnvelope(
             schemaVersion: Self.schemaVersion,
-            requestID: requestID(),
+            requestID: outboundRequestID,
             requestedAt: clock(),
             facts: facts
         )
@@ -171,9 +170,8 @@ nonisolated struct CoachRelayClient: Sendable {
             "schemaVersion",
             "requestID",
             "correctionCode",
-            "drill",
             "spokenCue",
-            "why",
+            "whyItMatters",
             "encouragement"
         ]
         guard Set(object.keys) == allowedKeys else {
@@ -183,9 +181,8 @@ nonisolated struct CoachRelayClient: Sendable {
             let schemaVersion = object["schemaVersion"] as? Int,
             let responseRequestID = object["requestID"] as? String,
             let correctionRawValue = object["correctionCode"] as? String,
-            let drillRawValue = object["drill"] as? String,
             let spokenCue = object["spokenCue"] as? String,
-            let why = object["why"] as? String,
+            let whyItMatters = object["whyItMatters"] as? String,
             let encouragement = object["encouragement"] as? String
         else {
             throw CoachRelayError.malformedResponse
@@ -193,6 +190,9 @@ nonisolated struct CoachRelayClient: Sendable {
 
         guard schemaVersion == Self.schemaVersion else {
             throw CoachRelayError.unsupportedSchemaVersion
+        }
+        guard Self.isValidRequestID(responseRequestID) else {
+            throw CoachRelayError.invalidRequestID
         }
         guard responseRequestID == expectedRequestID else {
             throw CoachRelayError.mismatchedRequestID
@@ -203,24 +203,17 @@ nonisolated struct CoachRelayClient: Sendable {
         guard correctionCode == expectedCorrectionCode else {
             throw CoachRelayError.mismatchedCorrectionCode
         }
-        guard let drill = CoachRelayDrill(rawValue: drillRawValue) else {
-            throw CoachRelayError.unknownDrill
-        }
-        guard drill == correctionCode.drill else {
-            throw CoachRelayError.contradictoryResponse
-        }
 
         try validate(spokenCue, field: "spokenCue", maximumWords: 18)
-        try validate(why, field: "why", maximumWords: 24)
+        try validate(whyItMatters, field: "whyItMatters", maximumWords: 24)
         try validate(encouragement, field: "encouragement", maximumWords: 18)
 
         return CoachRelayResponse(
             schemaVersion: schemaVersion,
             requestID: responseRequestID,
             correctionCode: correctionCode,
-            drill: drill,
             spokenCue: spokenCue,
-            why: why,
+            whyItMatters: whyItMatters,
             encouragement: encouragement
         )
     }

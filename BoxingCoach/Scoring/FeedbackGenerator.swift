@@ -127,7 +127,7 @@ nonisolated enum FeedbackGenerator {
         endpoint: URL? = CoachSecrets.relayEndpoint,
         session: URLSession = CoachRelayClient.liveSession(),
         clock: @escaping @Sendable () -> Date = Date.init,
-        requestID: @escaping @Sendable () -> String = { UUID().uuidString },
+        requestID: @escaping @Sendable () -> String = { CoachRelayClient.makeRequestID() },
         context: CoachRelayFeedbackContext = CoachRelayFeedbackContext(
             locale: Locale.current.identifier
         )
@@ -175,7 +175,7 @@ nonisolated struct RelayFeedbackGenerator: FeedbackGenerating {
             let response = try await client.response(for: facts)
             return CoachingFeedback(
                 headline: response.spokenCue,
-                primaryFix: response.why,
+                primaryFix: response.whyItMatters,
                 encouragement: response.encouragement,
                 isOffline: false
             )

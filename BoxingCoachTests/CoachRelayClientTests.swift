@@ -10,7 +10,7 @@ struct CoachRelayClientTests {
             endpoint: nil,
             session: makeSession(),
             clock: { Date(timeIntervalSince1970: 1_786_291_200) },
-            requestID: { "request-123" }
+            requestID: { "req_0123456789abcdef0123456789abcdef" }
         )
         let score = TechniqueScore(
             techniqueID: "jab",
@@ -39,7 +39,7 @@ struct CoachRelayClientTests {
             endpoint: URL(string: "https://coach-relay.example/generated-facts")!,
             session: makeSession(),
             clock: { Date(timeIntervalSince1970: 1_786_291_200) },
-            requestID: { "request-123" },
+            requestID: { "req_0123456789abcdef0123456789abcdef" },
             context: CoachRelayFeedbackContext(
                 locale: "en-SG",
                 personalBest: true,
@@ -70,27 +70,75 @@ struct CoachRelayClientTests {
     func outboundFactsUsePrivacyAllowList() async throws {
         let response = try await makeClient(path: "/valid").response(for: requestFacts)
 
-        #expect(response.requestID == "request-123")
+        #expect(response.requestID == "req_0123456789abcdef0123456789abcdef")
         #expect(response.correctionCode == .extensionReach)
-        #expect(response.drill == .fullExtension)
+        #expect(response.whyItMatters.hasPrefix("Full extension"))
+    }
+
+    @Test("Production request IDs are random opaque non-UUID tokens")
+    func productionRequestIDsAreOpaque() {
+        let first = CoachRelayClient.makeRequestID()
+        let second = CoachRelayClient.makeRequestID()
+
+        #expect(CoachRelayClient.isValidRequestID(first))
+        #expect(CoachRelayClient.isValidRequestID(second))
+        #expect(UUID(uuidString: first) == nil)
+        #expect(UUID(uuidString: second) == nil)
+        #expect(first != second)
+    }
+
+    @Test("Default request IDs are fresh per request and stay outside facts")
+    func defaultRequestIDsAreRequestOnly() async throws {
+        let client = CoachRelayClient(
+            endpoint: URL(string: "https://coach-relay.example/generated-request-id")!,
+            session: makeSession(),
+            clock: { Date(timeIntervalSince1970: 1_786_291_200) }
+        )
+
+        let first = try await client.response(for: requestFacts)
+        let second = try await client.response(for: requestFacts)
+
+        #expect(CoachRelayClient.isValidRequestID(first.requestID))
+        #expect(CoachRelayClient.isValidRequestID(second.requestID))
+        #expect(UUID(uuidString: first.requestID) == nil)
+        #expect(first.requestID != second.requestID)
+    }
+
+    @Test("Invalid injected request IDs are rejected before transport")
+    func invalidRequestIDIsRejected() async {
+        let client = CoachRelayClient(
+            endpoint: URL(string: "https://coach-relay.example/invalid-request-id")!,
+            session: makeSession(),
+            clock: { Date(timeIntervalSince1970: 1_786_291_200) },
+            requestID: { UUID().uuidString }
+        )
+
+        do {
+            _ = try await client.response(for: requestFacts)
+            Issue.record("Expected request ID validation to fail")
+        } catch let error as CoachRelayError {
+            #expect(error == .invalidRequestID)
+        } catch {
+            Issue.record("Unexpected error: \(error)")
+        }
     }
 
     @Test(
-        "Responses reject unknown fields, mismatches, unknown drills, contradictions, and word-limit violations",
+        "Responses reject unknown fields, mismatches, and word-limit violations",
         arguments: [
             ValidationCase(path: "/unknown-field", expected: .unknownResponseFields),
+            ValidationCase(path: "/relay-drill", expected: .unknownResponseFields),
+            ValidationCase(path: "/legacy-why", expected: .unknownResponseFields),
             ValidationCase(path: "/unsupported-version", expected: .unsupportedSchemaVersion),
             ValidationCase(path: "/mismatched-request", expected: .mismatchedRequestID),
             ValidationCase(path: "/mismatched-correction", expected: .mismatchedCorrectionCode),
-            ValidationCase(path: "/unknown-drill", expected: .unknownDrill),
-            ValidationCase(path: "/contradiction", expected: .contradictoryResponse),
             ValidationCase(
                 path: "/too-many-spoken-words",
                 expected: .wordLimitExceeded(field: "spokenCue", maximum: 18)
             ),
             ValidationCase(
                 path: "/too-many-why-words",
-                expected: .wordLimitExceeded(field: "why", maximum: 24)
+                expected: .wordLimitExceeded(field: "whyItMatters", maximum: 24)
             ),
             ValidationCase(
                 path: "/too-many-encouragement-words",
@@ -115,7 +163,7 @@ struct CoachRelayClientTests {
             endpoint: nil,
             session: makeSession(),
             clock: { Date(timeIntervalSince1970: 1_786_291_200) },
-            requestID: { "request-123" }
+            requestID: { "req_0123456789abcdef0123456789abcdef" }
         )
 
         do {
@@ -152,7 +200,7 @@ struct CoachRelayClientTests {
             endpoint: URL(string: "https://coach-relay.example\(path)")!,
             session: makeSession(),
             clock: { Date(timeIntervalSince1970: 1_786_291_200) },
-            requestID: { "request-123" }
+            requestID: { "req_0123456789abcdef0123456789abcdef" }
         )
     }
 
@@ -176,6 +224,11 @@ private final class RelayContractURLProtocol: URLProtocol {
     override func stopLoading() {}
 
     override func startLoading() {
+        if request.url?.path == "/invalid-request-id" {
+            finish(statusCode: 418, body: [:])
+            return
+        }
+
         do {
             let body = try requestBody()
             guard let root = try JSONSerialization.jsonObject(with: body) as? [String: Any],
@@ -207,6 +260,7 @@ private final class RelayContractURLProtocol: URLProtocol {
                 Set(root.keys) == envelopeKeys,
                 Set(facts.keys) == factKeys,
                 metrics.allSatisfy({ Set($0.keys) == metricKeys }),
+                facts["requestID"] == nil,
                 root["schemaVersion"] as? Int == 1,
                 root["requestedAt"] is String
             else {
@@ -242,30 +296,28 @@ private final class RelayContractURLProtocol: URLProtocol {
                 "schemaVersion": 1,
                 "requestID": requestID,
                 "correctionCode": correctionCode,
-                "drill": "full_extension",
                 "spokenCue": "Drive your jab through the target, then bring your hand directly back to guard.",
-                "why": "Full extension gives your jab useful reach while the quick return protects your chin for the next exchange.",
+                "whyItMatters": "Full extension gives your jab useful reach while the quick return protects your chin for the next exchange.",
                 "encouragement": "Your punch stayed on a clean line; keep that shape as you add reach."
             ]
 
             switch request.url?.path {
             case "/unknown-field":
                 payload["provider"] = "must-not-be-accepted"
+            case "/relay-drill":
+                payload["drill"] = "full_extension"
+            case "/legacy-why":
+                payload["why"] = payload.removeValue(forKey: "whyItMatters")
             case "/unsupported-version":
                 payload["schemaVersion"] = 2
             case "/mismatched-request":
-                payload["requestID"] = "another-request"
+                payload["requestID"] = "req_fedcba9876543210fedcba9876543210"
             case "/mismatched-correction":
                 payload["correctionCode"] = "path"
-                payload["drill"] = "straight_line"
-            case "/unknown-drill":
-                payload["drill"] = "invented_drill"
-            case "/contradiction":
-                payload["drill"] = "guard_anchor"
             case "/too-many-spoken-words":
                 payload["spokenCue"] = Self.words(count: 19)
             case "/too-many-why-words":
-                payload["why"] = Self.words(count: 25)
+                payload["whyItMatters"] = Self.words(count: 25)
             case "/too-many-encouragement-words":
                 payload["encouragement"] = Self.words(count: 19)
             default:

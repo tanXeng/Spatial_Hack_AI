@@ -3,16 +3,16 @@ import Testing
 
 @Suite("Typed offline coach clip routing")
 struct CoachClipRouterTests {
-    @Test("Executed intents route to distinct local clips", arguments: CoachClipRouteCase.supported)
-    func executedIntentRoutesLocally(testCase: CoachClipRouteCase) {
-        let clip = CoachClipRouter().responseClip(after: testCase.intent)
+    @Test("Informational intents route to distinct local clips", arguments: CoachClipRouteCase.supported)
+    func informationalIntentRoutesLocally(testCase: CoachClipRouteCase) {
+        let clip = CoachClipRouter().informationalResponseClip(for: testCase.intent)
 
         #expect(clip == testCase.clip)
     }
 
     @Test("Intents without an authored response stay distinct", arguments: CoachClipRouteCase.unsupported)
     func intentWithoutAuthoredClipDoesNotBorrowAnotherMeaning(testCase: CoachClipRouteCase) {
-        let clip = CoachClipRouter().responseClip(after: testCase.intent)
+        let clip = CoachClipRouter().informationalResponseClip(for: testCase.intent)
 
         #expect(clip == nil)
     }
@@ -44,7 +44,15 @@ struct CoachClipRouterTests {
         #expect(result == .didntCatch)
     }
 
-    @Test("Action acknowledgment is available only through the post-execution typed route")
+    @Test(
+        "Action clips remain unavailable until an executor-success token exists",
+        arguments: [VoiceIntent.pause, .resume, .repeatDemo, .slower]
+    )
+    func actionIntentCannotClaimExecution(intent: VoiceIntent) {
+        #expect(CoachClipRouter().informationalResponseClip(for: intent) == nil)
+    }
+
+    @Test("Raw action speech cannot claim execution")
     func rawActionDoesNotClaimItExecuted() async {
         let router = CoachClipRouter()
         let rawResult = await router.resolve(
@@ -58,7 +66,6 @@ struct CoachClipRouterTests {
         )
 
         #expect(rawResult == .didntCatch)
-        #expect(router.responseClip(after: .pause) == .pauseAck)
     }
 
     @Test("Unsupported speech stays deterministic and local")
@@ -81,25 +88,25 @@ nonisolated struct CoachClipRouteCase: Sendable, CustomTestStringConvertible {
     static let supported: [Self] = [
         .init(intent: .correction, clip: .qaWhatFix),
         .init(intent: .guardExplanation, clip: .qaWhyGuard),
-        .init(intent: .repeatDemo, clip: .qaRepeatDemo),
-        .init(intent: .slower, clip: .qaSlower),
         .init(intent: .targetHelp, clip: .qaHitTarget),
         .init(intent: .progress, clip: .qaThreePunches),
-        .init(intent: .pause, clip: .pauseAck),
-        .init(intent: .resume, clip: .resumeAck),
         .init(intent: .help, clip: .helpCommands)
     ]
 
     static let unsupported: [Self] = [
+        .init(intent: .pause, clip: nil),
+        .init(intent: .resume, clip: nil),
         .init(intent: .requestEnd, clip: nil),
         .init(intent: .confirmEnd, clip: nil),
         .init(intent: .cancelEnd, clip: nil),
+        .init(intent: .repeatDemo, clip: nil),
+        .init(intent: .slower, clip: nil),
         .init(intent: .normalPace, clip: nil),
         .init(intent: .faster, clip: nil),
         .init(intent: .next, clip: nil),
         .init(intent: .score, clip: nil),
         .init(intent: .why, clip: nil),
         .init(intent: .leaderboard, clip: nil),
-        .init(intent: .participantHandoff, clip: nil)
+        .init(intent: .requestParticipantHandoff, clip: nil)
     ]
 }

@@ -19,7 +19,8 @@ nonisolated enum VoiceIntent: String, CaseIterable, Hashable, Sendable {
     case score
     case why
     case leaderboard
-    case participantHandoff
+    /// Requests a confirmation-gated handoff. This never authorizes participant-state clearing.
+    case requestParticipantHandoff
 
     var requiredCapability: VoiceCommandCapability {
         switch self {
@@ -41,7 +42,7 @@ nonisolated enum VoiceIntent: String, CaseIterable, Hashable, Sendable {
         case .score: .score
         case .why: .why
         case .leaderboard: .leaderboard
-        case .participantHandoff: .participantHandoff
+        case .requestParticipantHandoff: .requestParticipantHandoff
         }
     }
 
@@ -77,7 +78,7 @@ nonisolated enum VoiceIntent: String, CaseIterable, Hashable, Sendable {
             [.correction, .retest, .results].contains(state)
         case .leaderboard:
             [.idle, .results].contains(state)
-        case .participantHandoff:
+        case .requestParticipantHandoff:
             state == .results
         }
     }
@@ -128,7 +129,7 @@ nonisolated enum VoiceCommandCapability: String, CaseIterable, Hashable, Sendabl
     case score
     case why
     case leaderboard
-    case participantHandoff
+    case requestParticipantHandoff
 }
 
 nonisolated struct VoiceCommandContext: Equatable, Sendable {

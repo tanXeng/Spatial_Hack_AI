@@ -1,29 +1,22 @@
 import Foundation
 
-/// Chooses an authored response only after a typed voice intent has been accepted and executed.
+/// Chooses an authored response for informational intents that require no session mutation.
 nonisolated struct CoachClipRouter: Sendable {
-    func responseClip(after intent: VoiceIntent) -> CoachClipID? {
+    func informationalResponseClip(for intent: VoiceIntent) -> CoachClipID? {
         switch intent {
         case .correction:
             .qaWhatFix
         case .guardExplanation:
             .qaWhyGuard
-        case .repeatDemo:
-            .qaRepeatDemo
-        case .slower:
-            .qaSlower
         case .targetHelp:
             .qaHitTarget
         case .progress:
             .qaThreePunches
-        case .pause:
-            .pauseAck
-        case .resume:
-            .resumeAck
         case .help:
             .helpCommands
-        case .requestEnd, .confirmEnd, .cancelEnd, .normalPace, .faster, .next, .score,
-             .why, .leaderboard, .participantHandoff:
+        case .pause, .resume, .requestEnd, .confirmEnd, .cancelEnd, .repeatDemo, .slower,
+             .normalPace, .faster, .next, .score, .why, .leaderboard,
+             .requestParticipantHandoff:
             nil
         }
     }
@@ -45,7 +38,7 @@ nonisolated struct CoachClipRouter: Sendable {
               Self.legacyInformationalIntents.contains(intent) else {
             return .didntCatch
         }
-        return responseClip(after: intent) ?? .didntCatch
+        return informationalResponseClip(for: intent) ?? .didntCatch
     }
 
     private static let legacyInformationalIntents: Set<VoiceIntent> = [

@@ -9,6 +9,14 @@ nonisolated struct VoiceIntentParser: Sendable {
     ) -> VoiceIntentParseResult {
         let phrase = Self.normalizedPhrase(utterance.transcript)
 
+        guard utterance.isFinal else {
+            return rejection(
+                phrase: phrase,
+                confidence: utterance.confidence,
+                reason: .incompleteUtterance,
+                recoveryMessage: "Finish speaking one command, then try again."
+            )
+        }
         guard !phrase.isEmpty else {
             return rejection(
                 phrase: phrase,
@@ -23,14 +31,6 @@ nonisolated struct VoiceIntentParser: Sendable {
                 confidence: utterance.confidence,
                 reason: .unsupportedLocale,
                 recoveryMessage: "Voice commands are available in English. Use the visible controls to continue."
-            )
-        }
-        guard utterance.isFinal else {
-            return rejection(
-                phrase: phrase,
-                confidence: utterance.confidence,
-                reason: .incompleteUtterance,
-                recoveryMessage: "Finish speaking one command, then try again."
             )
         }
         guard utterance.confidence != .low else {
@@ -91,16 +91,11 @@ nonisolated struct VoiceIntentParser: Sendable {
     }
 
     static func normalizedPhrase(_ transcript: String) -> String {
-        let folded = transcript
-            .folding(
-                options: [.diacriticInsensitive, .widthInsensitive],
-                locale: Locale(identifier: "en_US_POSIX")
-            )
-            .lowercased(with: Locale(identifier: "en_US_POSIX"))
+        let lowercased = transcript.lowercased(with: Locale(identifier: "en_US_POSIX"))
 
         var result = ""
         var needsSpace = false
-        for scalar in folded.unicodeScalars {
+        for scalar in lowercased.unicodeScalars {
             if Self.apostrophes.contains(scalar) {
                 continue
             }
@@ -176,7 +171,7 @@ nonisolated struct VoiceIntentParser: Sendable {
         (.why, ["why", "why that correction", "why did i get that score", "why does that matter"]),
         (.leaderboard, ["leaderboard", "show leaderboard", "show the leaderboard", "where do i rank"]),
         (
-            .participantHandoff,
+            .requestParticipantHandoff,
             ["next boxer", "ready for next boxer", "switch participant", "change participant"]
         )
     ]

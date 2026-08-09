@@ -29,7 +29,7 @@ struct VoiceIntentParserTests {
         )
     }
 
-    @Test("Case punctuation whitespace width and apostrophes normalize", arguments: VoiceNormalizationCase.all)
+    @Test("Case punctuation whitespace and apostrophes normalize", arguments: VoiceNormalizationCase.all)
     func normalizationIsDeterministic(testCase: VoiceNormalizationCase) {
         let result = VoiceIntentParser().parse(
             VoiceUtterance(
@@ -74,6 +74,30 @@ struct VoiceIntentParserTests {
         )
     }
 
+    @Test(
+        "Partial callbacks take precedence over every final-only validation",
+        arguments: VoicePartialPrecedenceCase.all
+    )
+    func partialCallbacksDoNotSurfaceFinalErrors(testCase: VoicePartialPrecedenceCase) {
+        let result = parse(
+            testCase.transcript,
+            localeIdentifier: testCase.localeIdentifier,
+            isFinal: false,
+            confidence: testCase.confidence,
+            state: .ranked,
+            capabilities: []
+        )
+
+        #expect(
+            result == rejection(
+                phrase: testCase.normalizedPhrase,
+                confidence: testCase.confidence,
+                reason: .incompleteUtterance,
+                recovery: "Finish speaking one command, then try again."
+            )
+        )
+    }
+
     @Test("Low-confidence final utterances cannot produce an intent")
     func lowConfidenceUtteranceIsRejected() {
         let result = parse(
@@ -111,8 +135,11 @@ struct VoiceIntentParserTests {
         )
     }
 
-    @Test("Substring and polite-wrapper collisions never route", arguments: VoiceUnsupportedCase.all)
-    func wholePhraseMatchingRejectsSubstrings(testCase: VoiceUnsupportedCase) {
+    @Test(
+        "Unapproved wrappers, substrings, and Unicode lookalikes never route",
+        arguments: VoiceUnsupportedCase.all
+    )
+    func unsupportedWholePhrasesAreRejected(testCase: VoiceUnsupportedCase) {
         let result = parse(
             testCase.transcript,
             state: .results,
@@ -252,6 +279,17 @@ struct VoiceIntentParserTests {
         #expect(confirmation.acceptedIntent == .confirmEnd)
     }
 
+    @Test("Participant handoff speech produces a confirmation-gated request")
+    func participantHandoffIsOnlyARequest() {
+        let result = parse(
+            "ready for next boxer",
+            state: .results,
+            capabilities: [.requestParticipantHandoff]
+        )
+
+        #expect(result.acceptedIntent == .requestParticipantHandoff)
+    }
+
     @Test("Parser results and contexts are immutable Sendable values")
     func grammarBoundaryIsSendable() {
         requireSendable(VoiceIntent.self)
@@ -312,6 +350,30 @@ struct VoiceIntentParserTests {
             )
         )
     }
+}
+
+nonisolated struct VoicePartialPrecedenceCase: Sendable, CustomTestStringConvertible {
+    let transcript: String
+    let normalizedPhrase: String
+    let localeIdentifier: String
+    let confidence: VoiceRecognitionConfidence
+
+    var testDescription: String { transcript.isEmpty ? "empty partial" : transcript }
+
+    static let all: [Self] = [
+        .init(
+            transcript: "",
+            normalizedPhrase: "",
+            localeIdentifier: "",
+            confidence: .low
+        ),
+        .init(
+            transcript: "pause and then resume",
+            normalizedPhrase: "pause and then resume",
+            localeIdentifier: "fr-FR",
+            confidence: .low
+        )
+    ]
 }
 
 nonisolated struct VoiceAliasCase: Sendable, CustomTestStringConvertible {
@@ -391,10 +453,10 @@ nonisolated struct VoiceAliasCase: Sendable, CustomTestStringConvertible {
         .init("show leaderboard", intent: .leaderboard, state: .results),
         .init("show the leaderboard", intent: .leaderboard, state: .idle),
         .init("where do i rank", intent: .leaderboard, state: .results),
-        .init("next boxer", intent: .participantHandoff, state: .results),
-        .init("ready for next boxer", intent: .participantHandoff, state: .results),
-        .init("switch participant", intent: .participantHandoff, state: .results),
-        .init("change participant", intent: .participantHandoff, state: .results)
+        .init("next boxer", intent: .requestParticipantHandoff, state: .results),
+        .init("ready for next boxer", intent: .requestParticipantHandoff, state: .results),
+        .init("switch participant", intent: .requestParticipantHandoff, state: .results),
+        .init("change participant", intent: .requestParticipantHandoff, state: .results)
     ]
 }
 
@@ -420,7 +482,7 @@ nonisolated struct VoiceNormalizationCase: Sendable, CustomTestStringConvertible
             allowedState: .results
         ),
         .init(
-            transcript: "ＳＨＯＷ—ＴＨＡＴ AGAIN",
+            transcript: "SHOW—THAT AGAIN",
             normalizedPhrase: "show that again",
             intent: .repeatDemo,
             allowedState: .learn
@@ -452,7 +514,9 @@ nonisolated struct VoiceUnsupportedCase: Sendable, CustomTestStringConvertible {
         .init(transcript: "scoreboard", normalizedPhrase: "scoreboard"),
         .init(transcript: "next boxer please", normalizedPhrase: "next boxer please"),
         .init(transcript: "show me the target", normalizedPhrase: "show me the target"),
-        .init(transcript: "cancel training", normalizedPhrase: "cancel training")
+        .init(transcript: "cancel training", normalizedPhrase: "cancel training"),
+        .init(transcript: "résumé", normalizedPhrase: "résumé"),
+        .init(transcript: "ｈｅｌｐ", normalizedPhrase: "ｈｅｌｐ")
     ]
 }
 
@@ -482,7 +546,7 @@ nonisolated struct VoiceGateCase: Sendable, CustomTestStringConvertible {
         .init(intent: .score, phrase: "score", allowedState: .results),
         .init(intent: .why, phrase: "why", allowedState: .correction),
         .init(intent: .leaderboard, phrase: "leaderboard", allowedState: .idle),
-        .init(intent: .participantHandoff, phrase: "next boxer", allowedState: .results)
+        .init(intent: .requestParticipantHandoff, phrase: "next boxer", allowedState: .results)
     ]
 }
 

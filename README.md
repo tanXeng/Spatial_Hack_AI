@@ -72,10 +72,11 @@ Aura Punch exposes one Uppercut drill that alternates hands each repetition. Its
 paths load beside the hip, drive diagonally inward, and peak at the body centreline. The target-fix
 capture continues through retraction, while outbound-only attempts retain the intended fallback.
 
-Reactive Strike captures both guard positions and, when needed, measures a stable outward extension
-from each arm. It uses the shorter comfortable reach so targets remain available to either hand.
-Calibration and target placement use the live head-derived body frame rather than world Z or fixed
-room height, keeping the drill invariant as the user moves or turns.
+Reactive Strike captures both guard positions and, when needed, measures a held outward extension
+from each arm instead of finalizing while the fist is still moving. It uses the shorter comfortable
+reach so targets remain available to either hand, and places reactive targets in the final 10% of
+that measured range. Calibration and target placement use the live head-derived body frame rather
+than world Z or fixed room height, keeping the drill invariant as the user moves or turns.
 
 Combination Mode presents one target at a time and accepts a step only after the stance-derived
 physical hand leaves guard with outward velocity, reaches the target, and retracts. Wrong-hand

@@ -653,9 +653,11 @@ final class ReactiveStrikeSession {
         guard let frame = currentBodyFrame() else { return nil }
 
         phase = .calibrating
-        lastFeedback = "Extend each arm toward the target only as far as comfortable"
+        lastFeedback = "Punch out and hold at comfortable extension — left arm first"
 
-        let cueBodyPosition = SIMD3<Float>(0, 0.02, mode.reachProfile.forwardMax)
+        // Keep the cue at a neutral reference distance. Placing it at an authored profile edge can
+        // encourage a shorter user to lean, moving the body frame while reach is being measured.
+        let cueBodyPosition = SIMD3<Float>(0, 0.02, BodyMeasurements.averageAdult.armReach)
         targets.spawnTarget(
             at: frame.toWorld(cueBodyPosition),
             radius: config.targetRadius * 1.25
@@ -663,10 +665,10 @@ final class ReactiveStrikeSession {
 
         defer { targets.removeActiveTarget() }
 
-        let deadline = Date().addingTimeInterval(9)
-        var acceptedSamples: [BodySide: [Float]] = [.left: [], .right: []]
-        var firstAcceptedAt: [BodySide: Date] = [:]
-        var lastAcceptedAt: [BodySide: Date] = [:]
+        // Allow enough time to observe a settled hold from each arm, not merely the outbound ramp.
+        let deadline = Date().addingTimeInterval(14)
+        var acceptedSamples: [BodySide: [ReachSample]] = [.left: [], .right: []]
+        var lastAcceptedTimestamp: [BodySide: TimeInterval] = [:]
         var lastProcessedTimestamp: [BodySide: TimeInterval] = [:]
         var measuredReaches: [BodySide: Float] = [:]
 
@@ -680,33 +682,31 @@ final class ReactiveStrikeSession {
                     lastProcessedTimestamp[side] = observation.timestamp
 
                     let fistBody = liveFrame.toBody(observation.fistPosition)
-                    if let candidate = ReachCalibration.candidateForwardReach(
+                    guard let candidate = ReachCalibration.candidateForwardReach(
                         guardPosition: guardPosition,
                         fistPosition: fistBody
-                    ) {
-                        let now = Date()
-                        if let previousAcceptedAt = lastAcceptedAt[side],
-                           now.timeIntervalSince(previousAcceptedAt) > 0.5 {
-                            acceptedSamples[side] = []
-                            firstAcceptedAt[side] = nil
-                        }
-                        acceptedSamples[side, default: []].append(candidate)
-                        firstAcceptedAt[side] = firstAcceptedAt[side] ?? now
-                        lastAcceptedAt[side] = now
+                    ) else { continue }
 
-                        if let first = firstAcceptedAt[side],
-                           now.timeIntervalSince(first) >= 0.25,
-                           let robustReach = ReachCalibration.robustForwardReach(
-                               from: acceptedSamples[side, default: []]
-                            ) {
-                            measuredReaches[side] = robustReach
-                            if measuredReaches.count == 1 {
-                                let remainingSide: BodySide = side == .left ? .right : .left
-                                lastFeedback = "Now extend your \(remainingSide.rawValue) arm as far as comfortable"
-                            } else {
-                                lastFeedback = "Reach calibrated"
-                            }
-                        }
+                    // Do not splice separate extensions into one apparent hold after tracking or
+                    // the candidate motion drops out for a material interval.
+                    if let previous = lastAcceptedTimestamp[side],
+                       observation.timestamp - previous > 0.5 {
+                        acceptedSamples[side] = []
+                    }
+                    acceptedSamples[side, default: []].append(
+                        ReachSample(forward: candidate, time: observation.timestamp)
+                    )
+                    lastAcceptedTimestamp[side] = observation.timestamp
+
+                    guard let settled = ReachCalibration.settledForwardReach(
+                        from: acceptedSamples[side, default: []]
+                    ) else { continue }
+
+                    measuredReaches[side] = settled
+                    if measuredReaches.count == 1 {
+                        lastFeedback = "Now punch out and hold with your \(side.opposite.rawValue) arm"
+                    } else {
+                        lastFeedback = "Reach calibrated"
                     }
                 }
             }
@@ -720,7 +720,21 @@ final class ReactiveStrikeSession {
             try? await Task.sleep(for: .milliseconds(16))
         }
 
-        return nil
+        guard !Task.isCancelled else { return nil }
+
+        // If a steady plateau was not observed before the deadline, retain the previous robust
+        // percentile fallback so a usable capture can still complete instead of stranding setup.
+        for side in [BodySide.left, .right] where measuredReaches[side] == nil {
+            if let fallback = ReachCalibration.robustForwardReach(
+                from: acceptedSamples[side, default: []].map(\.forward)
+            ) {
+                measuredReaches[side] = fallback
+            }
+        }
+
+        return ReachCalibration.conservativeBilateralReach(measuredReaches) != nil
+            ? measuredReaches
+            : nil
     }
 
     private func waitForGuardReturn(

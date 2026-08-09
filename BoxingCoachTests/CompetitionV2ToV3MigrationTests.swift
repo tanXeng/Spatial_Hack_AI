@@ -131,6 +131,101 @@ struct CompetitionV2ToV3MigrationTests {
         }
     }
 
+    @Test("Exact V2 multi-version memory splits into V3 keys without losing its trace")
+    func exactV2MultiVersionMemoryMigratesAndRebuildsByV3Key() throws {
+        let directoryURL = FileManager.default.temporaryDirectory.appendingPathComponent(
+            "CompetitionV2MultiVersionMigrationTests-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
+            isDirectory: true
+        )
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        let storeURL = directoryURL.appendingPathComponent("competition.store")
+        let fixture = try makeFixture()
+        let secondAttempt = try #require(TechniqueAttemptSnapshot(
+            id: migrationV2ID(7),
+            athleteID: fixture.participant.id,
+            eventID: fixture.event.id,
+            techniqueID: fixture.attempt.techniqueID,
+            score: 89,
+            scoringVersion: fixture.attempt.scoringVersion + 1,
+            calibrationVersion: (fixture.attempt.calibrationVersion ?? 1) + 1,
+            startedAt: migrationV2Date(12),
+            completedAt: migrationV2Date(13),
+            publicHandleSnapshot: fixture.participant.publicHandle
+        ))
+        let priorTrace = try #require(fixture.memory.pastSelfTrace)
+        let firstExpected = try #require(migratedAttempt(
+            fixture.attempt,
+            preserving: priorTrace
+        ))
+        let firstKey = try #require(firstExpected.memoryKey)
+        let secondKey = try #require(secondAttempt.memoryKey)
+        #expect(firstKey != secondKey)
+        let priorTraceData: Data = try autoreleasepool {
+            let schema = Schema(versionedSchema: CompetitionSchemaV2.self)
+            let configuration = ModelConfiguration(
+                "CompetitionV2MultiVersionFixture",
+                schema: schema,
+                url: storeURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+            let container = try ModelContainer(for: schema, configurations: [configuration])
+            let context = ModelContext(container)
+            context.autosaveEnabled = false
+            context.insert(CompetitionSchemaV2.EventEditionRecord(fixture.event))
+            context.insert(CompetitionSchemaV2.CompetitionPlayerRecord(fixture.participant))
+            context.insert(CompetitionSchemaV2.TechniqueAttemptRecord(fixture.attempt))
+            context.insert(CompetitionSchemaV2.TechniqueAttemptRecord(secondAttempt))
+            let cache = try CompetitionSchemaV2.AthleteSkillMemoryRecord(fixture.memory)
+            cache.attemptIDs = [fixture.attempt.id, secondAttempt.id]
+            cache.updatedAt = secondAttempt.completedAt
+            context.insert(cache)
+            try context.save()
+            return try #require(cache.pastSelfTraceData)
+        }
+
+        let firstMemory = try autoreleasepool {
+            let container = try CompetitionModelContainer.make(storeURL: storeURL)
+            let context = ModelContext(container)
+            let attempts = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV3.TechniqueAttemptRecord>()
+            )
+            #expect(attempts.count == 2)
+            let firstMigrated = try #require(
+                attempts.first(where: { $0.id == fixture.attempt.id })?.snapshot
+            )
+            let secondMigrated = try #require(
+                attempts.first(where: { $0.id == secondAttempt.id })?.snapshot
+            )
+            #expect(firstMigrated == firstExpected)
+            #expect(secondMigrated == secondAttempt)
+            let migratedTrace = try #require(firstMigrated.pastSelfTrace)
+            #expect(migratedTrace == priorTrace)
+            #expect(try JSONEncoder().encode(migratedTrace) == priorTraceData)
+            #expect(try context.fetchCount(
+                FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
+            ) == 0)
+
+            let repository = SwiftDataAthleteMemoryRepository(container: container)
+            let first = try #require(try repository.rebuildMemory(for: firstKey))
+            let second = try #require(try repository.rebuildMemory(for: secondKey))
+            #expect(first.attempts == [firstExpected])
+            #expect(first.pastSelfTrace == priorTrace)
+            #expect(second.attempts == [secondAttempt])
+            #expect(second.pastSelfTrace == nil)
+            return first
+        }
+
+        try autoreleasepool {
+            let container = try CompetitionModelContainer.make(storeURL: storeURL)
+            let repository = SwiftDataAthleteMemoryRepository(container: container)
+            #expect(try repository.memory(for: firstKey) == firstMemory)
+            #expect(try repository.memory(for: firstKey)?.pastSelfTrace == priorTrace)
+            #expect(try repository.memory(for: secondKey)?.attempts == [secondAttempt])
+            #expect(try repository.memory(for: secondKey)?.pastSelfTrace == nil)
+        }
+    }
+
     @Test("Malformed V2 trace data rejects migration without changing the V2 store")
     func malformedTraceRejectsMigrationWithoutLoss() throws {
         try assertTraceMigrationRejected(.malformed)

@@ -362,15 +362,7 @@ nonisolated enum CompetitionMemoryV3Migration {
             for cache in caches {
                 guard let traceData = cache.pastSelfTraceData else { continue }
                 let trace = try JSONDecoder().decode(PastSelfTrace.self, from: traceData)
-                guard cache.id == legacyCacheID(
-                    athleteID: cache.athleteID,
-                    techniqueID: cache.techniqueID
-                ),
-                      cache.attemptIDs.contains(trace.attemptID),
-                      let experienceLevel = ExperienceLevel(
-                          rawValue: cache.experienceLevelRawValue
-                      ),
-                      let traceRecord = attemptsByID[trace.attemptID],
+                guard let traceRecord = attemptsByID[trace.attemptID],
                       let traceAttempt = traceRecord.snapshot,
                       traceAttempt.pastSelfTrace == nil,
                       traceAttempt.athleteID == cache.athleteID,
@@ -384,14 +376,7 @@ nonisolated enum CompetitionMemoryV3Migration {
                     }
                     return attempt
                 }
-                guard AthleteSkillMemory(
-                    athleteID: cache.athleteID,
-                    techniqueID: cache.techniqueID,
-                    experienceLevel: experienceLevel,
-                    attempts: memoryAttempts,
-                    pastSelfTrace: trace,
-                    updatedAt: cache.updatedAt
-                ) != nil,
+                guard isValidV2Cache(cache, attempts: memoryAttempts, trace: trace),
                       let evidence = attaching(trace, to: traceAttempt)
                 else { throw AthleteMemoryRepositoryError.corruptData }
 
@@ -412,8 +397,20 @@ nonisolated enum CompetitionMemoryV3Migration {
         }
     }
 
-    private static func legacyCacheID(athleteID: UUID, techniqueID: String) -> String {
-        "\(athleteID.uuidString.lowercased())|\(techniqueID)"
+    private static func isValidV2Cache(
+        _ cache: CompetitionSchemaV3.AthleteSkillMemoryRecord,
+        attempts: [TechniqueAttemptSnapshot],
+        trace: PastSelfTrace
+    ) -> Bool {
+        !cache.techniqueID.isEmpty
+            && cache.updatedAt.timeIntervalSinceReferenceDate.isFinite
+            && ExperienceLevel(rawValue: cache.experienceLevelRawValue) != nil
+            && attempts.allSatisfy {
+                $0.athleteID == cache.athleteID
+                    && $0.techniqueID == cache.techniqueID
+                    && $0.completedAt <= cache.updatedAt
+            }
+            && attempts.contains { $0.id == trace.attemptID }
     }
 
     private static func attaching(

@@ -109,7 +109,7 @@ struct ReachProfile: Sendable, Equatable {
 }
 
 /// Pure calibration rules shared by the live session and its unit tests.
-enum ReachCalibration {
+nonisolated enum ReachCalibration {
     static let minimumExtensionFromGuard: Float = 0.18
     static let plausibleForwardRange: ClosedRange<Float> = 0.35...1.10
     static let minimumStableSampleCount = 8

@@ -26,6 +26,11 @@ final class ReactiveStrikeSession {
     private(set) var isTrackingPaused = false
     private(set) var trackingReadyToResume = false
     private(set) var instructionPanelWorldPosition: SIMD3<Float>?
+    private(set) var latestCalibratedReaches: [BodySide: Float] = [:]
+    private(set) var competitionSteps: [CompetitionStepEvidence] = []
+    private(set) var competitionTrackingStatus: CompetitionTrackingStatus = .complete
+    private(set) var competitionActiveElapsedTime: TimeInterval?
+    private(set) var competitionRequiresRecalibration = false
 
     /// Whether the immersive space is actually on screen. The immersive scene owns this truth;
     /// a window-local copy goes stale if the system dismisses the space itself.
@@ -56,6 +61,9 @@ final class ReactiveStrikeSession {
     private var spawnTime: Date?
     private var fistPositionAtSpawn: SIMD3<Float>?
     private var capturesEventChallengeEvidence = false
+    private var capturesCompetitionEvidence = false
+    private var competitionCalibrationOnly = false
+    private var competitionStartedAt: TimeInterval?
     private var trackingResumeRequested = false
 
     init() {
@@ -94,6 +102,8 @@ final class ReactiveStrikeSession {
         stance: Stance
     ) {
         capturesEventChallengeEvidence = false
+        capturesCompetitionEvidence = false
+        competitionCalibrationOnly = false
         self.mode = mode
         self.stance = stance
         if let combination {
@@ -107,6 +117,40 @@ final class ReactiveStrikeSession {
         } else {
             reachProfile = mode.reachProfile
         }
+    }
+
+    func configureCompetitionCalibration() {
+        configure(mode: .air, combination: nil, stance: stance)
+        capturesCompetitionEvidence = true
+        competitionCalibrationOnly = true
+        calibratedReaches[.air] = nil
+        latestCalibratedReaches.removeAll()
+        config.targetCount = CompetitionMode.reactiveStrike.totalSteps
+        config.hitRadius = CompetitionScorer.targetRadius
+        competitionRequiresRecalibration = false
+    }
+
+    func configureCompetition(
+        mode: CompetitionMode,
+        stance: Stance,
+        reach: BilateralReach
+    ) {
+        let reactiveMode: ReactiveStrikeMode = mode == .combination ? .combination : .air
+        configure(
+            mode: reactiveMode,
+            combination: mode == .combination ? .jabCrossHookCross : nil,
+            stance: stance
+        )
+        capturesCompetitionEvidence = true
+        competitionCalibrationOnly = false
+        calibratedReaches[.air] = reach.bySide
+        latestCalibratedReaches = reach.bySide
+        comboRepeatCount = 5
+        config.targetCount = CompetitionMode.reactiveStrike.totalSteps
+        config.hitRadius = CompetitionScorer.targetRadius
+        config.targetRadius = 0.08
+        config.timeout = 2
+        competitionRequiresRecalibration = false
     }
 
     func configureEventChallenge(stance: Stance) {
@@ -137,6 +181,11 @@ final class ReactiveStrikeSession {
         comboRepsCompleted = 0
         challengeRepetitions.removeAll(keepingCapacity: true)
         lessonStages.removeAll(keepingCapacity: true)
+        competitionSteps.removeAll(keepingCapacity: true)
+        competitionTrackingStatus = .complete
+        competitionActiveElapsedTime = nil
+        competitionStartedAt = nil
+        competitionRequiresRecalibration = false
         guardPositionsBody.removeAll()
         phase = .calibrating
         lastFeedback = "Raise both hands into guard"
@@ -176,7 +225,10 @@ final class ReactiveStrikeSession {
         }
     }
 
-    func resetForNewRound(keepingEventConfiguration: Bool = false) {
+    func resetForNewRound(
+        keepingEventConfiguration: Bool = false,
+        keepingCompetitionConfiguration: Bool = false
+    ) {
         stopDrill()
         metrics.reset()
         phase = .idle
@@ -185,6 +237,11 @@ final class ReactiveStrikeSession {
         comboRepsCompleted = 0
         challengeRepetitions.removeAll(keepingCapacity: true)
         lessonStages.removeAll(keepingCapacity: true)
+        competitionSteps.removeAll(keepingCapacity: true)
+        competitionTrackingStatus = .complete
+        competitionActiveElapsedTime = nil
+        competitionStartedAt = nil
+        competitionRequiresRecalibration = false
         lastFeedback = "Ready"
         errorMessage = nil
         isTrackingPaused = false
@@ -193,6 +250,10 @@ final class ReactiveStrikeSession {
         instructionPanelWorldPosition = nil
         if !keepingEventConfiguration {
             capturesEventChallengeEvidence = false
+        }
+        if !keepingCompetitionConfiguration {
+            capturesCompetitionEvidence = false
+            competitionCalibrationOnly = false
         }
     }
 
@@ -273,19 +334,30 @@ final class ReactiveStrikeSession {
         let key = calibrationKey(for: mode)
         let maximumGuardForward = guards.values.map(\.z).max() ?? 0
         if let cached = calibratedReaches[key],
-           let measuredReach = ReachCalibration.conservativeBilateralReach(cached),
-               let guardedProfile = mode.reachProfile
-               .calibrated(measuredForwardReach: measuredReach)
-               .placingTargetsBeyondGuard(
-                   maximumGuardForward: maximumGuardForward,
-                   hitRadius: config.hitRadius
-               ) {
-            reachProfile = guardedProfile
-        } else {
+           let measuredReach = ReachCalibration.conservativeBilateralReach(cached) {
+            if let guardedProfile = mode.reachProfile
+                .calibrated(measuredForwardReach: measuredReach)
+                .placingTargetsBeyondGuard(
+                    maximumGuardForward: maximumGuardForward,
+                    hitRadius: config.hitRadius
+                ) {
+                latestCalibratedReaches = cached
+                reachProfile = guardedProfile
+            } else if capturesCompetitionEvidence, !competitionCalibrationOnly {
+                competitionRequiresRecalibration = true
+                failDrill("Your saved reach no longer clears your current guard. Recalibrate before competing.")
+                return
+            } else {
+                calibratedReaches[key] = nil
+            }
+        } else if calibratedReaches[key] != nil {
+            calibratedReaches[key] = nil
+        }
+
+        if calibratedReaches[key] == nil {
             // A guard can move between rounds. If it now sits beyond the cached safe volume,
             // invalidate that measurement and collect a fresh extension instead of failing every
             // subsequent retry with the same stale profile.
-            calibratedReaches[key] = nil
             guard let measuredReaches = await calibrateReach(using: guards),
                   let measuredReach = ReachCalibration.conservativeBilateralReach(measuredReaches)
             else {
@@ -302,7 +374,15 @@ final class ReactiveStrikeSession {
                 return
             }
             calibratedReaches[key] = measuredReaches
+            latestCalibratedReaches = measuredReaches
             reachProfile = guardedProfile
+        }
+
+        if competitionCalibrationOnly {
+            competitionTrackingStatus = .complete
+            phase = .finished
+            lastFeedback = "Reach calibrated"
+            return
         }
 
         if capturesEventChallengeEvidence {
@@ -323,6 +403,9 @@ final class ReactiveStrikeSession {
         lastFeedback = "Guard set · Get ready…"
         try? await Task.sleep(for: .milliseconds(450))
         guard !Task.isCancelled, phase == .running else { return }
+        if capturesCompetitionEvidence {
+            competitionStartedAt = ProcessInfo.processInfo.systemUptime
+        }
 
         if guided.plan == .guidedCore {
             await runGuidedLessonLoop()
@@ -335,6 +418,9 @@ final class ReactiveStrikeSession {
         guard !Task.isCancelled, phase == .running else { return }
         targets.removeActiveTarget()
         clearAttemptState()
+        if let startedAt = competitionStartedAt {
+            competitionActiveElapsedTime = ProcessInfo.processInfo.systemUptime - startedAt
+        }
         phase = .finished
         lastFeedback = summaryFeedback()
     }
@@ -700,14 +786,24 @@ final class ReactiveStrikeSession {
         let worldPosition = frame.toWorld(bodyPosition)
         targets.spawnTarget(at: worldPosition, radius: config.targetRadius)
 
-        beginAttempt(fistAtSpawn: hands.nearestFistPosition(to: worldPosition))
+        beginAttempt(fistAtSpawn: fistPositionForCurrentRun(nearestTo: worldPosition))
         lastFeedback = "Punch!"
 
         var activeElapsed: TimeInterval = 0
         var lastTick = Date()
+        var trackingLostAt: Date?
 
         while !Task.isCancelled, phase == .running, activeAttemptID != nil {
             let now = Date()
+            let currentFist = fistPositionForCurrentRun(nearestTo: worldPosition)
+            if capturesCompetitionEvidence, currentFist == nil {
+                trackingLostAt = trackingLostAt ?? now
+                if now.timeIntervalSince(trackingLostAt!) >= 0.1 {
+                    competitionTrackingStatus = .stale
+                }
+            } else {
+                trackingLostAt = nil
+            }
 
             if let punchingSide = nearestPunchingSide(to: worldPosition),
                nonPunchingGuardStatus(punchingSide: punchingSide) == false {
@@ -728,13 +824,13 @@ final class ReactiveStrikeSession {
                 await finishAttempt(
                     result: .miss,
                     hitTime: nil,
-                    fistAtHit: hands.nearestFistPosition(to: worldPosition),
+                    fistAtHit: currentFist,
                     targetPosition: worldPosition
                 )
                 return
             }
 
-            if let fist = hands.nearestFistPosition(to: worldPosition),
+            if let fist = currentFist,
                distance(fist, worldPosition) <= config.hitRadius {
                 await finishAttempt(
                     result: .hit,
@@ -801,6 +897,7 @@ final class ReactiveStrikeSession {
                 var stepHit = false
                 var eventState: ChallengePunchState = .timeout
                 var centerError: Float?
+                var reactionTime: TimeInterval?
                 var trackingLostAt: Date?
 
                 while !Task.isCancelled,
@@ -808,6 +905,18 @@ final class ReactiveStrikeSession {
                       activeAttemptID != nil || (capturesEventChallengeEvidence && isTrackingPaused) {
                     let required = hands.freshObservation(for: target.requiredHand)
                     let other = hands.freshObservation(for: target.requiredHand.opposite)
+
+                    if capturesCompetitionEvidence,
+                       required == nil || other == nil || hands.deviceTransform == nil {
+                        trackingLostAt = trackingLostAt ?? Date()
+                        if Date().timeIntervalSince(trackingLostAt!) >= 0.1 {
+                            competitionTrackingStatus = .stale
+                            failDrill("Tracking was lost. This competition run was not submitted.")
+                            return
+                        }
+                        try? await Task.sleep(for: .milliseconds(16))
+                        continue
+                    }
 
                     if capturesEventChallengeEvidence,
                        required == nil || other == nil || hands.deviceTransform == nil {
@@ -922,6 +1031,7 @@ final class ReactiveStrikeSession {
                         stepHit = true
                         eventState = required?.fistState == .closed ? .validContact : .openHand
                         centerError = required.map { distance($0.fistPosition, worldPosition) }
+                        reactionTime = metrics.lastAttempt?.reactionTime
                     }
 
                     if stepHit { break }
@@ -931,6 +1041,16 @@ final class ReactiveStrikeSession {
                 guard !Task.isCancelled, phase == .running else { return }
                 guard stepHit else {
                     completedRep = false
+                    if capturesCompetitionEvidence {
+                        competitionSteps.append(CompetitionStepEvidence(
+                            index: rep * resolvedTargets.count + target.index,
+                            valid: false,
+                            centreErrorMeters: nil,
+                            reactionTime: nil,
+                            requiredHand: target.requiredHand,
+                            returnedToGuard: false
+                        ))
+                    }
                     if capturesEventChallengeEvidence {
                         let returnedToGuard = eventState == .validMiss
                             ? await waitForRetraction(
@@ -949,6 +1069,7 @@ final class ReactiveStrikeSession {
                         ))
                         continue
                     }
+                    if capturesCompetitionEvidence { continue }
                     break
                 }
 
@@ -958,6 +1079,16 @@ final class ReactiveStrikeSession {
                     guardPosition: guardPosition
                 )
                 guard !Task.isCancelled else { return }
+                if capturesCompetitionEvidence {
+                    competitionSteps.append(CompetitionStepEvidence(
+                        index: rep * resolvedTargets.count + target.index,
+                        valid: returnedToGuard,
+                        centreErrorMeters: returnedToGuard ? centerError : nil,
+                        reactionTime: returnedToGuard ? reactionTime : nil,
+                        requiredHand: target.requiredHand,
+                        returnedToGuard: returnedToGuard
+                    ))
+                }
                 if capturesEventChallengeEvidence {
                     eventPunches.append(ChallengePunchSnapshot(
                         repetition: rep + 1,
@@ -972,7 +1103,7 @@ final class ReactiveStrikeSession {
                 guard returnedToGuard else {
                     lastFeedback = "Combination reset · return to guard"
                     completedRep = false
-                    if capturesEventChallengeEvidence { continue }
+                    if capturesEventChallengeEvidence || capturesCompetitionEvidence { continue }
                     break
                 }
             }
@@ -1135,6 +1266,22 @@ final class ReactiveStrikeSession {
         return poseSolver.bodyFrame(headTransform: transform)
     }
 
+    private func fistPositionForCurrentRun(nearestTo point: SIMD3<Float>) -> SIMD3<Float>? {
+        guard capturesCompetitionEvidence else { return hands.nearestFistPosition(to: point) }
+        let left = hands.freshObservation(for: .left)?.fistPosition
+        let right = hands.freshObservation(for: .right)?.fistPosition
+        switch (left, right) {
+        case let (left?, right?):
+            return distance(left, point) <= distance(right, point) ? left : right
+        case let (left?, nil):
+            return left
+        case let (nil, right?):
+            return right
+        case (nil, nil):
+            return nil
+        }
+    }
+
     private func waitForBodyFrame(timeout: TimeInterval = 1.5) async -> BodyFrame? {
         let deadline = Date().addingTimeInterval(timeout)
         while !Task.isCancelled, Date() < deadline {
@@ -1157,6 +1304,9 @@ final class ReactiveStrikeSession {
     private func failDrill(_ message: String) {
         targets.removeActiveTarget()
         clearAttemptState()
+        if capturesCompetitionEvidence, competitionTrackingStatus == .complete {
+            competitionTrackingStatus = .technicalFailure
+        }
         errorMessage = message
         lastFeedback = message
         phase = .idle

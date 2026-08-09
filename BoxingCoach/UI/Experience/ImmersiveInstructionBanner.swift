@@ -6,10 +6,21 @@ struct ImmersiveInstruction: Equatable {
     let symbol: String
 }
 
-enum ImmersiveInstructionBannerStyle {
+enum ImmersiveInstructionBannerStyle: Equatable {
     case compact
     case prominent
     case coaching
+}
+
+enum AuraBannerPresentation {
+    static func style(for phase: AuraPunchPhase) -> ImmersiveInstructionBannerStyle {
+        switch phase {
+        case .guiding, .countdown, .attempting:
+            return .coaching
+        default:
+            return .prominent
+        }
+    }
 }
 
 /// A narrow, head-anchored cue that explains what the user should do without recreating the

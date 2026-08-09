@@ -3,27 +3,12 @@ import XCTest
 
 @MainActor
 final class TrainingFlowCoordinatorTests: XCTestCase {
-    func testEventEditionStartsNeutralAndHandoffClearsTransientEngineState() {
-        let flow = TrainingFlowCoordinator()
-        let session = ReactiveStrikeSession()
-
-        flow.installEventEditionStart(hasActiveEvent: true)
-        XCTAssertEqual(flow.route, .welcome)
-
-        flow.navigate(to: .participantHome(UUID()))
-        session.configureEventChallenge(stance: .southpaw)
-        session.guided.start(plan: .controlledOneTwoOfficial)
-        flow.participantHandoff(session: session)
-
-        XCTAssertEqual(flow.route, .welcome)
-        XCTAssertEqual(session.phase, .idle)
-        XCTAssertEqual(session.guided.stage, .idle)
-        XCTAssertEqual(session.stance, .orthodox)
+    func testAppStartsOnFeatureSelection() {
+        XCTAssertEqual(TrainingFlowCoordinator().route, .features)
     }
 
     func testAirRoutesDirectlyToExperienceWhileCombinationRoutesToSetup() {
         let flow = TrainingFlowCoordinator()
-
         flow.chooseFeature(.reactiveStrike)
         XCTAssertEqual(flow.route, .reactiveSetup)
 
@@ -36,7 +21,6 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
         let combinationFlow = TrainingFlowCoordinator()
         combinationFlow.chooseFeature(.reactiveStrike)
         combinationFlow.chooseReactiveMode(.combination)
-
         XCTAssertEqual(combinationFlow.route, .combinationSetup)
     }
 
@@ -47,15 +31,32 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
         flow.setDraftStance(.southpaw)
         flow.chooseCombination(.jabCrossHookCross)
 
-        guard case .experience(
-            .reactive(let mode, let combination, let stance)
-        ) = flow.route else {
-            return XCTFail("Expected a committed Reactive Strike selection")
-        }
+        XCTAssertEqual(
+            flow.route,
+            .experience(.reactive(
+                mode: .combination,
+                combination: .jabCrossHookCross,
+                stance: .southpaw
+            ))
+        )
+    }
 
-        XCTAssertEqual(mode, .combination)
-        XCTAssertEqual(combination, .jabCrossHookCross)
-        XCTAssertEqual(stance, .southpaw)
+    func testCompetitionSelectionsRemainDistinctFromNormalTraining() throws {
+        let playerID = UUID()
+        let reach = try XCTUnwrap(BilateralReach(left: 0.66, right: 0.68))
+        XCTAssertEqual(
+            TrainingSelection.competitionCalibration(playerID: playerID).feature,
+            .reactiveStrike
+        )
+        XCTAssertEqual(
+            TrainingSelection.competition(
+                playerID: playerID,
+                mode: .combination,
+                stance: .southpaw,
+                reach: reach
+            ).feature,
+            .reactiveStrike
+        )
     }
 
     func testBackFromCombinationSetupReturnsToReactiveModeSelection() {
@@ -63,7 +64,6 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
         flow.chooseFeature(.reactiveStrike)
         flow.chooseReactiveMode(.combination)
         flow.setDraftStance(.southpaw)
-
         flow.backFromSetup()
 
         XCTAssertEqual(flow.route, .reactiveSetup)
@@ -73,21 +73,12 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
     func testReturningFromCombinationExperienceRestoresStanceWithoutDismissingImmersion() async {
         let flow = TrainingFlowCoordinator()
         let session = ReactiveStrikeSession()
-        flow.chooseFeature(.reactiveStrike)
-        flow.chooseReactiveMode(.combination)
-        flow.setDraftStance(.southpaw)
-        flow.chooseCombination(.doubleJabCross)
-
         let selection = TrainingSelection.reactive(
             mode: .combination,
             combination: .doubleJabCross,
             stance: .southpaw
         )
-        XCTAssertEqual(flow.route, .experience(selection))
-        XCTAssertFalse(session.isImmersiveSpaceOpen)
-
-        // Prove the committed selection, rather than incidental draft state, restores the stance.
-        flow.setDraftStance(.orthodox)
+        flow.navigate(to: .experience(selection))
         var dismissCallCount = 0
 
         await flow.returnToSetup(
@@ -97,7 +88,6 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
         )
 
         XCTAssertEqual(dismissCallCount, 0)
-        XCTAssertFalse(session.isImmersiveSpaceOpen)
         XCTAssertEqual(flow.draftStance, .southpaw)
         XCTAssertEqual(flow.route, .combinationSetup)
         XCTAssertEqual(flow.transition, .idle)

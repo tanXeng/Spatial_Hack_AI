@@ -2,6 +2,16 @@ import XCTest
 @testable import BoxingCoach
 
 final class BoxingCoachTechniqueTests: XCTestCase {
+    @MainActor
+    func testTargetFixBannerStatesAndRemovedBagModeRemainStable() {
+        XCTAssertEqual(AuraBannerPresentation.style(for: .idle), .prominent)
+        XCTAssertEqual(AuraBannerPresentation.style(for: .guiding), .coaching)
+        XCTAssertEqual(AuraBannerPresentation.style(for: .countdown), .coaching)
+        XCTAssertEqual(AuraBannerPresentation.style(for: .attempting), .coaching)
+        XCTAssertEqual(AuraBannerPresentation.style(for: .results), .prominent)
+        XCTAssertEqual(ReactiveStrikeMode.allCases, [.air, .combination])
+    }
+
     func testUppercutIsOneAlternatingTechniqueWithLegacyLookup() {
         let uppercuts = Technique.all.filter { $0.id.contains("uppercut") }
 

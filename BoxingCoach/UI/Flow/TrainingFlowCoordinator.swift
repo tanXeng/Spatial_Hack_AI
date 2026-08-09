@@ -26,35 +26,18 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 enum TrainingSelection: Hashable, Sendable {
     case reactive(mode: ReactiveStrikeMode, combination: Combination?, stance: Stance)
     case aura(technique: Technique, stance: Stance)
+    case competitionCalibration(playerID: UUID)
+    case competition(playerID: UUID, mode: CompetitionMode, stance: Stance, reach: BilateralReach)
 
     var feature: TrainingFeature {
         switch self {
-        case .reactive: return .reactiveStrike
+        case .reactive, .competitionCalibration, .competition: return .reactiveStrike
         case .aura: return .auraPunch
         }
     }
 }
 
 enum TrainingFlowRoute: Hashable, Sendable {
-    case hostSetup
-    case welcome
-    case newParticipant
-    case returningParticipant
-    case participantHome(UUID)
-    case lessonOverview(UUID)
-    case safetyPreflight(UUID, TrainingPlan)
-    case permissionPreflight(UUID, TrainingPlan)
-    case eventExperience(UUID, TrainingPlan)
-    case savingResults(UUID)
-    case eventResults(UUID)
-    case profile(UUID)
-    case leaderboard(UUID)
-    case hostDashboard(UUID)
-    case closeEventReview(UUID)
-    case winnerReveal(UUID)
-    case experimentalLab
-
-    // Legacy training lab routes remain available behind Experimental Punch Lab.
     case features
     case reactiveSetup
     case combinationSetup
@@ -103,23 +86,10 @@ final class TrainingFlowCoordinator {
         transition != .idle
     }
 
-    func installEventEditionStart(hasActiveEvent: Bool) {
-        guard transition == .idle else { return }
-        route = hasActiveEvent ? .welcome : .hostSetup
-        presentationError = nil
-    }
-
     func navigate(to route: TrainingFlowRoute) {
         guard transition == .idle else { return }
         presentationError = nil
         self.route = route
-    }
-
-    func participantHandoff(session: ReactiveStrikeSession) {
-        guard transition == .idle else { return }
-        session.resetForParticipantHandoff()
-        route = .welcome
-        presentationError = nil
     }
 
     func chooseFeature(_ feature: TrainingFeature) {
@@ -244,83 +214,22 @@ final class TrainingFlowCoordinator {
             session.auraPunch.stance = stance
             session.auraPunch.reset()
             session.auraPunch.start()
+
+        case .competitionCalibration:
+            session.configureCompetitionCalibration()
+            session.resetForNewRound(keepingCompetitionConfiguration: true)
+            session.startDrill()
+
+        case .competition(_, let mode, let stance, let reach):
+            session.configureCompetition(mode: mode, stance: stance, reach: reach)
+            session.resetForNewRound(keepingCompetitionConfiguration: true)
+            session.startDrill()
         }
 
         transition = .idle
         hideControlWindow()
         // The SwiftUI disappearance callback can arrive on a later update. Mark the requested
         // state immediately so the eventual restore waits for a fresh appearance event.
-        isControlWindowVisible = false
-    }
-
-    func startEventExperience(
-        runID: UUID,
-        plan: TrainingPlan,
-        stance: Stance,
-        session: ReactiveStrikeSession,
-        supportsMultipleScenes: Bool,
-        prepareRun: () async throws -> Void,
-        openImmersive: (String) async -> ImmersiveOpenOutcome,
-        dismissImmersive: () async -> Void,
-        hideControlWindow: () -> Void
-    ) async {
-        guard transition == .idle,
-              route == .eventExperience(runID, plan) else { return }
-
-        presentationError = nil
-        transition = .openingImmersion
-        guard supportsMultipleScenes else {
-            presentationError = "Multiple scenes are disabled. Enable multiple-scene support to start training."
-            transition = .idle
-            return
-        }
-
-        if immersiveState != .ready || !session.isImmersiveSpaceOpen {
-            immersiveState = .opening
-            switch await openImmersive(session.immersiveSpaceID) {
-            case .opened:
-                break
-            case .cancelled:
-                immersiveState = .closed
-                presentationError = "Immersive space cancelled. No result was created."
-                transition = .idle
-                return
-            case .failed(let message):
-                immersiveState = .closed
-                presentationError = message
-                transition = .idle
-                return
-            }
-        }
-
-        guard await waitForSceneReadiness() else {
-            presentationError = "The training space opened but did not become ready. No result was created."
-            transition = .closingImmersion
-            immersiveState = .closing
-            await dismissImmersive()
-            finalizeImmersiveClosure(session: session)
-            transition = .idle
-            return
-        }
-
-
-        do {
-            try await prepareRun()
-        } catch {
-            presentationError = "The session could not be prepared. Nothing was scored."
-            transition = .closingImmersion
-            immersiveState = .closing
-            await dismissImmersive()
-            finalizeImmersiveClosure(session: session)
-            transition = .idle
-            return
-        }
-
-        session.configureEventChallenge(stance: stance)
-        session.resetForNewRound(keepingEventConfiguration: true)
-        session.startDrill()
-        transition = .idle
-        hideControlWindow()
         isControlWindowVisible = false
     }
 
@@ -402,6 +311,10 @@ final class TrainingFlowCoordinator {
             draftStance = stance
             session.auraPunch.reset()
             route = .auraSetup
+
+        case .competitionCalibration, .competition:
+            session.resetForNewRound()
+            route = .features
         }
 
         presentationError = nil

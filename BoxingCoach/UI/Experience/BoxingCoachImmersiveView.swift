@@ -77,14 +77,7 @@ struct BoxingCoachImmersiveView: View {
             }
         }
         .onChange(of: session.phase) { _, phase in
-            let isReactiveRoute: Bool
-            switch flow.route {
-            case .experience(.reactive), .eventExperience:
-                isReactiveRoute = true
-            default:
-                isReactiveRoute = false
-            }
-            guard isReactiveRoute, phase == .finished else { return }
+            guard isReactiveExperience, phase == .finished else { return }
             announce("Reactive Strike complete")
             finishTraining()
         }
@@ -95,14 +88,7 @@ struct BoxingCoachImmersiveView: View {
             finishTraining()
         }
         .onChange(of: session.errorMessage) { _, message in
-            let isReactiveRoute: Bool
-            switch flow.route {
-            case .experience(.reactive), .eventExperience:
-                isReactiveRoute = true
-            default:
-                isReactiveRoute = false
-            }
-            guard isReactiveRoute, let message else { return }
+            guard isReactiveExperience, let message else { return }
             announce(message)
             finishTraining()
         }
@@ -113,14 +99,7 @@ struct BoxingCoachImmersiveView: View {
             finishTraining()
         }
         .onChange(of: session.lastFeedback) { _, message in
-            let isReactiveRoute: Bool
-            switch flow.route {
-            case .experience(.reactive), .eventExperience:
-                isReactiveRoute = true
-            default:
-                isReactiveRoute = false
-            }
-            guard isReactiveRoute,
+            guard isReactiveExperience,
                   session.phase == .running || session.phase == .calibrating else { return }
             announce(message)
         }
@@ -141,14 +120,20 @@ struct BoxingCoachImmersiveView: View {
         return false
     }
 
+    private var isReactiveExperience: Bool {
+        switch flow.route {
+        case .experience(.reactive),
+             .experience(.competitionCalibration),
+             .experience(.competition):
+            return true
+        default:
+            return false
+        }
+    }
+
     private var auraBannerStyle: ImmersiveInstructionBannerStyle {
         guard isAuraExperience else { return .compact }
-        switch session.auraPunch.phase {
-        case .guiding, .countdown, .attempting:
-            return .coaching
-        default:
-            return .prominent
-        }
+        return AuraBannerPresentation.style(for: session.auraPunch.phase)
     }
 
     private func endTraining() {
@@ -188,36 +173,6 @@ struct BoxingCoachImmersiveView: View {
 
     private var currentInstruction: ImmersiveInstruction {
         switch flow.route {
-        case .eventExperience(_, let plan):
-            if session.isTrackingPaused {
-                return ImmersiveInstruction(
-                    stage: session.trackingReadyToResume ? "READY TO RESUME" : "TRACKING PAUSED",
-                    message: session.lastFeedback,
-                    symbol: session.trackingReadyToResume ? "play.circle.fill" : "pause.circle.fill"
-                )
-            }
-            switch session.phase {
-            case .idle:
-                return ImmersiveInstruction(stage: "GET READY", message: "Raise both hands into guard", symbol: "hand.raised.fill")
-            case .calibrating:
-                return ImmersiveInstruction(stage: "CALIBRATION", message: session.lastFeedback, symbol: "ruler")
-            case .running:
-                if plan == .guidedCore || plan == .observeOnly {
-                    return ImmersiveInstruction(
-                        stage: guidedStageLabel,
-                        message: session.guided.instruction,
-                        symbol: plan == .observeOnly ? "eye.fill" : "figure.boxing"
-                    )
-                }
-                return ImmersiveInstruction(
-                    stage: session.progressLabel.uppercased(),
-                    message: session.lastFeedback,
-                    symbol: "list.number"
-                )
-            case .finished:
-                return ImmersiveInstruction(stage: "SESSION COMPLETE", message: "Your result is ready to save", symbol: "checkmark.circle.fill")
-            }
-
         case .experience(.aura(let technique, _)):
             let action = technique.name.lowercased()
             switch session.auraPunch.phase {
@@ -299,31 +254,64 @@ struct BoxingCoachImmersiveView: View {
                 )
             }
 
+        case .experience(.competitionCalibration):
+            switch session.phase {
+            case .idle:
+                return ImmersiveInstruction(
+                    stage: "REACH CALIBRATION",
+                    message: session.lastFeedback,
+                    symbol: "ruler"
+                )
+            case .calibrating:
+                return ImmersiveInstruction(
+                    stage: "CALIBRATING",
+                    message: session.lastFeedback,
+                    symbol: "ruler"
+                )
+            case .running:
+                return ImmersiveInstruction(stage: "CALIBRATING", message: session.lastFeedback, symbol: "ruler")
+            case .finished:
+                return ImmersiveInstruction(
+                    stage: "CALIBRATION SAVED",
+                    message: "Return to choose a competition mode",
+                    symbol: "checkmark.circle.fill"
+                )
+            }
+
+        case .experience(.competition(_, let mode, _, _)):
+            switch session.phase {
+            case .idle:
+                return ImmersiveInstruction(
+                    stage: "COMPETITION",
+                    message: session.lastFeedback,
+                    symbol: "trophy.fill"
+                )
+            case .calibrating:
+                return ImmersiveInstruction(
+                    stage: "CAPTURING GUARD",
+                    message: session.lastFeedback,
+                    symbol: "hand.raised.fill"
+                )
+            case .running:
+                return ImmersiveInstruction(
+                    stage: session.progressLabel.uppercased(),
+                    message: session.lastFeedback,
+                    symbol: mode == .combination ? "list.number" : "scope"
+                )
+            case .finished:
+                return ImmersiveInstruction(
+                    stage: "ROUND COMPLETE",
+                    message: "Your result is ready",
+                    symbol: "checkmark.circle.fill"
+                )
+            }
+
         default:
             return ImmersiveInstruction(
                 stage: "BOXING COACH",
                 message: "Preparing your training space",
                 symbol: "figure.boxing"
             )
-        }
-    }
-
-    private var guidedStageLabel: String {
-        switch session.guided.stage {
-        case .jabWatch: "JAB · WATCH"
-        case .jabFollow: "JAB · FOLLOW"
-        case .jabBaseline: "JAB · YOUR TURN"
-        case .jabCorrection: "JAB · ONE ADJUSTMENT"
-        case .jabRetest: "JAB · RETEST"
-        case .crossWatch: "CROSS · WATCH"
-        case .crossFollow: "CROSS · FOLLOW"
-        case .crossBaseline: "CROSS · YOUR TURN"
-        case .crossCorrection: "CROSS · ONE ADJUSTMENT"
-        case .crossRetest: "CROSS · RETEST"
-        case .oneTwoPractice(let rep): "1–2 PRACTICE · REP \(max(rep, 1))"
-        case .challenge(let rep, let punch): "REP \(rep) · \(punch.displayName.uppercased())"
-        case .paused: "TRACKING PAUSED"
-        default: "GUIDED LESSON"
         }
     }
 

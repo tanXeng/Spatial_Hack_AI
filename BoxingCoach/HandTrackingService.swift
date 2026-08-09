@@ -400,7 +400,7 @@ extension simd_float4x4 {
 }
 
 extension SIMD3 where Scalar == Float {
-    var isFinite: Bool {
+    nonisolated var isFinite: Bool {
         x.isFinite && y.isFinite && z.isFinite
     }
 }

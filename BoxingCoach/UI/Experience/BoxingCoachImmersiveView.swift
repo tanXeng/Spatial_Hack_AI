@@ -92,7 +92,15 @@ struct BoxingCoachImmersiveView: View {
         }
         .onChange(of: session.phase) { _, phase in
             guard isReactiveEngineExperience, phase == .finished else { return }
-            announce(isReachCalibrationExperience ? "Reach calibration complete" : "Reactive Strike complete")
+            if case .experience(let selection) = flow.route {
+                let announcement = ImmersiveInstructionPolicy.completionAnnouncement(
+                    for: ImmersiveTrainingContext(selection: selection),
+                    wasStoppedBeforeCompletion: session.wasStoppedBeforeCompletion
+                )
+                if let announcement {
+                    announce(announcement)
+                }
+            }
             finishTraining()
         }
         .onChange(of: session.auraPunch.phase) { _, phase in
@@ -182,15 +190,6 @@ struct BoxingCoachImmersiveView: View {
     private var isAuraExperience: Bool {
         if case .experience(.aura) = flow.route { return true }
         return false
-    }
-
-    private var isReachCalibrationExperience: Bool {
-        switch flow.route {
-        case .experience(.reachCalibration), .experience(.competitionCalibration):
-            return true
-        default:
-            return false
-        }
     }
 
     private var isReactiveEngineExperience: Bool {
@@ -292,44 +291,14 @@ struct BoxingCoachImmersiveView: View {
                 )
             }
 
-        case .experience(.reactive(_, let combination, _)):
-            switch session.phase {
-            case .idle:
-                if session.lastFeedback == "Drill stopped" {
-                    return ImmersiveInstruction(
-                        stage: "TRAINING STOPPED",
-                        message: "Your training was stopped",
-                        symbol: "stop.circle.fill"
-                    )
-                }
-                return ImmersiveInstruction(
-                    stage: "GET READY",
-                    message: "Raise your guard and watch for the target",
-                    symbol: "scope"
-                )
-            case .calibrating:
-                return ImmersiveInstruction(
-                    stage: "CALIBRATING",
-                    message: session.lastFeedback,
-                    symbol: "ruler"
-                )
-            case .running:
-                return ImmersiveInstruction(
-                    stage: session.progressLabel.uppercased(),
-                    message: session.lastFeedback,
-                    symbol: combination == nil ? "bolt.fill" : "list.number"
-                )
-            case .finished:
-                return ImmersiveInstruction(
-                    stage: session.lastFeedback == "Drill stopped"
-                        ? "TRAINING STOPPED"
-                        : "ROUND COMPLETE",
-                    message: session.lastFeedback,
-                    symbol: session.lastFeedback == "Drill stopped"
-                        ? "stop.circle.fill"
-                        : "checkmark.circle.fill"
-                )
-            }
+        case .experience(let selection):
+            return ImmersiveInstructionPolicy.instruction(
+                for: ImmersiveTrainingContext(selection: selection),
+                phase: session.phase,
+                progressLabel: session.progressLabel,
+                feedback: session.lastFeedback,
+                trackingPaused: session.isTrackingPaused
+            )
 
         default:
             return ImmersiveInstruction(

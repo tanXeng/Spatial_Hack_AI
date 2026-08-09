@@ -12,9 +12,24 @@ enum ImmersiveInstructionBannerStyle {
     case coaching
 }
 
+enum ImmersiveInstructionBannerLayout {
+    static func messageLineLimit(
+        for style: ImmersiveInstructionBannerStyle,
+        isAccessibilitySize: Bool
+    ) -> Int? {
+        guard !isAccessibilitySize else { return nil }
+        switch style {
+        case .compact: return 3
+        case .prominent, .coaching: return 4
+        }
+    }
+}
+
 /// A narrow, head-anchored cue that explains what the user should do without recreating the
 /// selection window inside the immersive experience.
 struct ImmersiveInstructionBanner: View {
+    @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+
     let instruction: ImmersiveInstruction
     var style: ImmersiveInstructionBannerStyle = .compact
 
@@ -55,6 +70,7 @@ struct ImmersiveInstructionBanner: View {
                     .font(messageFont)
                     .lineLimit(messageLineLimit)
                     .minimumScaleFactor(0.85)
+                    .fixedSize(horizontal: false, vertical: true)
             }
 
             Spacer(minLength: 8)
@@ -78,8 +94,9 @@ struct ImmersiveInstructionBanner: View {
             Text(instruction.message)
                 .font(.title3)
                 .foregroundStyle(.secondary)
-                .lineLimit(4)
+                .lineLimit(messageLineLimit)
                 .minimumScaleFactor(0.85)
+                .fixedSize(horizontal: false, vertical: true)
         }
     }
 
@@ -131,8 +148,11 @@ struct ImmersiveInstructionBanner: View {
         style == .prominent ? .title3 : .headline
     }
 
-    private var messageLineLimit: Int {
-        style == .prominent ? 3 : 2
+    private var messageLineLimit: Int? {
+        ImmersiveInstructionBannerLayout.messageLineLimit(
+            for: style,
+            isAccessibilitySize: dynamicTypeSize.isAccessibilitySize
+        )
     }
 }
 

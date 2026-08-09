@@ -52,6 +52,14 @@ struct ReachProfile: Sendable, Equatable {
     var verticalMin: Float
     var verticalMax: Float
 
+    /// How far back from full extension a calibrated target may spawn, as a fraction of measured
+    /// reach. 0.10 means the whole spawn band sits in the last 10% of the user's reach.
+    ///
+    /// A fraction rather than a fixed distance so the band means the same thing to a long-armed
+    /// and a short-armed user: 10% of 0.50 m is 5 cm, 10% of 0.80 m is 8 cm, and both land every
+    /// target at 90–100% of that person's extension.
+    var forwardBandFraction: Float = 0.10
+
     static let `default` = air
 
     /// Wider floating volume in front of the user.
@@ -61,7 +69,8 @@ struct ReachProfile: Sendable, Equatable {
         lateralMin: -0.35,
         lateralMax: 0.35,
         verticalMin: -0.22,
-        verticalMax: 0.24
+        verticalMax: 0.24,
+        forwardBandFraction: 0.10
     )
 
     /// Tighter forward volume approximating a standing bag (no bag recognition yet).
@@ -71,7 +80,8 @@ struct ReachProfile: Sendable, Equatable {
         lateralMin: -0.18,
         lateralMax: 0.18,
         verticalMin: -0.28,
-        verticalMax: 0.28
+        verticalMax: 0.28,
+        forwardBandFraction: 0.08
     )
 
     /// Returns a random target in body space. Convert it through the current `BodyFrame` before
@@ -91,18 +101,22 @@ struct ReachProfile: Sendable, Equatable {
     /// particular, calibrating Bag Mode cannot silently replace its tighter lateral/forward zone
     /// with Air Mode bounds.
     ///
-    /// The far edge sits at the measured reach and the near edge a fixed **absolute** depth behind
-    /// it. The previous version scaled every bound by `usableReach / forwardMax`, which shrank the
-    /// near edge faster than the far edge — at a measured 0.55 m, Air's spawn band collapsed from
-    /// 0.62–0.75 to 0.43–0.52, roughly two-thirds of true reach. The authored depth is a punch
-    /// -length band and should survive calibration intact.
+    /// **Every target lands in the last `forwardBandFraction` of the user's reach**, so the drill
+    /// always demands something close to full extension — which is the technique being coached. A
+    /// wide forward band let targets spawn well inside the user's range, where a half-extended arm
+    /// scores a hit.
+    ///
+    /// The authored `forwardMin`/`forwardMax` are only the uncalibrated fallback; once a
+    /// measurement exists the band is derived from it, not scaled from those literals. Scaling them
+    /// proportionally (`usableReach / forwardMax`) is what previously shrank the near edge faster
+    /// than the far edge and collapsed Air's band to roughly two-thirds of true reach.
     func calibrated(measuredForwardReach: Float) -> ReachProfile {
         let usableReach = min(max(measuredForwardReach, 0.35), 0.95)
-        let depth = max(forwardMax - forwardMin, 0.01)
+        let band = min(max(forwardBandFraction, 0.01), 0.5)
 
         var result = self
         result.forwardMax = usableReach
-        result.forwardMin = max(usableReach - depth, ReachProfile.minimumForwardSpawn)
+        result.forwardMin = max(usableReach * (1 - band), ReachProfile.minimumForwardSpawn)
         // Lateral bounds are deliberately left alone. How wide a user can punch has no dimensional
         // relationship to how far forward they reach, so scaling it by the forward ratio only
         // narrowed the volume for no reason.

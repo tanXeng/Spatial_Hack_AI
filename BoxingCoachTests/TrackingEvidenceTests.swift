@@ -60,7 +60,34 @@ struct TrackingEvidenceTests {
 
         #expect(snapshot.deviceQuality == .inferred)
         #expect(snapshot.hand(for: .left) == hand)
-        requireDurableValueContract(snapshot)
+        requireConcurrentValueContract(snapshot)
+    }
+
+    @Test("Serialized snapshots are untrusted until readmitted at a supplied current time")
+    func serializedSnapshotRequiresCurrentReadmission() throws {
+        let hand = try makeHand(timestamp: 70, generation: 12)
+        let snapshot = try ValidatedTrackingSnapshot(
+            generation: 12,
+            capturedAt: 70,
+            now: 70,
+            devicePosition: .zero,
+            deviceOrientation: SIMD4(0, 0, 0, 1),
+            deviceTimestamp: 70,
+            deviceQuality: .measured,
+            hands: [hand]
+        )
+        let payload = UntrustedTrackingSnapshot(snapshot)
+        let decoded = try JSONDecoder().decode(
+            UntrustedTrackingSnapshot.self,
+            from: JSONEncoder().encode(payload)
+        )
+
+        #expect {
+            try decoded.validated(now: 70.2)
+        } throws: { error in
+            guard case .stale = error as? TrackingRejectionReason else { return false }
+            return true
+        }
     }
 
     @Test("Stale snapshots cannot become accepted evidence")
@@ -79,6 +106,144 @@ struct TrackingEvidenceTests {
                 hands: [hand],
                 maximumAge: 0.1,
                 maximumSkew: 0.03
+            )
+        } throws: { error in
+            guard case .stale = error as? TrackingRejectionReason else { return false }
+            return true
+        }
+    }
+
+    @Test("Snapshot admission limits cannot be relaxed beyond the tracking policy")
+    func snapshotAdmissionLimitsHaveHardCeilings() throws {
+        let hand = try makeHand(timestamp: 10, generation: 2)
+
+        #expect {
+            try ValidatedTrackingSnapshot(
+                generation: 2,
+                capturedAt: 10,
+                now: 10,
+                devicePosition: .zero,
+                deviceOrientation: SIMD4(0, 0, 0, 1),
+                deviceTimestamp: 10,
+                deviceQuality: .measured,
+                hands: [hand],
+                maximumAge: 0.101
+            )
+        } throws: { error in
+            error as? TrackingRejectionReason == .invalidRange(field: "maximumAge")
+        }
+
+        #expect {
+            try ValidatedTrackingSnapshot(
+                generation: 2,
+                capturedAt: 10,
+                now: 10,
+                devicePosition: .zero,
+                deviceOrientation: SIMD4(0, 0, 0, 1),
+                deviceTimestamp: 10,
+                deviceQuality: .measured,
+                hands: [hand],
+                maximumSkew: 0.034
+            )
+        } throws: { error in
+            error as? TrackingRejectionReason == .invalidRange(field: "maximumSkew")
+        }
+    }
+
+    @Test("Snapshot admission checks every timestamp against its admission time")
+    func snapshotAdmissionRejectsFutureAndIndividuallyStaleSamples() throws {
+        let currentHand = try makeHand(timestamp: 10, generation: 2)
+        let futureHand = try makeHand(timestamp: 10.01, generation: 2)
+        let staleHand = try makeHand(timestamp: 9, generation: 2)
+
+        #expect {
+            try ValidatedTrackingSnapshot(
+                generation: 2,
+                capturedAt: 10.01,
+                now: 10,
+                devicePosition: .zero,
+                deviceOrientation: SIMD4(0, 0, 0, 1),
+                deviceTimestamp: 10,
+                deviceQuality: .measured,
+                hands: [currentHand]
+            )
+        } throws: { error in
+            error as? TrackingRejectionReason == .invalidRange(field: "capturedAt")
+        }
+
+        #expect {
+            try ValidatedTrackingSnapshot(
+                generation: 2,
+                capturedAt: 10,
+                now: 10,
+                devicePosition: .zero,
+                deviceOrientation: SIMD4(0, 0, 0, 1),
+                deviceTimestamp: 10.01,
+                deviceQuality: .measured,
+                hands: [currentHand]
+            )
+        } throws: { error in
+            error as? TrackingRejectionReason == .invalidRange(field: "deviceTimestamp")
+        }
+
+        #expect {
+            try ValidatedTrackingSnapshot(
+                generation: 2,
+                capturedAt: 10,
+                now: 10,
+                devicePosition: .zero,
+                deviceOrientation: SIMD4(0, 0, 0, 1),
+                deviceTimestamp: 10,
+                deviceQuality: .measured,
+                hands: [futureHand]
+            )
+        } throws: { error in
+            error as? TrackingRejectionReason == .invalidRange(field: "handTimestamp.left")
+        }
+
+        #expect {
+            try ValidatedTrackingSnapshot(
+                generation: 2,
+                capturedAt: 10,
+                now: 10,
+                devicePosition: .zero,
+                deviceOrientation: SIMD4(0, 0, 0, 1),
+                deviceTimestamp: 10,
+                deviceQuality: .measured,
+                hands: [staleHand]
+            )
+        } throws: { error in
+            guard case .stale = error as? TrackingRejectionReason else { return false }
+            return true
+        }
+
+        #expect {
+            try ValidatedTrackingSnapshot(
+                generation: 2,
+                capturedAt: 10,
+                now: 10,
+                devicePosition: .zero,
+                deviceOrientation: SIMD4(0, 0, 0, 1),
+                deviceTimestamp: 9,
+                deviceQuality: .measured,
+                hands: [currentHand]
+            )
+        } throws: { error in
+            guard case .stale = error as? TrackingRejectionReason else { return false }
+            return true
+        }
+
+        #expect {
+            let matchingStaleHand = try makeHand(timestamp: 9, generation: 2)
+            try ValidatedTrackingSnapshot(
+                generation: 2,
+                capturedAt: 10,
+                now: 10,
+                devicePosition: .zero,
+                deviceOrientation: SIMD4(0, 0, 0, 1),
+                deviceTimestamp: 9,
+                deviceQuality: .measured,
+                hands: [matchingStaleHand]
             )
         } throws: { error in
             guard case .stale = error as? TrackingRejectionReason else { return false }
@@ -187,12 +352,16 @@ struct TrackingEvidenceTests {
             hands: [snapshotHand]
         )
         let invalidSnapshotData = try replacingJSONValue(
-            in: JSONEncoder().encode(snapshot),
+            in: JSONEncoder().encode(UntrustedTrackingSnapshot(snapshot)),
             key: "generation",
             with: 13.0
         )
+        let decodedSnapshot = try JSONDecoder().decode(
+            UntrustedTrackingSnapshot.self,
+            from: invalidSnapshotData
+        )
         #expect {
-            try JSONDecoder().decode(ValidatedTrackingSnapshot.self, from: invalidSnapshotData)
+            try decodedSnapshot.validated(now: 70)
         } throws: { error in
             error as? TrackingRejectionReason == .generationMismatch(expected: 13, actual: 12)
         }
@@ -242,6 +411,10 @@ struct TrackingEvidenceTests {
     }
 
     private func requireDurableValueContract<T: Codable & Hashable & Sendable>(_ value: T) {
+        _ = value
+    }
+
+    private func requireConcurrentValueContract<T: Hashable & Sendable>(_ value: T) {
         _ = value
     }
 

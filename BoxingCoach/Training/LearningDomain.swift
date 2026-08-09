@@ -34,11 +34,21 @@ nonisolated struct MetricMeasurement: Hashable, Sendable, Codable {
     let quality: MeasurementQuality
 }
 
+/// Stable identity for one version of an admitted technique attempt.
+nonisolated struct TechniqueAttemptIdentity: Hashable, Sendable, Codable {
+    let id: UUID
+    let version: UInt64
+    let techniqueID: String
+    let stance: Stance
+    let side: BodySide
+}
+
 /// An admitted punch paired with its deterministic score and metric provenance.
 ///
 /// `TechniqueScore` is retained rather than recreating its scoring payload, while the raw
 /// `RecordedAttempt` stays behind the scoring boundary.
 nonisolated struct TechniqueAttemptEvidence: Sendable {
+    let identity: TechniqueAttemptIdentity
     let punch: ValidatedPunchEvidence
     let score: TechniqueScore
     let metricMeasurements: [MetricMeasurement]
@@ -50,8 +60,13 @@ nonisolated struct TechniqueAttemptEvidence: Sendable {
     init(
         punch: ValidatedPunchEvidence,
         score: TechniqueScore,
-        metricQuality: [SubMetricKind: MeasurementQuality]
+        metricQuality: [SubMetricKind: MeasurementQuality],
+        attemptID: UUID = UUID(),
+        version: UInt64 = 1
     ) throws {
+        guard version > 0 else {
+            throw LearningEvidenceRejectionReason.invalidRange(field: "version")
+        }
         guard score.techniqueID == punch.technique.id else {
             throw LearningEvidenceRejectionReason.techniqueMismatch(
                 expected: punch.technique.id,
@@ -98,6 +113,13 @@ nonisolated struct TechniqueAttemptEvidence: Sendable {
             measurements.append(MetricMeasurement(kind: metric.kind, quality: quality))
         }
 
+        self.identity = TechniqueAttemptIdentity(
+            id: attemptID,
+            version: version,
+            techniqueID: punch.technique.id,
+            stance: punch.stance,
+            side: punch.side
+        )
         self.punch = punch
         self.score = score
         self.metricMeasurements = measurements.sorted {
@@ -113,6 +135,15 @@ nonisolated struct TechniqueAttemptEvidence: Sendable {
 
 /// One actionable correction selected from deterministic submetric evidence.
 nonisolated struct CorrectionPlan: Hashable, Sendable, Codable {
+    private enum CodingKeys: String, CodingKey {
+        case technique
+        case focus
+        case rationale
+        case cue
+        case rehearsalCount
+        case targetImprovement
+    }
+
     let technique: Technique
     let focus: SubMetricKind
     let rationale: String
@@ -151,6 +182,18 @@ nonisolated struct CorrectionPlan: Hashable, Sendable, Codable {
         self.cue = cue
         self.rehearsalCount = rehearsalCount
         self.targetImprovement = targetImprovement
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            technique: values.decode(Technique.self, forKey: .technique),
+            focus: values.decode(SubMetricKind.self, forKey: .focus),
+            rationale: values.decode(String.self, forKey: .rationale),
+            cue: values.decode(String.self, forKey: .cue),
+            rehearsalCount: values.decode(Int.self, forKey: .rehearsalCount),
+            targetImprovement: values.decode(Float.self, forKey: .targetImprovement)
+        )
     }
 }
 
@@ -236,8 +279,8 @@ nonisolated struct CoachingCycleResult: Sendable {
               technique == correction.technique,
               stance == baseline.stance,
               stance == retest.stance,
-              proof.baseline.technique == technique,
-              proof.retest.technique == technique,
+              proof.baseline.identity == baseline.identity,
+              proof.retest.identity == retest.identity,
               proof.overallDelta == retest.score.overall - baseline.score.overall
         else { throw LearningEvidenceRejectionReason.attemptIdentityMismatch }
 

@@ -117,18 +117,10 @@ nonisolated struct ValidatedHandObservation: Hashable, Sendable, Codable {
 }
 
 /// A time-coherent device/hand snapshot from one tracking generation.
-nonisolated struct ValidatedTrackingSnapshot: Hashable, Sendable, Codable {
-    private enum CodingKeys: String, CodingKey {
-        case generation
-        case capturedAt
-        case devicePosition
-        case deviceOrientation
-        case deviceTimestamp
-        case deviceQuality
-        case hands
-    }
-
-    static let defaultMaximumAge: TimeInterval = 0.1
+nonisolated struct ValidatedTrackingSnapshot: Hashable, Sendable {
+    static let hardMaximumAge: TimeInterval = 0.1
+    static let hardMaximumSkew: TimeInterval = 0.033
+    static let defaultMaximumAge = hardMaximumAge
     static let defaultMaximumSkew: TimeInterval = 0.03
 
     let generation: UInt64
@@ -159,9 +151,15 @@ nonisolated struct ValidatedTrackingSnapshot: Hashable, Sendable, Codable {
         try TrackingEvidenceValidation.requireFinite(deviceTimestamp, field: "deviceTimestamp")
         try TrackingEvidenceValidation.requireFinite(maximumAge, field: "maximumAge")
         try TrackingEvidenceValidation.requireFinite(maximumSkew, field: "maximumSkew")
-        guard capturedAt >= 0, now >= 0, deviceTimestamp >= 0,
-              maximumAge >= 0, maximumSkew >= 0
-        else { throw TrackingRejectionReason.invalidRange(field: "timestamp") }
+        guard capturedAt >= 0, now >= 0, deviceTimestamp >= 0 else {
+            throw TrackingRejectionReason.invalidRange(field: "timestamp")
+        }
+        guard (0...Self.hardMaximumAge).contains(maximumAge) else {
+            throw TrackingRejectionReason.invalidRange(field: "maximumAge")
+        }
+        guard (0...Self.hardMaximumSkew).contains(maximumSkew) else {
+            throw TrackingRejectionReason.invalidRange(field: "maximumSkew")
+        }
         guard !hands.isEmpty else { throw TrackingRejectionReason.missingHandEvidence }
 
         var seenSides: Set<BodySide> = []
@@ -177,9 +175,25 @@ nonisolated struct ValidatedTrackingSnapshot: Hashable, Sendable, Codable {
             }
         }
 
-        let age = abs(now - capturedAt)
-        guard age <= maximumAge else {
-            throw TrackingRejectionReason.stale(age: age, maximumAge: maximumAge)
+        try Self.requireFresh(
+            timestamp: capturedAt,
+            field: "capturedAt",
+            now: now,
+            maximumAge: maximumAge
+        )
+        try Self.requireFresh(
+            timestamp: deviceTimestamp,
+            field: "deviceTimestamp",
+            now: now,
+            maximumAge: maximumAge
+        )
+        for hand in hands {
+            try Self.requireFresh(
+                timestamp: hand.timestamp,
+                field: "handTimestamp.\(hand.side.rawValue)",
+                now: now,
+                maximumAge: maximumAge
+            )
         }
 
         let timestamps = hands.map(\.timestamp) + [deviceTimestamp]
@@ -203,18 +217,59 @@ nonisolated struct ValidatedTrackingSnapshot: Hashable, Sendable, Codable {
         hands.first { $0.side == side }
     }
 
-    init(from decoder: Decoder) throws {
-        let values = try decoder.container(keyedBy: CodingKeys.self)
-        let capturedAt = try values.decode(TimeInterval.self, forKey: .capturedAt)
-        try self.init(
-            generation: values.decode(UInt64.self, forKey: .generation),
+    private static func requireFresh(
+        timestamp: TimeInterval,
+        field: String,
+        now: TimeInterval,
+        maximumAge: TimeInterval
+    ) throws {
+        guard timestamp <= now else {
+            throw TrackingRejectionReason.invalidRange(field: field)
+        }
+        let age = now - timestamp
+        guard age <= maximumAge else {
+            throw TrackingRejectionReason.stale(age: age, maximumAge: maximumAge)
+        }
+    }
+
+}
+
+/// Serializable snapshot data that must re-enter admission before becoming trusted evidence.
+nonisolated struct UntrustedTrackingSnapshot: Hashable, Sendable, Codable {
+    let generation: UInt64
+    let capturedAt: TimeInterval
+    let devicePosition: SIMD3<Float>
+    let deviceOrientation: SIMD4<Float>
+    let deviceTimestamp: TimeInterval
+    let deviceQuality: MeasurementQuality
+    let hands: [ValidatedHandObservation]
+
+    init(_ snapshot: ValidatedTrackingSnapshot) {
+        generation = snapshot.generation
+        capturedAt = snapshot.capturedAt
+        devicePosition = snapshot.devicePosition
+        deviceOrientation = snapshot.deviceOrientation
+        deviceTimestamp = snapshot.deviceTimestamp
+        deviceQuality = snapshot.deviceQuality
+        hands = snapshot.hands
+    }
+
+    func validated(
+        now: TimeInterval,
+        maximumAge: TimeInterval = ValidatedTrackingSnapshot.defaultMaximumAge,
+        maximumSkew: TimeInterval = ValidatedTrackingSnapshot.defaultMaximumSkew
+    ) throws -> ValidatedTrackingSnapshot {
+        try ValidatedTrackingSnapshot(
+            generation: generation,
             capturedAt: capturedAt,
-            now: capturedAt,
-            devicePosition: values.decode(SIMD3<Float>.self, forKey: .devicePosition),
-            deviceOrientation: values.decode(SIMD4<Float>.self, forKey: .deviceOrientation),
-            deviceTimestamp: values.decode(TimeInterval.self, forKey: .deviceTimestamp),
-            deviceQuality: values.decode(MeasurementQuality.self, forKey: .deviceQuality),
-            hands: values.decode([ValidatedHandObservation].self, forKey: .hands)
+            now: now,
+            devicePosition: devicePosition,
+            deviceOrientation: deviceOrientation,
+            deviceTimestamp: deviceTimestamp,
+            deviceQuality: deviceQuality,
+            hands: hands,
+            maximumAge: maximumAge,
+            maximumSkew: maximumSkew
         )
     }
 }

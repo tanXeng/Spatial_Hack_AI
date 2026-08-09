@@ -9,7 +9,8 @@ enum CoachClipID: String, CaseIterable, Sendable {
     case backToGuard = "back_to_guard"
     case repFaster = "rep_faster"
     case countdown
-    case hitTarget = "hit_target"
+    // Per-impact feedback uses an original short transient, not the legacy spoken prompt.
+    case hitTarget = "clean_hit_1"
     case scoring
     case resultsGood = "results_good"
     case resultsNeedsWork = "results_needs_work"
@@ -31,22 +32,47 @@ enum CoachClipID: String, CaseIterable, Sendable {
     case didntCatch = "didnt_catch"
 }
 
+/// Original, non-verbal sonic-ring resources used by the training-audio coordinator.
+enum SonicRingSoundID: String, CaseIterable, Sendable {
+    case calibrateReach = "calibrate_reach"
+    case extendOtherArm = "extend_other_arm"
+    case reachCalibrated = "reach_calibrated"
+    case gymAmbienceLoop = "gym_ambience_loop"
+    case competitionCrowdLowLoop = "competition_crowd_low_loop"
+    case bellStart = "bell_start"
+    case bellEnd = "bell_end"
+    case cleanHitOne = "clean_hit_1"
+    case cleanHitTwo = "clean_hit_2"
+    case cleanHitThree = "clean_hit_3"
+    case rejectedHit = "rejected_hit"
+    case trackingLost = "tracking_lost"
+    case trackingRestored = "tracking_restored"
+    case improvementSting = "improvement_sting"
+    case winnerSwell = "winner_swell"
+}
+
 enum CoachClipLibrary {
-    private static let fileExtension = "mp3"
+    private static let fileExtensions = ["mp3", "wav", "m4a", "aac"]
     private static let subdirectories = ["CoachAudio", "Resources/CoachAudio", nil as String?]
 
     static func url(for id: CoachClipID) -> URL? {
         url(for: id.rawValue)
     }
 
+    static func url(for id: SonicRingSoundID) -> URL? {
+        url(for: id.rawValue)
+    }
+
     static func url(for id: String) -> URL? {
         for subdirectory in subdirectories {
-            if let url = Bundle.main.url(
-                forResource: id,
-                withExtension: fileExtension,
-                subdirectory: subdirectory
-            ) {
-                return url
+            for fileExtension in fileExtensions {
+                if let url = Bundle.main.url(
+                    forResource: id,
+                    withExtension: fileExtension,
+                    subdirectory: subdirectory
+                ) {
+                    return url
+                }
             }
         }
 
@@ -56,7 +82,7 @@ enum CoachClipLibrary {
             includingPropertiesForKeys: nil
         )
         while let fileURL = enumerator?.nextObject() as? URL {
-            guard fileURL.pathExtension.lowercased() == fileExtension else { continue }
+            guard fileExtensions.contains(fileURL.pathExtension.lowercased()) else { continue }
             guard fileURL.deletingPathExtension().lastPathComponent == id else { continue }
             return fileURL
         }

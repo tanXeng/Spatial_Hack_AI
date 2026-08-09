@@ -103,10 +103,15 @@ final class AuraPunchSession {
     private(set) var score: TechniqueScore?
     private(set) var feedback: CoachingFeedback?
     private(set) var currentDemoRep = 0
+    /// Invalidates a demonstration segment when a live command changes where the loop continues.
+    /// The loop witnesses this token after every suspension before it may publish another step.
+    private(set) var demoContinuationGeneration: UInt64 = 1
     /// Active scored punch during the 3-punch round (0 when not scoring).
     private(set) var currentScoredPunch = 0
     private(set) var isVoicePaused = false
     private(set) var voicePauseInvalidationCount = 0
+    private(set) var voiceResumeGeneration: UInt64 = 1
+    private(set) var activeVoiceResumeGeneration: UInt64?
     private(set) var demonstrationRate: TrainingDemoRate = .normal
     /// Live reach fraction during the attempt, for the UI's punch meter.
     private(set) var liveReach: Float = 0
@@ -140,6 +145,7 @@ final class AuraPunchSession {
     /// Monotonic local token. It never crosses the relay boundary.
     private var feedbackGeneration: UInt64 = 0
     private var phaseBeforeVoicePause: AuraPunchPhase?
+    private var requestedDemoRep: Int?
     private var scoredRoundScores: [TechniqueScore] = []
     /// The last actionable metric focus in this training session.
     private var previousCorrectionFocus: SubMetricKind?
@@ -218,6 +224,8 @@ final class AuraPunchSession {
         liveReach = 0
         isVoicePaused = false
         phaseBeforeVoicePause = nil
+        invalidateVoiceResume()
+        invalidateDemoContinuation()
         scoredRoundScores.removeAll(keepingCapacity: true)
 
         // Rebuild the ghost arms for the currently selected technique — switching from a jab to a
@@ -250,6 +258,8 @@ final class AuraPunchSession {
         currentScoredPunch = 0
         isVoicePaused = false
         phaseBeforeVoicePause = nil
+        invalidateVoiceResume()
+        invalidateDemoContinuation()
         phase = .idle
         statusMessage = "Stopped"
         audioCoordinator.handleImmediately(.trainingDidStop(
@@ -259,6 +269,8 @@ final class AuraPunchSession {
 
     func reset() {
         stop()
+        invalidateVoiceResume()
+        invalidateDemoContinuation()
         phase = .idle
         score = nil
         feedback = nil
@@ -278,6 +290,8 @@ final class AuraPunchSession {
         phaseBeforeVoicePause = phase
         isVoicePaused = true
         voicePauseInvalidationCount &+= 1
+        invalidateVoiceResume()
+        invalidateDemoContinuation()
         loopTask?.cancel()
         loopTask = nil
         for recorder in recorders.values { recorder.cancel() }
@@ -288,30 +302,80 @@ final class AuraPunchSession {
     }
 
     func resumeAfterFreshGuard(
-        countdown: @MainActor (Int) async -> Void = { count in
+        countdown: @MainActor (Int) async throws -> Void = { count in
             _ = count
-            try? await Task.sleep(for: .seconds(1))
+            try await Task.sleep(for: .seconds(1))
         },
         commandIsCurrent: @MainActor () -> Bool = { true }
     ) async -> String? {
-        guard isVoicePaused, commandIsCurrent(), hasFreshVoiceGuard() else { return nil }
+        await performVoiceResume(
+            evidence: { [weak self] in self?.currentVoiceGuardSnapshot() },
+            countdown: countdown,
+            commandIsCurrent: commandIsCurrent
+        )
+    }
+
+    func resumeAfterFreshGuard(
+        using snapshot: VoiceGuardSnapshot,
+        countdown: @MainActor (Int) async throws -> Void,
+        commandIsCurrent: @MainActor () -> Bool = { true }
+    ) async -> String? {
+        await performVoiceResume(
+            evidence: { snapshot },
+            countdown: countdown,
+            commandIsCurrent: commandIsCurrent
+        )
+    }
+
+    private func performVoiceResume(
+        evidence: @MainActor () -> VoiceGuardSnapshot?,
+        countdown: @MainActor (Int) async throws -> Void,
+        commandIsCurrent: @MainActor () -> Bool
+    ) async -> String? {
+        guard !Task.isCancelled,
+              isVoicePaused,
+              commandIsCurrent(),
+              let initialEvidence = evidence(),
+              acceptsVoiceResumeGuard(initialEvidence) else { return nil }
+
+        voiceResumeGeneration &+= 1
+        let requestGeneration = voiceResumeGeneration
+        let trackingGeneration = initialEvidence.generation
         let pausedPhase = phaseBeforeVoicePause
-        let generation = hands.providerGeneration
+
+        func requestIsCurrent() -> Bool {
+            guard !Task.isCancelled,
+                  requestGeneration == voiceResumeGeneration,
+                  isVoicePaused,
+                  commandIsCurrent(),
+                  let currentEvidence = evidence(),
+                  currentEvidence.generation == trackingGeneration else { return false }
+            return acceptsVoiceResumeGuard(currentEvidence)
+        }
+
         for count in [3, 2, 1] {
+            guard requestIsCurrent() else { return nil }
             setCoaching(
                 headline: "YOUR TURN",
                 detail: "Resuming in \(count)…",
                 status: "Resuming in \(count)…"
             )
-            await countdown(count)
-            guard isVoicePaused,
-                  commandIsCurrent(),
-                  hands.providerGeneration == generation,
-                  hasFreshVoiceGuard() else { return nil }
+            do {
+                try await countdown(count)
+            } catch {
+                return nil
+            }
+            guard requestIsCurrent() else { return nil }
         }
 
+        guard requestIsCurrent(),
+              let pausedPhase,
+              [.acquiring, .guiding, .countdown, .attempting].contains(pausedPhase) else {
+            return nil
+        }
         isVoicePaused = false
         phaseBeforeVoicePause = nil
+        activeVoiceResumeGeneration = requestGeneration
         let solver = ArmPoseSolver(measurements: measurements)
         loopTask = Task { [weak self] in
             guard let self else { return }
@@ -329,7 +393,7 @@ final class AuraPunchSession {
                 await self.runCountdown()
                 guard !Task.isCancelled else { return }
                 await self.runScoredTargetRound(solver: solver)
-            case .idle, .scoring, .results, nil:
+            case .idle, .scoring, .results:
                 return
             }
         }
@@ -339,6 +403,7 @@ final class AuraPunchSession {
     func repeatDemo() -> String? {
         guard phase == .guiding, !isVoicePaused else { return nil }
         let repeatedRep = max(1, currentDemoRep)
+        invalidateDemoContinuation()
         loopTask?.cancel()
         targets.removeActiveTarget()
         let solver = ArmPoseSolver(measurements: measurements)
@@ -366,8 +431,36 @@ final class AuraPunchSession {
     func advanceDemo() -> String? {
         guard phase == .guiding, !isVoicePaused else { return nil }
         let nextRep = min(max(1, currentDemoRep + 1), max(1, guidedRepetitions))
+        guard nextRep > currentDemoRep else { return nil }
+        demoContinuationGeneration &+= 1
+        requestedDemoRep = nextRep
         currentDemoRep = nextRep
         return "Moving to demo \(nextRep)."
+    }
+
+    /// Publishes the rep that the production demonstration loop is about to play. A stale loop
+    /// cannot overwrite an accepted `next` command because its captured generation is rejected.
+    @discardableResult
+    func guidedDemoDidBegin(
+        at rep: Int,
+        continuationGeneration: UInt64
+    ) -> Bool {
+        guard continuationGeneration == demoContinuationGeneration,
+              requestedDemoRep == nil,
+              (1...max(1, guidedRepetitions)).contains(rep) else { return false }
+        phase = .guiding
+        currentDemoRep = rep
+        return true
+    }
+
+    private func invalidateDemoContinuation() {
+        demoContinuationGeneration &+= 1
+        requestedDemoRep = nil
+    }
+
+    private func invalidateVoiceResume() {
+        voiceResumeGeneration &+= 1
+        activeVoiceResumeGeneration = nil
     }
 
     func requestCorrection() -> String? {
@@ -401,12 +494,44 @@ final class AuraPunchSession {
         }
     }
 
-    private func hasFreshVoiceGuard() -> Bool {
-        guard hands.isRunning,
-              hands.deviceTransform != nil,
+    func acceptsVoiceResumeGuard(_ snapshot: VoiceGuardSnapshot) -> Bool {
+        VoiceGuardValidator.accepts(
+            snapshot,
+            capturedGuards: nil,
+            shoulderWidth: measurements.shoulderWidth,
+            armReach: measurements.armReach
+        )
+    }
+
+    private func currentVoiceGuardSnapshot() -> VoiceGuardSnapshot? {
+        guard let frame = currentBodyFrame(solver: ArmPoseSolver(measurements: measurements)),
               let left = hands.freshObservation(for: .left),
-              let right = hands.freshObservation(for: .right) else { return false }
-        return left.fistState == .closed && right.fistState == .closed
+              let right = hands.freshObservation(for: .right) else { return nil }
+        let generation = hands.providerGeneration
+        let continuityEpoch = hands.continuityEpoch
+        return VoiceGuardSnapshot(
+            trackingIsRunning: hands.isRunning,
+            capturedAt: CACurrentMediaTime(),
+            generation: generation,
+            continuityEpoch: continuityEpoch,
+            frame: VoiceGuardFrame(frame),
+            left: VoiceGuardHandEvidence(
+                side: left.side,
+                fistPosition: left.fistPosition,
+                fistState: left.fistState,
+                acquisitionTimestamp: left.acquisitionTimestamp,
+                generation: generation,
+                continuityEpoch: continuityEpoch
+            ),
+            right: VoiceGuardHandEvidence(
+                side: right.side,
+                fistPosition: right.fistPosition,
+                fistState: right.fistState,
+                acquisitionTimestamp: right.acquisitionTimestamp,
+                generation: generation,
+                continuityEpoch: continuityEpoch
+            )
+        )
     }
 
     // MARK: Session loop
@@ -505,19 +630,34 @@ final class AuraPunchSession {
         solver: ArmPoseSolver,
         startingAt startRep: Int = 1
     ) async {
+        guard !Task.isCancelled else { return }
         phase = .guiding
         mirrorArm?.isVisible = false
 
         let reps = max(1, guidedRepetitions)
         let clampedStartRep = min(max(1, startRep), reps)
+        var rep = clampedStartRep
+        var continuationGeneration = demoContinuationGeneration
         var speedFactor = max(
             minimumGuidedSpeedFactor,
             pow(guidedSpeedUp, Double(clampedStartRep - 1))
         )
 
-        for rep in clampedStartRep...reps {
-            if Task.isCancelled { return }
-            currentDemoRep = rep
+        demoLoop: while rep <= reps {
+            guard !Task.isCancelled else { return }
+            if let requestedRep = requestedDemoRep {
+                rep = requestedRep
+                requestedDemoRep = nil
+                continuationGeneration = demoContinuationGeneration
+                speedFactor = max(
+                    minimumGuidedSpeedFactor,
+                    pow(guidedSpeedUp, Double(rep - 1))
+                )
+            }
+            guard guidedDemoDidBegin(
+                at: rep,
+                continuationGeneration: continuationGeneration
+            ) else { return }
 
             // Resolved per rep, not once for the whole set, so an `.either`-hand technique can
             // alternate which arm the ghost demonstrates on.
@@ -545,9 +685,14 @@ final class AuraPunchSession {
                 to: reference.peakTime,
                 speedFactor: speedFactor,
                 phaseMessage: statusMessage,
-                trackLandingTarget: true
+                trackLandingTarget: true,
+                continuationGeneration: continuationGeneration
             )
-            if Task.isCancelled { return }
+            guard !Task.isCancelled else { return }
+            if continuationGeneration != demoContinuationGeneration {
+                guard requestedDemoRep != nil else { return }
+                continue demoLoop
+            }
 
             setCoaching(
                 headline: "MATCH THE HOLOGRAM",
@@ -560,9 +705,14 @@ final class AuraPunchSession {
                 solver: solver,
                 at: reference.peakTime,
                 phaseMessage: statusMessage,
-                trackLandingTarget: true
+                trackLandingTarget: true,
+                continuationGeneration: continuationGeneration
             )
-            if Task.isCancelled { return }
+            guard !Task.isCancelled else { return }
+            if continuationGeneration != demoContinuationGeneration {
+                guard requestedDemoRep != nil else { return }
+                continue demoLoop
+            }
 
             targets.removeActiveTarget()
 
@@ -579,9 +729,14 @@ final class AuraPunchSession {
                 to: reference.duration,
                 speedFactor: speedFactor,
                 phaseMessage: statusMessage,
-                trackLandingTarget: false
+                trackLandingTarget: false,
+                continuationGeneration: continuationGeneration
             )
-            if Task.isCancelled { return }
+            guard !Task.isCancelled else { return }
+            if continuationGeneration != demoContinuationGeneration {
+                guard requestedDemoRep != nil else { return }
+                continue demoLoop
+            }
 
             setCoaching(
                 headline: "BACK TO GUARD",
@@ -594,11 +749,17 @@ final class AuraPunchSession {
                 solver: solver,
                 at: reference.duration,
                 phaseMessage: statusMessage,
-                trackLandingTarget: false
+                trackLandingTarget: false,
+                continuationGeneration: continuationGeneration
             )
-            if Task.isCancelled { return }
+            guard !Task.isCancelled else { return }
+            if continuationGeneration != demoContinuationGeneration {
+                guard requestedDemoRep != nil else { return }
+                continue demoLoop
+            }
 
             speedFactor = max(minimumGuidedSpeedFactor, speedFactor * guidedSpeedUp)
+            rep += 1
         }
 
         targets.removeActiveTarget()
@@ -619,10 +780,13 @@ final class AuraPunchSession {
         to end: TimeInterval,
         speedFactor: Double,
         phaseMessage: String,
-        trackLandingTarget: Bool = false
+        trackLandingTarget: Bool = false,
+        continuationGeneration: UInt64
     ) async {
         let span = max(0, end - start)
         guard span > 0 else {
+            guard !Task.isCancelled,
+                  continuationGeneration == demoContinuationGeneration else { return }
             poseGhost(reference: reference, side: side, solver: solver, at: end)
             return
         }
@@ -632,7 +796,8 @@ final class AuraPunchSession {
         var lastTick = CACurrentMediaTime()
 
         while activeElapsed < wallDuration {
-            if Task.isCancelled { return }
+            guard !Task.isCancelled,
+                  continuationGeneration == demoContinuationGeneration else { return }
 
             let now = CACurrentMediaTime()
             let guardUp = nonPunchingGuardStatus(punchingSide: side, solver: solver)
@@ -694,14 +859,16 @@ final class AuraPunchSession {
         solver: ArmPoseSolver,
         at referenceTime: TimeInterval,
         phaseMessage: String,
-        trackLandingTarget: Bool = false
+        trackLandingTarget: Bool = false,
+        continuationGeneration: UInt64
     ) async {
         guard let targetFist = reference.sample(at: referenceTime)?.fist else { return }
         let goal = HoldGoal(targetFist: targetFist, tolerance: followPositionTolerance)
         let deadline = CACurrentMediaTime() + followHoldTimeout
 
         while CACurrentMediaTime() < deadline {
-            if Task.isCancelled { return }
+            guard !Task.isCancelled,
+                  continuationGeneration == demoContinuationGeneration else { return }
 
             if nonPunchingGuardStatus(punchingSide: side, solver: solver) == false {
                 if statusMessage != GuardCoach.waitMessage {

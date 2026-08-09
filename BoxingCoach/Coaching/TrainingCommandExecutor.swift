@@ -1,4 +1,149 @@
 import Foundation
+import simd
+
+nonisolated struct VoiceGuardFrame: Equatable, Sendable {
+    let origin: SIMD3<Float>
+    let right: SIMD3<Float>
+    let up: SIMD3<Float>
+    let forward: SIMD3<Float>
+    let headPosition: SIMD3<Float>
+
+    init(
+        origin: SIMD3<Float>,
+        right: SIMD3<Float>,
+        up: SIMD3<Float>,
+        forward: SIMD3<Float>,
+        headPosition: SIMD3<Float>
+    ) {
+        self.origin = origin
+        self.right = right
+        self.up = up
+        self.forward = forward
+        self.headPosition = headPosition
+    }
+
+    @MainActor
+    init(_ frame: BodyFrame) {
+        self.init(
+            origin: frame.origin,
+            right: frame.right,
+            up: frame.up,
+            forward: frame.forward,
+            headPosition: frame.headPosition
+        )
+    }
+
+    var isFinite: Bool {
+        origin.isFinite && right.isFinite && up.isFinite && forward.isFinite
+            && headPosition.isFinite
+    }
+
+    func toBody(_ world: SIMD3<Float>) -> SIMD3<Float> {
+        let offset = world - origin
+        return SIMD3(
+            simd_dot(offset, right),
+            simd_dot(offset, up),
+            simd_dot(offset, forward)
+        )
+    }
+
+    func toWorld(_ body: SIMD3<Float>) -> SIMD3<Float> {
+        origin + right * body.x + up * body.y + forward * body.z
+    }
+}
+
+nonisolated struct VoiceGuardHandEvidence: Equatable, Sendable {
+    let side: BodySide
+    let fistPosition: SIMD3<Float>
+    let fistState: TrackedFistState
+    let acquisitionTimestamp: TimeInterval
+    let generation: UInt64
+    let continuityEpoch: UInt64
+}
+
+nonisolated struct VoiceGuardSnapshot: Equatable, Sendable {
+    let trackingIsRunning: Bool
+    let capturedAt: TimeInterval
+    let generation: UInt64
+    let continuityEpoch: UInt64
+    let frame: VoiceGuardFrame
+    let left: VoiceGuardHandEvidence
+    let right: VoiceGuardHandEvidence
+}
+
+nonisolated enum VoiceGuardValidator {
+    static let fallbackTolerance: Float = 0.32
+    static let maximumShoulderReachFraction: Float = 0.70
+
+    static func accepts(
+        _ snapshot: VoiceGuardSnapshot,
+        capturedGuards: [BodySide: SIMD3<Float>]?,
+        shoulderWidth: Float,
+        armReach: Float
+    ) -> Bool {
+        guard snapshot.trackingIsRunning,
+              snapshot.capturedAt.isFinite,
+              snapshot.capturedAt >= 0,
+              snapshot.frame.isFinite,
+              shoulderWidth.isFinite,
+              shoulderWidth > 0,
+              armReach.isFinite,
+              armReach > 0 else { return false }
+
+        let hands = [snapshot.left, snapshot.right]
+        guard snapshot.left.side == .left,
+              snapshot.right.side == .right,
+              hands.allSatisfy({ hand in
+                  hand.fistPosition.isFinite
+                      && hand.fistState == .closed
+                      && hand.acquisitionTimestamp.isFinite
+                      && hand.acquisitionTimestamp >= 0
+                      && snapshot.capturedAt >= hand.acquisitionTimestamp
+                      && snapshot.capturedAt - hand.acquisitionTimestamp
+                          <= TrackingRuntimeReducer.maximumAcquisitionAge
+                      && hand.generation == snapshot.generation
+                      && hand.continuityEpoch == snapshot.continuityEpoch
+              }),
+              abs(snapshot.left.acquisitionTimestamp - snapshot.right.acquisitionTimestamp)
+                  <= ValidatedTrackingSnapshot.hardMaximumSkew else { return false }
+
+        let bodyFists = Dictionary(uniqueKeysWithValues: hands.map {
+            ($0.side, snapshot.frame.toBody($0.fistPosition))
+        })
+        guard let leftFist = bodyFists[.left],
+              let rightFist = bodyFists[.right],
+              bodyFists.values.allSatisfy(\.isFinite) else { return false }
+
+        if let capturedGuards,
+           let leftGuard = capturedGuards[.left],
+           let rightGuard = capturedGuards[.right] {
+            guard leftGuard.isFinite, rightGuard.isFinite else { return false }
+            return simd_distance(leftFist, leftGuard)
+                    <= CombinationPunchValidator.guardRadius
+                && simd_distance(rightFist, rightGuard)
+                    <= CombinationPunchValidator.guardRadius
+        }
+
+        let headBody = snapshot.frame.toBody(snapshot.frame.headPosition)
+        return hands.allSatisfy { hand in
+            guard let fistBody = bodyFists[hand.side] else { return false }
+            let expectedFromHead = SIMD3<Float>(
+                hand.side.lateralSign * 0.18,
+                -0.15,
+                0.23
+            )
+            let normalizedFromHead = (fistBody - headBody) / armReach
+            let shoulderBody = SIMD3<Float>(
+                hand.side.lateralSign * shoulderWidth * 0.5,
+                0,
+                0
+            )
+            return simd_distance(normalizedFromHead, expectedFromHead) <= fallbackTolerance
+                && simd_distance(fistBody, shoulderBody)
+                    <= armReach * maximumShoulderReachFraction
+        }
+    }
+}
 
 nonisolated enum TrainingDemoRate: String, CaseIterable, Hashable, Sendable {
     case slower

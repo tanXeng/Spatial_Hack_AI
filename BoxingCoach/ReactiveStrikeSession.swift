@@ -160,6 +160,45 @@ nonisolated struct ReactiveTargetRetryPlan: Sendable {
     }
 }
 
+nonisolated enum ReactiveVoiceResumeLocation: Equatable, Sendable {
+    case calibration
+    case airTarget(index: Int)
+    case combination(rep: Int, step: Int)
+}
+
+/// Separates the index still shown to the boxer from the next unit of executable work. A voice
+/// pause can land after scoring but before an inter-target delay finishes; using the display index
+/// as the execution cursor would replay that completed score on resume.
+nonisolated enum ReactiveVoiceContinuationCheckpoint: Equatable, Sendable {
+    case calibration
+    case activeAirTarget(index: Int)
+    case interTargetDelay(displayedTargetIndex: Int, nextTargetIndex: Int)
+    case activeCombinationStep(rep: Int, step: Int)
+    case interCombinationStepDelay(
+        displayedRepIndex: Int,
+        displayedStepIndex: Int,
+        nextStepIndex: Int
+    )
+    case interCombinationDelay(displayedRepIndex: Int, nextRepIndex: Int)
+
+    var resumeLocation: ReactiveVoiceResumeLocation {
+        switch self {
+        case .calibration:
+            return .calibration
+        case let .activeAirTarget(index):
+            return .airTarget(index: index)
+        case let .interTargetDelay(_, nextTargetIndex):
+            return .airTarget(index: nextTargetIndex)
+        case let .activeCombinationStep(rep, step):
+            return .combination(rep: rep, step: step)
+        case let .interCombinationStepDelay(rep, _, nextStepIndex):
+            return .combination(rep: rep, step: nextStepIndex)
+        case let .interCombinationDelay(_, nextRepIndex):
+            return .combination(rep: nextRepIndex, step: 0)
+        }
+    }
+}
+
 /// Owns Reactive Strike calibration and the target/combination drill loops.
 @Observable
 @MainActor
@@ -176,6 +215,9 @@ final class ReactiveStrikeSession {
     private(set) var trackingReadyToResume = false
     private(set) var isVoicePaused = false
     private(set) var voicePauseInvalidationCount = 0
+    private(set) var voiceResumeGeneration: UInt64 = 1
+    private(set) var activeVoiceResumeGeneration: UInt64?
+    private(set) var voiceContinuationCheckpoint: ReactiveVoiceContinuationCheckpoint = .calibration
     private(set) var latestCalibratedReaches: [BodySide: Float] = [:]
     private(set) var competitionSteps: [CompetitionStepEvidence] = []
     private(set) var competitionTrackingStatus: CompetitionTrackingStatus = .complete
@@ -395,10 +437,12 @@ final class ReactiveStrikeSession {
         }
         audioCoordinator.handleImmediately(.experienceDidEnter(audioStage))
 
+        invalidateVoiceResume()
         metrics.reset()
         currentTargetIndex = 0
         currentComboStepIndex = 0
         comboRepsCompleted = 0
+        voiceContinuationCheckpoint = .calibration
         competitionSteps.removeAll(keepingCapacity: true)
         competitionTrackingStatus = .complete
         competitionActiveElapsedTime = nil
@@ -430,6 +474,7 @@ final class ReactiveStrikeSession {
         audioCoordinator.handleImmediately(.trainingDidStop(
             preservingVoiceCapture: preservingVoiceCapture
         ))
+        invalidateVoiceResume()
 
         drillTask?.cancel()
         drillTask = nil
@@ -457,6 +502,7 @@ final class ReactiveStrikeSession {
         currentTargetIndex = 0
         currentComboStepIndex = 0
         comboRepsCompleted = 0
+        voiceContinuationCheckpoint = .calibration
         competitionSteps.removeAll(keepingCapacity: true)
         competitionTrackingStatus = .complete
         competitionActiveElapsedTime = nil
@@ -510,6 +556,7 @@ final class ReactiveStrikeSession {
         trackingReadyToResume = false
         trackingResumeRequested = false
         voicePauseInvalidationCount &+= 1
+        invalidateVoiceResume()
         drillTask?.cancel()
         drillTask = nil
         targets.removeActiveTarget()
@@ -521,53 +568,87 @@ final class ReactiveStrikeSession {
     /// Resumes only from the same live session after tracking is running and both current fists
     /// are freshly closed in guard. The supplied countdown seam keeps tests deterministic.
     func resumeAfterFreshGuard(
-        countdown: @MainActor (Int) async -> Void = { count in
+        countdown: @MainActor (Int) async throws -> Void = { count in
             _ = count
-            try? await Task.sleep(for: .seconds(1))
+            try await Task.sleep(for: .seconds(1))
         },
         commandIsCurrent: @MainActor () -> Bool = { true }
     ) async -> String? {
-        guard isVoicePaused,
-              commandIsCurrent(),
-              hands.isRunning,
-              hasFreshVoiceGuard() else { return nil }
+        await performVoiceResume(
+            evidence: { [weak self] in self?.currentVoiceGuardSnapshot() },
+            countdown: countdown,
+            commandIsCurrent: commandIsCurrent
+        )
+    }
 
+    func resumeAfterFreshGuard(
+        using snapshot: VoiceGuardSnapshot,
+        countdown: @MainActor (Int) async throws -> Void,
+        commandIsCurrent: @MainActor () -> Bool = { true }
+    ) async -> String? {
+        await performVoiceResume(
+            evidence: { snapshot },
+            countdown: countdown,
+            commandIsCurrent: commandIsCurrent
+        )
+    }
+
+    private func performVoiceResume(
+        evidence: @MainActor () -> VoiceGuardSnapshot?,
+        countdown: @MainActor (Int) async throws -> Void,
+        commandIsCurrent: @MainActor () -> Bool
+    ) async -> String? {
+        guard !Task.isCancelled,
+              isVoicePaused,
+              commandIsCurrent(),
+              let initialEvidence = evidence(),
+              acceptsVoiceResumeGuard(initialEvidence) else { return nil }
+
+        voiceResumeGeneration &+= 1
+        let requestGeneration = voiceResumeGeneration
+        let trackingGeneration = initialEvidence.generation
         let pausedPhase = phaseBeforeVoicePause
-        let generation = hands.providerGeneration
-        trackingReadyToResume = true
-        for count in [3, 2, 1] {
-            lastFeedback = "Resuming in \(count)…"
-            await countdown(count)
-            guard isVoicePaused,
+
+        func requestIsCurrent() -> Bool {
+            guard !Task.isCancelled,
+                  requestGeneration == voiceResumeGeneration,
+                  isVoicePaused,
                   commandIsCurrent(),
-                  hands.providerGeneration == generation,
-                  hands.isRunning,
-                  hasFreshVoiceGuard() else {
-                trackingReadyToResume = false
-                lastFeedback = "Tracking paused · return both fists to guard"
-                return nil
-            }
+                  let currentEvidence = evidence(),
+                  currentEvidence.generation == trackingGeneration else { return false }
+            return acceptsVoiceResumeGuard(currentEvidence)
         }
 
+        for count in [3, 2, 1] {
+            guard requestIsCurrent() else { return nil }
+            lastFeedback = "Resuming in \(count)…"
+            do {
+                try await countdown(count)
+            } catch {
+                return nil
+            }
+            guard requestIsCurrent() else { return nil }
+        }
+
+        guard requestIsCurrent(),
+              let pausedPhase,
+              [.calibrating, .running].contains(pausedPhase) else { return nil }
         isVoicePaused = false
         isTrackingPaused = false
         trackingReadyToResume = false
         phaseBeforeVoicePause = nil
         lastFeedback = "Resume · guard set"
+        activeVoiceResumeGeneration = requestGeneration
 
         switch pausedPhase {
         case .calibrating:
             drillTask = Task { [weak self] in await self?.runDrillLoop() }
         case .running:
-            let targetIndex = currentTargetIndex
-            let comboStepIndex = currentComboStepIndex
+            let checkpoint = voiceContinuationCheckpoint
             drillTask = Task { [weak self] in
-                await self?.resumeRunningDrill(
-                    targetIndex: targetIndex,
-                    comboStepIndex: comboStepIndex
-                )
+                await self?.resumeRunningDrill(from: checkpoint)
             }
-        case .idle, .finished, nil:
+        case .idle, .finished:
             return nil
         }
         return "Tracking is fresh. Resuming training."
@@ -590,38 +671,108 @@ final class ReactiveStrikeSession {
 
     func requestProgress() -> String { progressLabel }
 
-    private func hasFreshVoiceGuard() -> Bool {
-        guard currentBodyFrame() != nil,
-              let left = hands.freshObservation(for: .left),
-              let right = hands.freshObservation(for: .right),
-              left.fistState == .closed,
-              right.fistState == .closed else { return false }
-
-        guard let leftGuard = guardPositionsBody[.left],
-              let rightGuard = guardPositionsBody[.right],
-              let frame = currentBodyFrame() else {
-            return true
-        }
-        return CombinationPunchValidator.isRetracted(
-            fist: frame.toBody(left.fistPosition),
-            guardPosition: leftGuard,
-            radius: CombinationPunchValidator.guardRadius
-        ) && CombinationPunchValidator.isRetracted(
-            fist: frame.toBody(right.fistPosition),
-            guardPosition: rightGuard,
-            radius: CombinationPunchValidator.guardRadius
+    func acceptsVoiceResumeGuard(_ snapshot: VoiceGuardSnapshot) -> Bool {
+        acceptsVoiceResumeGuard(
+            snapshot,
+            capturedGuards: guardPositionsBody.count == 2 ? guardPositionsBody : nil
         )
     }
 
-    private func resumeRunningDrill(targetIndex: Int, comboStepIndex: Int) async {
-        guard !Task.isCancelled, phase == .running, !isVoicePaused else { return }
-        if mode == .combination {
-            await runCombinationLoop(
-                startingAtRep: targetIndex,
-                startingAtStep: comboStepIndex
+    func acceptsVoiceResumeGuard(
+        _ snapshot: VoiceGuardSnapshot,
+        capturedGuards: [BodySide: SIMD3<Float>]?
+    ) -> Bool {
+        VoiceGuardValidator.accepts(
+            snapshot,
+            capturedGuards: capturedGuards,
+            shoulderWidth: poseSolver.measurements.shoulderWidth,
+            armReach: poseSolver.measurements.armReach
+        )
+    }
+
+    func voiceTargetDidBegin(at index: Int) {
+        currentTargetIndex = index
+        voiceContinuationCheckpoint = .activeAirTarget(index: index)
+    }
+
+    func voiceTargetDidComplete(at index: Int) {
+        voiceContinuationCheckpoint = .interTargetDelay(
+            displayedTargetIndex: index,
+            nextTargetIndex: index + 1
+        )
+    }
+
+    func voiceCombinationStepDidBegin(rep: Int, step: Int) {
+        currentTargetIndex = rep
+        currentComboStepIndex = step
+        voiceContinuationCheckpoint = .activeCombinationStep(rep: rep, step: step)
+    }
+
+    func voiceCombinationStepDidComplete(rep: Int, step: Int, stepCount: Int) {
+        guard step + 1 < stepCount else { return }
+        voiceContinuationCheckpoint = .interCombinationStepDelay(
+            displayedRepIndex: rep,
+            displayedStepIndex: step,
+            nextStepIndex: step + 1
+        )
+    }
+
+    func voiceCombinationRepDidComplete(at rep: Int) {
+        comboRepsCompleted += 1
+        voiceContinuationCheckpoint = .interCombinationDelay(
+            displayedRepIndex: rep,
+            nextRepIndex: rep + 1
+        )
+    }
+
+    private func invalidateVoiceResume() {
+        voiceResumeGeneration &+= 1
+        activeVoiceResumeGeneration = nil
+    }
+
+    private func currentVoiceGuardSnapshot() -> VoiceGuardSnapshot? {
+        guard let frame = currentBodyFrame(),
+              let left = hands.freshObservation(for: .left),
+              let right = hands.freshObservation(for: .right) else { return nil }
+        let generation = hands.providerGeneration
+        let continuityEpoch = hands.continuityEpoch
+        return VoiceGuardSnapshot(
+            trackingIsRunning: hands.isRunning,
+            capturedAt: CACurrentMediaTime(),
+            generation: generation,
+            continuityEpoch: continuityEpoch,
+            frame: VoiceGuardFrame(frame),
+            left: VoiceGuardHandEvidence(
+                side: left.side,
+                fistPosition: left.fistPosition,
+                fistState: left.fistState,
+                acquisitionTimestamp: left.acquisitionTimestamp,
+                generation: generation,
+                continuityEpoch: continuityEpoch
+            ),
+            right: VoiceGuardHandEvidence(
+                side: right.side,
+                fistPosition: right.fistPosition,
+                fistState: right.fistState,
+                acquisitionTimestamp: right.acquisitionTimestamp,
+                generation: generation,
+                continuityEpoch: continuityEpoch
             )
-        } else {
-            await runTargetLoop(startingAt: targetIndex)
+        )
+    }
+
+    private func resumeRunningDrill(from checkpoint: ReactiveVoiceContinuationCheckpoint) async {
+        guard !Task.isCancelled, phase == .running, !isVoicePaused else { return }
+        switch checkpoint.resumeLocation {
+        case .calibration:
+            await runDrillLoop()
+        case let .airTarget(index):
+            await runTargetLoop(startingAt: index)
+        case let .combination(rep, step):
+            await runCombinationLoop(
+                startingAtRep: rep,
+                startingAtStep: step
+            )
         }
 
         guard !Task.isCancelled, phase == .running, !isVoicePaused else { return }
@@ -957,7 +1108,7 @@ final class ReactiveStrikeSession {
     private func runTargetLoop(startingAt startIndex: Int = 0) async {
         for index in max(0, startIndex)..<config.targetCount {
             guard !Task.isCancelled, phase == .running else { return }
-            currentTargetIndex = index
+            voiceTargetDidBegin(at: index)
 
             guard var retryPlan = await makeReactiveTargetRetryPlan() else { return }
 
@@ -966,6 +1117,9 @@ final class ReactiveStrikeSession {
                 guard let targetPosition = retryPlan.targetPosition else { return }
                 outcome = await presentTarget(at: targetPosition)
                 retryPlan.record(outcome)
+                if outcome == .completed {
+                    voiceTargetDidComplete(at: index)
+                }
                 guard !Task.isCancelled, phase == .running else { return }
             }
             guard outcome == .completed else { return }
@@ -1470,7 +1624,7 @@ final class ReactiveStrikeSession {
             targetLoop: for target in resolvedTargets where target.index >= firstStep {
                 evidenceRetryLoop: while true {
                 guard !Task.isCancelled, phase == .running else { return }
-                currentComboStepIndex = target.index
+                voiceCombinationStepDidBegin(rep: rep, step: target.index)
 
                 guard let guardPosition = guardPositionsBody[target.requiredHand] else {
                     failDrill("Guard calibration was unavailable for this combination.")
@@ -1705,6 +1859,11 @@ final class ReactiveStrikeSession {
                                         targetPosition: worldPosition,
                                         landingError: evidence.landingError
                                     )
+                                    voiceCombinationStepDidComplete(
+                                        rep: rep,
+                                        step: target.index,
+                                        stepCount: resolvedTargets.count
+                                    )
                                     stepHit = true
                                     centerError = evidence.landingError
                                     reactionTime = metrics.lastAttempt?.reactionTime
@@ -1765,7 +1924,7 @@ final class ReactiveStrikeSession {
             }
 
             if completedRep {
-                comboRepsCompleted += 1
+                voiceCombinationRepDidComplete(at: rep)
                 lastFeedback = "Combination complete"
             }
 

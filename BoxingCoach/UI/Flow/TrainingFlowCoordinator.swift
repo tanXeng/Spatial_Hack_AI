@@ -53,6 +53,12 @@ enum TrainingFlowTransition: String, Sendable {
     case closingImmersion
 }
 
+nonisolated enum TrainingShutdownOutcome: Equatable, Sendable {
+    case completed
+    case controlWindowRestorationFailed
+    case transitionInProgress
+}
+
 enum ImmersiveOpenOutcome: Sendable {
     case opened
     case cancelled
@@ -85,6 +91,13 @@ final class TrainingFlowCoordinator {
     private var isControlWindowVisible = false
     private let readinessTimeout: Duration = .seconds(5)
     private let controlWindowReadinessTimeout: Duration = .seconds(2)
+    private let controlWindowReadinessOverride: (@MainActor () async -> Bool)?
+
+    init(
+        controlWindowReadiness: (@MainActor () async -> Bool)? = nil
+    ) {
+        controlWindowReadinessOverride = controlWindowReadiness
+    }
 
     var controlsDisabled: Bool {
         transition != .idle
@@ -245,12 +258,13 @@ final class TrainingFlowCoordinator {
         isControlWindowVisible = false
     }
 
+    @discardableResult
     func endExperience(
         session: ReactiveStrikeSession,
         showControlWindow: () -> Void,
         dismissImmersive: () async -> Void
-    ) async {
-        guard transition == .idle else { return }
+    ) async -> TrainingShutdownOutcome {
+        guard transition == .idle else { return .transitionInProgress }
         invalidateCommands()
         presentationError = nil
         transition = .closingImmersion
@@ -264,7 +278,7 @@ final class TrainingFlowCoordinator {
             guard await waitForControlWindowReadiness() else {
                 presentationError = "Could not restore the results window. Try End Training again."
                 transition = .idle
-                return
+                return .controlWindowRestorationFailed
             }
             immersiveState = .closing
             await dismissImmersive()
@@ -274,6 +288,7 @@ final class TrainingFlowCoordinator {
         }
 
         transition = .idle
+        return .completed
     }
 
     func finishExperience(
@@ -400,7 +415,7 @@ final class TrainingFlowCoordinator {
             capabilities = []
         case .results:
             capabilities = [
-                .requestEnd, .next, .correction, .progress, .help, .score, .why,
+                .requestEnd, .correction, .progress, .help, .score, .why,
                 .leaderboard, .requestParticipantHandoff
             ]
         case .trackingPaused:
@@ -455,12 +470,25 @@ final class TrainingFlowCoordinator {
               pendingVoiceConfirmation == .endTraining,
               transition == .idle else { return nil }
         pendingVoiceConfirmation = nil
-        await endExperience(
+        let outcome = await endExperience(
             session: session,
             showControlWindow: showControlWindow,
             dismissImmersive: dismissImmersive
         )
-        guard transition == .idle else { return nil }
+        guard outcome == .completed,
+              transition == .idle,
+              immersiveState == .closed,
+              !session.isImmersiveSpaceOpen else {
+            if transition == .idle,
+               case let .experience(selection) = route,
+               case .competition = selection {
+                return nil
+            } else if transition == .idle,
+                      case .experience = route {
+                pendingVoiceConfirmation = .endTraining
+            }
+            return nil
+        }
         return "Training ended."
     }
 
@@ -481,6 +509,9 @@ final class TrainingFlowCoordinator {
     /// long enough. On a loaded device, dismissing immersion before this event can discard the
     /// final result because no scene is yet available to own it.
     private func waitForControlWindowReadiness() async -> Bool {
+        if let controlWindowReadinessOverride {
+            return await controlWindowReadinessOverride()
+        }
         let clock = ContinuousClock()
         let deadline = clock.now.advanced(by: controlWindowReadinessTimeout)
 

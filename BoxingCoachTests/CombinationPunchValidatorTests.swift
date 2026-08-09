@@ -299,6 +299,7 @@ final class CombinationPunchValidatorTests: XCTestCase {
         for reset in [
             sample(timestamp: 1.02, freshClosedAndGuarded: false),
             sample(timestamp: nil),
+            sample(timestamp: .nan),
             sample(timestamp: 1.02, observationsFresh: false)
         ] {
             var gate = NormalCombinationGuardRecoveryGate()
@@ -349,6 +350,62 @@ final class CombinationPunchValidatorTests: XCTestCase {
         }
     }
 
+    func testNormalCombinationRecoveryResetsWhenGuardIsLostAtAnEqualTimestamp() {
+        var gate = NormalCombinationGuardRecoveryGate()
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.00)))
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.01)))
+
+        // This represents either fist opening or leaving its calibrated guard radius while the
+        // bilateral pair identity has not advanced.
+        XCTAssertFalse(
+            gate.observe(sample(timestamp: 1.01, freshClosedAndGuarded: false))
+        )
+
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.02)))
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.03)))
+        XCTAssertTrue(gate.observe(sample(timestamp: 1.04)))
+    }
+
+    func testNormalCombinationRecoveryResetsOnBackwardPairTimestamp() {
+        var gate = NormalCombinationGuardRecoveryGate()
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.00)))
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.01)))
+        XCTAssertFalse(gate.observe(sample(timestamp: 0.99)))
+
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.02)))
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.03)))
+        XCTAssertTrue(gate.observe(sample(timestamp: 1.04)))
+    }
+
+    func testNormalCombinationRecoveryDoesNotCountExactClosedDuplicates() {
+        var gate = NormalCombinationGuardRecoveryGate()
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.00)))
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.00)))
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.01)))
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.01)))
+        XCTAssertTrue(gate.observe(sample(timestamp: 1.02)))
+    }
+
+    func testNormalCombinationRecoveryDoesNotHideAsyncGuardLossBehindEqualMinimumTimestamp() {
+        var gate = NormalCombinationGuardRecoveryGate()
+        XCTAssertFalse(gate.observe(sample(leftTimestamp: 1.00, rightTimestamp: 1.00)))
+        XCTAssertFalse(gate.observe(sample(leftTimestamp: 1.01, rightTimestamp: 1.01)))
+
+        XCTAssertFalse(
+            gate.observe(
+                sample(
+                    leftTimestamp: 1.02,
+                    rightTimestamp: 1.01,
+                    freshClosedAndGuarded: false
+                )
+            )
+        )
+
+        XCTAssertFalse(gate.observe(sample(leftTimestamp: 1.03, rightTimestamp: 1.02)))
+        XCTAssertFalse(gate.observe(sample(leftTimestamp: 1.04, rightTimestamp: 1.03)))
+        XCTAssertTrue(gate.observe(sample(leftTimestamp: 1.05, rightTimestamp: 1.04)))
+    }
+
     private func makeTarget(
         punch: PunchType,
         requiredHand: BodySide
@@ -374,6 +431,17 @@ final class CombinationPunchValidatorTests: XCTestCase {
             continuityEpoch: continuityEpoch,
             pairTimestamp: timestamp,
             observationsFresh: observationsFresh,
+            freshClosedAndGuarded: freshClosedAndGuarded
+        )
+    }
+
+    private func sample(
+        leftTimestamp: TimeInterval,
+        rightTimestamp: TimeInterval,
+        freshClosedAndGuarded: Bool = true
+    ) -> NormalCombinationGuardRecoveryGate.Sample {
+        sample(
+            timestamp: min(leftTimestamp, rightTimestamp),
             freshClosedAndGuarded: freshClosedAndGuarded
         )
     }

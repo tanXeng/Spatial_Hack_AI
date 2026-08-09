@@ -54,6 +54,13 @@ nonisolated struct NormalCombinationGuardRecoveryGate: Sendable {
             return false
         }
 
+        // Guard loss is a state transition even when asynchronous hand updates leave the older
+        // half of the pair (and therefore its minimum timestamp) unchanged.
+        guard sample.freshClosedAndGuarded else {
+            consecutiveStableSamples = 0
+            return false
+        }
+
         if let lastPairTimestamp {
             guard pairTimestamp >= lastPairTimestamp else {
                 consecutiveStableSamples = 0
@@ -64,11 +71,6 @@ nonisolated struct NormalCombinationGuardRecoveryGate: Sendable {
             guard pairTimestamp > lastPairTimestamp else { return false }
         }
         lastPairTimestamp = pairTimestamp
-
-        guard sample.freshClosedAndGuarded else {
-            consecutiveStableSamples = 0
-            return false
-        }
         consecutiveStableSamples += 1
         return consecutiveStableSamples >= Self.requiredStableSamples
     }

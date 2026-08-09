@@ -224,6 +224,47 @@ struct PunchEvidenceValidatorTests {
         #expect(validator.phase == .waitingForGuard)
     }
 
+    @Test("Opposite-hand-only callbacks remain visible to wrong-hand validation")
+    func perHandCursorAdmitsAsynchronousWrongHandEvidence() {
+        var cursor = PunchEvidenceFrameCursor()
+        var validator = makeValidator()
+        let guardFrame = asynchronousFrame(
+            left: guardPosition,
+            leftTimestamp: 1.000,
+            right: guardPosition,
+            rightTimestamp: 1.000
+        )
+        let wrongHandOutbound = asynchronousFrame(
+            left: guardPosition,
+            leftTimestamp: 1.000,
+            right: SIMD3<Float>(0, 0, 0.20),
+            rightTimestamp: 1.015
+        )
+        let wrongHandContact = asynchronousFrame(
+            left: guardPosition,
+            leftTimestamp: 1.000,
+            right: SIMD3<Float>(0, 0, 0.75),
+            rightTimestamp: 1.025
+        )
+
+        let seesGuard = cursor.shouldObserve(guardFrame)
+        #expect(seesGuard)
+        _ = validator.observe(guardFrame)
+        let seesWrongHandOutbound = cursor.shouldObserve(wrongHandOutbound)
+        #expect(seesWrongHandOutbound)
+        #expect(
+            validator.observe(wrongHandOutbound) == .waiting(.trackingOutbound)
+        )
+        let seesWrongHandContact = cursor.shouldObserve(wrongHandContact)
+        #expect(seesWrongHandContact)
+        #expect(
+            validator.observe(wrongHandContact)
+                == .invalid(.wrongHand(expected: .left, actual: .right))
+        )
+        let seesExactDuplicate = cursor.shouldObserve(wrongHandContact)
+        #expect(seesExactDuplicate == false)
+    }
+
     @Test(
         "A required hand must be definitely closed",
         arguments: [TrackedFistState.open, .uncertain]
@@ -809,6 +850,77 @@ struct PunchEvidenceValidatorTests {
         #expect(selector.requiredHand == nil)
     }
 
+    @Test("Dual-arm outbound motion split across coherent callbacks is ambiguous")
+    func reactiveSelectionTypesSplitCallbackAmbiguity() {
+        var selector = PunchEvidenceSideSelector(
+            technique: .hook,
+            stance: .orthodox,
+            guardPositions: [.left: guardPosition, .right: guardPosition],
+            targetPosition: targetPosition,
+            targetRadius: targetRadius,
+            generation: 7,
+            continuityEpoch: 11
+        )
+
+        _ = selector.observe(frame(left: guardPosition, right: guardPosition, timestamp: 1.00))
+        let firstCallback = selector.observe(
+            asynchronousFrame(
+                left: SIMD3<Float>(-0.01, 0, 0.20),
+                leftTimestamp: 1.050,
+                right: guardPosition,
+                rightTimestamp: 1.030
+            )
+        )
+        let secondCallback = selector.observe(
+            asynchronousFrame(
+                left: SIMD3<Float>(-0.01, 0, 0.20),
+                leftTimestamp: 1.050,
+                right: SIMD3<Float>(0.01, 0, 0.20),
+                rightTimestamp: 1.060
+            )
+        )
+
+        #expect(firstCallback == .waiting)
+        #expect(secondCallback == .invalid(.ambiguousHandSelection))
+        #expect(selector.requiredHand == nil)
+    }
+
+    @Test("A guarded opposite-hand callback resolves a provisional single-hand selection")
+    func reactiveSelectionResolvesAfterOppositeGuardCallback() {
+        var selector = PunchEvidenceSideSelector(
+            technique: .hook,
+            stance: .orthodox,
+            guardPositions: [.left: guardPosition, .right: guardPosition],
+            targetPosition: targetPosition,
+            targetRadius: targetRadius,
+            generation: 7,
+            continuityEpoch: 11
+        )
+
+        _ = selector.observe(frame(left: guardPosition, right: guardPosition, timestamp: 1.00))
+        #expect(
+            selector.observe(
+                asynchronousFrame(
+                    left: SIMD3<Float>(-0.01, 0, 0.20),
+                    leftTimestamp: 1.050,
+                    right: guardPosition,
+                    rightTimestamp: 1.030
+                )
+            ) == .waiting
+        )
+        #expect(
+            selector.observe(
+                asynchronousFrame(
+                    left: SIMD3<Float>(-0.01, 0, 0.20),
+                    leftTimestamp: 1.050,
+                    right: guardPosition,
+                    rightTimestamp: 1.060
+                )
+            ) == .selected(side: .left, event: .armed)
+        )
+        #expect(selector.requiredHand == .left)
+    }
+
     @Test("Invalid punch actions retry and cannot be deferred, scored, or ranked")
     func invalidAttemptPolicyNeverAdmitsSatisfyingFeedbackOrMetrics() throws {
         let reason = PunchEvidenceValidator.InvalidReason.missingRetraction
@@ -1011,6 +1123,37 @@ struct PunchEvidenceValidatorTests {
             generation: generation,
             continuityEpoch: continuityEpoch,
             hands: hands
+        )
+    }
+
+    private func asynchronousFrame(
+        left: SIMD3<Float>,
+        leftTimestamp: TimeInterval,
+        right: SIMD3<Float>,
+        rightTimestamp: TimeInterval
+    ) -> PunchEvidenceValidator.Frame {
+        let now = max(leftTimestamp, rightTimestamp)
+        return PunchEvidenceValidator.Frame(
+            now: now,
+            deviceTimestamp: now,
+            generation: 7,
+            continuityEpoch: 11,
+            hands: [
+                PunchEvidenceValidator.HandSample(
+                    side: .left,
+                    fistPosition: left,
+                    fistState: .closed,
+                    acquisitionTimestamp: leftTimestamp,
+                    quality: .measured
+                ),
+                PunchEvidenceValidator.HandSample(
+                    side: .right,
+                    fistPosition: right,
+                    fistState: .closed,
+                    acquisitionTimestamp: rightTimestamp,
+                    quality: .measured
+                )
+            ]
         )
     }
 

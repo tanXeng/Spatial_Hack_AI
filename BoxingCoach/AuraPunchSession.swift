@@ -27,6 +27,21 @@ enum AuraPunchPhase: String, Sendable {
     case results
 }
 
+/// Resolves the immutable physical hand for one Aura repetition. Either-hand techniques alternate
+/// lead/rear; stance-specific techniques retain their semantic lead/rear mapping every time.
+enum AuraPunchSideSequence {
+    static func side(
+        forRepetition repetition: Int,
+        technique: Technique,
+        stance: Stance
+    ) -> BodySide {
+        guard technique.hand == .either else {
+            return technique.hand.side(for: stance)
+        }
+        return repetition.isMultiple(of: 2) ? stance.rearSide : stance.leadSide
+    }
+}
+
 /// Drives one Aura Punch rep: demo → attempt → score → feedback.
 ///
 /// Shares the `HandTrackingService` and the immersive scene root with Reactive Strike rather than
@@ -322,10 +337,11 @@ final class AuraPunchSession {
     /// tutorial actually trains both arms instead of only ever showing the lead side (which is
     /// what a single fixed `PunchHand.side(for:)` lookup would otherwise do for every rep).
     private func demoSide(forRep rep: Int, technique: Technique, stance: Stance) -> BodySide {
-        guard technique.hand == .either else {
-            return technique.hand.side(for: stance)
-        }
-        return rep.isMultiple(of: 2) ? stance.rearSide : stance.leadSide
+        AuraPunchSideSequence.side(
+            forRepetition: rep,
+            technique: technique,
+            stance: stance
+        )
     }
 
     /// Leads the user through the punch call-and-response, one waypoint at a time.
@@ -628,14 +644,6 @@ final class AuraPunchSession {
         currentScoredPunch = 0
         coachAudio.play(id: .hitTarget)
 
-        let expectedSide = technique.hand.side(for: stance)
-        let reference = ReferencePunchLibrary.punch(
-            for: technique,
-            stance: stance,
-            measurements: measurements,
-            side: expectedSide
-        )
-
         var scores: [TechniqueScore] = []
 
         var punchIndex = 1
@@ -647,6 +655,20 @@ final class AuraPunchSession {
                 headline: "HIT THE TARGET",
                 detail: "Punch \(punchIndex) of \(scoredPunchCount) — hit the target",
                 status: "Punch \(punchIndex) of \(scoredPunchCount) — hit the target!"
+            )
+
+            // `punchIndex` advances only after semantic admission, so a technical retry preserves
+            // this exact physical side and evidence chain instead of alternating mid-punch.
+            let expectedSide = AuraPunchSideSequence.side(
+                forRepetition: punchIndex,
+                technique: technique,
+                stance: stance
+            )
+            let reference = ReferencePunchLibrary.punch(
+                for: technique,
+                stance: stance,
+                measurements: measurements,
+                side: expectedSide
             )
 
             guard let frame = currentBodyFrame(solver: solver),
@@ -767,7 +789,7 @@ final class AuraPunchSession {
         var trackingContinuity = TrackingContinuityObserver(epoch: captureChain.continuityEpoch)
 
         let armingDeadline = CACurrentMediaTime() + scoredPunchSafetyTimeout
-        var lastEvidenceTimestamp: TimeInterval?
+        var evidenceCursor = PunchEvidenceFrameCursor()
 
         while CACurrentMediaTime() < armingDeadline {
             if Task.isCancelled { break }
@@ -787,10 +809,7 @@ final class AuraPunchSession {
             )
 
             if let evidenceFrame = punchEvidenceFrame(now: now, requiredSide: side),
-               let timestamp = evidenceFrame.hands
-                .first(where: { $0.side == side })?.acquisitionTimestamp,
-               lastEvidenceTimestamp.map({ timestamp > $0 }) ?? true {
-                lastEvidenceTimestamp = timestamp
+               evidenceCursor.shouldObserve(evidenceFrame) {
                 let event = validator.observe(evidenceFrame)
                 switch event {
                 case .waiting:

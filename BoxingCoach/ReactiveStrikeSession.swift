@@ -24,6 +24,85 @@ nonisolated struct CompetitionTrackingRecoveryGate {
     }
 }
 
+/// Converts a competition tracking gap into an explicit wait, stable recovery, or clock pause.
+/// A resumed short outage shifts both the target deadline and attempt origin by the same duration,
+/// so lost tracking cannot manufacture a timeout or inflate the admitted punch's reaction time.
+nonisolated enum CompetitionTrackingOutagePolicy {
+    enum Decision: Equatable, Sendable {
+        case wait
+        case recover
+        case resume(pausedDuration: TimeInterval)
+    }
+
+    static func decision(
+        trackingAvailable: Bool,
+        lossDuration: TimeInterval
+    ) -> Decision {
+        guard lossDuration.isFinite, lossDuration >= 0 else { return .recover }
+        if trackingAvailable {
+            return .resume(pausedDuration: lossDuration)
+        }
+        return lossDuration >= CompetitionTrackingRecoveryGate.lossGraceSeconds
+            ? .recover
+            : .wait
+    }
+
+    static func compensatedDeadline(
+        _ deadline: Date,
+        pausedDuration: TimeInterval
+    ) -> Date {
+        guard pausedDuration.isFinite, pausedDuration > 0 else { return deadline }
+        return deadline.addingTimeInterval(pausedDuration)
+    }
+}
+
+/// Keeps technically interrupted reactive-target evidence outside the miss/metric boundary.
+/// Before either-hand selection, guard coaching owns availability. Once a physical side is fixed,
+/// both hands and the device pose must stay coherent through retraction and coverage admission.
+nonisolated enum ReactiveTargetTrackingPolicy {
+    enum Decision: Equatable, Sendable {
+        case continueAttempt
+        case discardAndRetry
+
+        var recordsMetric: Bool { false }
+        var flashesTarget: Bool { false }
+        var isRankable: Bool { false }
+    }
+
+    static func decision(
+        selectedSide: BodySide?,
+        requiredHandAvailable: Bool,
+        otherHandAvailable: Bool,
+        devicePoseAvailable: Bool
+    ) -> Decision {
+        guard selectedSide != nil else { return .continueAttempt }
+        return requiredHandAvailable && otherHandAvailable && devicePoseAvailable
+            ? .continueAttempt
+            : .discardAndRetry
+    }
+}
+
+/// Owns one generic target's immutable physical position across technical evidence retries.
+nonisolated struct ReactiveTargetRetryPlan: Sendable {
+    enum Outcome: Equatable, Sendable {
+        case completed
+        case retry
+        case aborted
+    }
+
+    private(set) var targetPosition: SIMD3<Float>?
+
+    init(targetPosition: SIMD3<Float>) {
+        self.targetPosition = targetPosition
+    }
+
+    mutating func record(_ outcome: Outcome) {
+        if outcome != .retry {
+            targetPosition = nil
+        }
+    }
+}
+
 /// Owns Reactive Strike calibration and the target/combination drill loops.
 @Observable
 @MainActor
@@ -628,20 +707,20 @@ final class ReactiveStrikeSession {
         return false
     }
 
-    private enum TargetPresentationOutcome: Equatable {
-        case completed
-        case retry
-        case aborted
-    }
+    private typealias TargetPresentationOutcome = ReactiveTargetRetryPlan.Outcome
 
     private func runTargetLoop() async {
         for index in 0..<config.targetCount {
             guard !Task.isCancelled, phase == .running else { return }
             currentTargetIndex = index
 
+            guard var retryPlan = await makeReactiveTargetRetryPlan() else { return }
+
             var outcome: TargetPresentationOutcome = .retry
             while outcome == .retry {
-                outcome = await presentTarget()
+                guard let targetPosition = retryPlan.targetPosition else { return }
+                outcome = await presentTarget(at: targetPosition)
+                retryPlan.record(outcome)
                 guard !Task.isCancelled, phase == .running else { return }
             }
             guard outcome == .completed else { return }
@@ -652,7 +731,28 @@ final class ReactiveStrikeSession {
         }
     }
 
-    private func presentTarget() async -> TargetPresentationOutcome {
+    private func makeReactiveTargetRetryPlan() async -> ReactiveTargetRetryPlan? {
+        while !Task.isCancelled, phase == .running {
+            if let frame = await waitForBodyFrame() {
+                let bodyPosition = reachProfile.randomBodyTargetPosition()
+                return ReactiveTargetRetryPlan(
+                    targetPosition: frame.toWorld(bodyPosition)
+                )
+            }
+            guard !Task.isCancelled else { return nil }
+            if capturesCompetitionEvidence {
+                guard await recoverCompetitionTracking() else { return nil }
+                continue
+            }
+            failDrill("Head tracking was lost. Face forward and try the round again.")
+            return nil
+        }
+        return nil
+    }
+
+    private func presentTarget(
+        at worldPosition: SIMD3<Float>
+    ) async -> TargetPresentationOutcome {
         guard let frame = await waitForBodyFrame() else {
             guard !Task.isCancelled else { return .aborted }
             if capturesCompetitionEvidence {
@@ -662,8 +762,6 @@ final class ReactiveStrikeSession {
             return .aborted
         }
 
-        let bodyPosition = reachProfile.randomBodyTargetPosition()
-        let worldPosition = frame.toWorld(bodyPosition)
         let worldGuards = guardPositionsBody.mapValues(frame.toWorld)
         targets.spawnTarget(at: worldPosition, radius: config.targetRadius)
 
@@ -708,8 +806,27 @@ final class ReactiveStrikeSession {
                 if capturesCompetitionEvidence {
                     return await recoverCompetitionTracking() ? .retry : .aborted
                 }
-                await discardAttempt(feedback: "Tracking changed · punch discarded")
+                await discardAttempt(
+                    feedback: "Tracking changed · punch discarded",
+                    preserveTarget: true
+                )
                 return .retry
+            }
+
+            if !capturesCompetitionEvidence, let selectedSide = selector.trackingHand {
+                let trackingDecision = ReactiveTargetTrackingPolicy.decision(
+                    selectedSide: selectedSide,
+                    requiredHandAvailable: hands.freshObservation(for: selectedSide) != nil,
+                    otherHandAvailable: hands.freshObservation(for: selectedSide.opposite) != nil,
+                    devicePoseAvailable: hands.deviceTransform != nil
+                )
+                if trackingDecision == .discardAndRetry {
+                    await discardAttempt(
+                        feedback: "Tracking paused · punch discarded",
+                        preserveTarget: true
+                    )
+                    return .retry
+                }
             }
 
             if capturesCompetitionEvidence {
@@ -742,7 +859,7 @@ final class ReactiveStrikeSession {
             var selectorEvent = PunchEvidenceSideSelector.Event.waiting
             if let evidenceFrame = punchEvidenceFrame(
                 now: evidenceNow,
-                requiredSide: selector.requiredHand
+                requiredSide: selector.trackingHand
             ) {
                 let hasNewAnchor = evidenceFrame.hands.contains { sample in
                     sample.acquisitionTimestamp
@@ -765,7 +882,10 @@ final class ReactiveStrikeSession {
             case .waiting:
                 break
             case let .invalid(reason):
-                await discardAttempt(feedback: PunchEvidenceFeedback.message(for: reason))
+                await discardAttempt(
+                    feedback: PunchEvidenceFeedback.message(for: reason),
+                    preserveTarget: true
+                )
                 return .retry
             case let .selected(side, event):
                 selectedSide = side
@@ -774,13 +894,16 @@ final class ReactiveStrikeSession {
                     fistPositionAtSpawn = fistPositionsAtSpawn[side]
                 }
                 if case let .retry(reason) = attemptAction {
-                    await discardAttempt(feedback: PunchEvidenceFeedback.message(for: reason))
+                    await discardAttempt(
+                        feedback: PunchEvidenceFeedback.message(for: reason),
+                        preserveTarget: true
+                    )
                     return .retry
                 }
             }
 
             let shouldPauseForGuard: Bool
-            if let requiredHand = selector.requiredHand {
+            if let requiredHand = selector.trackingHand {
                 shouldPauseForGuard = nonPunchingGuardStatus(punchingSide: requiredHand) != true
             } else {
                 // Before validated outbound motion identifies a side, both fists stay in their
@@ -793,7 +916,10 @@ final class ReactiveStrikeSession {
                     // Contact/retraction/coverage events are one-shot reducer transitions. Once
                     // one arrives, a dropped guard invalidates and retries the whole target rather
                     // than consuming that transition behind the coaching pause.
-                    await discardAttempt(feedback: GuardCoach.waitMessage)
+                    await discardAttempt(
+                        feedback: GuardCoach.waitMessage,
+                        preserveTarget: true
+                    )
                     return .retry
                 }
                 guardPausedAt = guardPausedAt ?? now
@@ -837,7 +963,10 @@ final class ReactiveStrikeSession {
                 }
             case .contact:
                 guard let selectedSide else {
-                    await discardAttempt(feedback: "Punch evidence was invalid · reset in guard")
+                    await discardAttempt(
+                        feedback: "Punch evidence was invalid · reset in guard",
+                        preserveTarget: true
+                    )
                     return .retry
                 }
                 contactTime = contactTime ?? now
@@ -849,7 +978,10 @@ final class ReactiveStrikeSession {
                 )
             case .completeCoverage:
                 guard let selectedSide else {
-                    await discardAttempt(feedback: "Punch evidence was invalid · reset in guard")
+                    await discardAttempt(
+                        feedback: "Punch evidence was invalid · reset in guard",
+                        preserveTarget: true
+                    )
                     return .retry
                 }
                 let trackedFraction = Float(trackedPollCount[selectedSide, default: 0])
@@ -859,14 +991,20 @@ final class ReactiveStrikeSession {
                     currentGeneration: hands.providerGeneration,
                     currentContinuityEpoch: hands.continuityEpoch
                 ) else {
-                    await discardAttempt(feedback: "Tracking changed · punch discarded")
+                    await discardAttempt(
+                        feedback: "Tracking changed · punch discarded",
+                        preserveTarget: true
+                    )
                     return .retry
                 }
 
                 guard case let .selected(_, completionEvent) = selector.complete(
                     coverage: coverage
                 ) else {
-                    await discardAttempt(feedback: "Punch evidence was invalid · reset in guard")
+                    await discardAttempt(
+                        feedback: "Punch evidence was invalid · reset in guard",
+                        preserveTarget: true
+                    )
                     return .retry
                 }
                 switch PunchEvidenceAttemptAction(event: completionEvent) {
@@ -884,18 +1022,30 @@ final class ReactiveStrikeSession {
                     )
                     return .completed
                 case let .retry(reason):
-                    await discardAttempt(feedback: PunchEvidenceFeedback.message(for: reason))
+                    await discardAttempt(
+                        feedback: PunchEvidenceFeedback.message(for: reason),
+                        preserveTarget: true
+                    )
                     return .retry
                 case .waiting, .armed, .contact, .completeCoverage:
-                    await discardAttempt(feedback: "Punch evidence was incomplete")
+                    await discardAttempt(
+                        feedback: "Punch evidence was incomplete",
+                        preserveTarget: true
+                    )
                     return .retry
                 }
             case let .retry(reason):
-                await discardAttempt(feedback: PunchEvidenceFeedback.message(for: reason))
+                await discardAttempt(
+                    feedback: PunchEvidenceFeedback.message(for: reason),
+                    preserveTarget: true
+                )
                 return .retry
             case .admit:
                 // Admission is produced only by the explicit coverage completion above.
-                await discardAttempt(feedback: "Punch evidence was invalid · reset in guard")
+                await discardAttempt(
+                    feedback: "Punch evidence was invalid · reset in guard",
+                    preserveTarget: true
+                )
                 return .retry
             }
 
@@ -1136,6 +1286,21 @@ final class ReactiveStrikeSession {
                     )
                     switch trackingDecision {
                     case .continueAttempt:
+                        if let trackingLostAt {
+                            let resumedAt = Date()
+                            let lossDuration = resumedAt.timeIntervalSince(trackingLostAt)
+                            if case let .resume(pausedDuration) = CompetitionTrackingOutagePolicy
+                                .decision(
+                                    trackingAvailable: true,
+                                    lossDuration: lossDuration
+                                ) {
+                                deadline = CompetitionTrackingOutagePolicy.compensatedDeadline(
+                                    deadline,
+                                    pausedDuration: pausedDuration
+                                )
+                                shiftAttemptStart(by: pausedDuration)
+                            }
+                        }
                         trackingLostAt = nil
                     case .discardAndRetry:
                         await discardAttempt(
@@ -1144,9 +1309,13 @@ final class ReactiveStrikeSession {
                         guard await waitForNormalCombinationGuardRecovery() else { return }
                         continue evidenceRetryLoop
                     case .competitionRecovery:
-                        trackingLostAt = trackingLostAt ?? Date()
-                        if Date().timeIntervalSince(trackingLostAt!)
-                            >= CompetitionTrackingRecoveryGate.lossGraceSeconds {
+                        let now = Date()
+                        trackingLostAt = trackingLostAt ?? now
+                        let lossDuration = now.timeIntervalSince(trackingLostAt!)
+                        if CompetitionTrackingOutagePolicy.decision(
+                            trackingAvailable: false,
+                            lossDuration: lossDuration
+                        ) == .recover {
                             guard await recoverCompetitionTracking() else { return }
                             var availableRecoveredFrame = currentBodyFrame()
                             while availableRecoveredFrame == nil {
@@ -1444,11 +1613,16 @@ final class ReactiveStrikeSession {
 
     /// Discards a technically invalid evidence chain without creating an ordinary miss, metric,
     /// ranked step, or satisfying target flash. The caller decides whether to retry or abort.
-    private func discardAttempt(feedback: String) async {
+    private func discardAttempt(
+        feedback: String,
+        preserveTarget: Bool = false
+    ) async {
         lastFeedback = feedback
         clearAttemptState()
         try? await Task.sleep(for: .milliseconds(220))
-        targets.removeActiveTarget()
+        if !preserveTarget {
+            targets.removeActiveTarget()
+        }
     }
 
     private func wallClockDate(

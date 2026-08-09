@@ -767,6 +767,51 @@ nonisolated enum PunchEvidenceAttemptAction: Sendable, Equatable {
     nonisolated var advancesScoredSlot: Bool { recordsMetric }
 }
 
+/// Suppresses exact polling duplicates without assuming both ARKit hand anchors update together.
+/// Identity is tracked per physical hand, so an opposite-hand-only callback still reaches the
+/// semantic reducer and can invalidate wrong-hand outbound/contact evidence.
+nonisolated struct PunchEvidenceFrameCursor: Sendable {
+    private struct HandIdentity: Equatable, Sendable {
+        let position: SIMD3<Float>
+        let fistState: TrackedFistState
+        let acquisitionTimestamp: TimeInterval
+        let quality: MeasurementQuality
+    }
+
+    private struct FrameIdentity: Equatable, Sendable {
+        let deviceTimestamp: TimeInterval
+        let generation: UInt64
+        let continuityEpoch: UInt64
+        let hands: [BodySide: HandIdentity]
+    }
+
+    private var previousIdentity: FrameIdentity?
+
+    mutating func shouldObserve(_ frame: PunchEvidenceValidator.Frame) -> Bool {
+        let identity = FrameIdentity(
+            deviceTimestamp: frame.deviceTimestamp,
+            generation: frame.generation,
+            continuityEpoch: frame.continuityEpoch,
+            hands: Dictionary(
+                uniqueKeysWithValues: frame.hands.map {
+                    (
+                        $0.side,
+                        HandIdentity(
+                            position: $0.fistPosition,
+                            fistState: $0.fistState,
+                            acquisitionTimestamp: $0.acquisitionTimestamp,
+                            quality: $0.quality
+                        )
+                    )
+                }
+            )
+        )
+        guard identity != previousIdentity else { return false }
+        previousIdentity = identity
+        return true
+    }
+}
+
 /// Reactive-target adapter that identifies a physical hand by validated outbound motion once,
 /// then keeps that requirement fixed through contact, retraction, and completion.
 nonisolated struct PunchEvidenceSideSelector: Sendable {
@@ -776,8 +821,19 @@ nonisolated struct PunchEvidenceSideSelector: Sendable {
         case selected(side: BodySide, event: PunchEvidenceValidator.Event)
     }
 
+    private struct PendingSelection: Sendable {
+        let side: BodySide
+        var event: PunchEvidenceValidator.Event
+        let oppositeTimestampAtSelection: TimeInterval
+    }
+
     private var validators: [BodySide: PunchEvidenceValidator]
     private(set) var requiredHand: BodySide?
+    private var pendingSelection: PendingSelection?
+
+    /// The physical hand whose outbound chain is being tracked, including the brief asynchronous
+    /// coherence window before selection becomes immutable.
+    var trackingHand: BodySide? { requiredHand ?? pendingSelection?.side }
 
     nonisolated init(
         technique: Technique,
@@ -829,19 +885,63 @@ nonisolated struct PunchEvidenceSideSelector: Sendable {
             resetSpeculation()
             return .invalid(.ambiguousHandSelection)
         }
+
+        if var pendingSelection {
+            if let selectedSide = selectableSides.first {
+                guard selectedSide == pendingSelection.side else {
+                    resetSpeculation()
+                    return .invalid(.ambiguousHandSelection)
+                }
+                if let event = events[selectedSide] {
+                    pendingSelection.event = event
+                    self.pendingSelection = pendingSelection
+                }
+            }
+
+            let invalidReasons = Self.invalidReasons(from: events)
+            if let reason = invalidReasons.first {
+                resetSpeculation()
+                return .invalid(reason)
+            }
+
+            let oppositeTimestamp = frame.hands.first {
+                $0.side == pendingSelection.side.opposite
+            }?.acquisitionTimestamp
+            if let oppositeTimestamp,
+               oppositeTimestamp > pendingSelection.oppositeTimestampAtSelection {
+                return commitSelection(pendingSelection)
+            }
+            return .waiting
+        }
+
         if let side = selectableSides.first,
            let event = events[side],
            let selectedValidator = validators[side] {
-            requiredHand = side
-            // The other speculative reducer is no longer part of this punch chain.
-            validators = [side: selectedValidator]
-            return .selected(side: side, event: event)
+            let sideTimestamp = frame.hands.first { $0.side == side }?.acquisitionTimestamp
+            let oppositeTimestamp = frame.hands.first {
+                $0.side == side.opposite
+            }?.acquisitionTimestamp
+            if let sideTimestamp,
+               let oppositeTimestamp,
+               oppositeTimestamp < sideTimestamp {
+                pendingSelection = PendingSelection(
+                    side: side,
+                    event: event,
+                    oppositeTimestampAtSelection: oppositeTimestamp
+                )
+                return .waiting
+            }
+            return commitSelection(
+                PendingSelection(
+                    side: side,
+                    event: event,
+                    oppositeTimestampAtSelection: oppositeTimestamp ?? sideTimestamp ?? 0
+                ),
+                selectedValidator: selectedValidator
+            )
         }
 
-        let invalidReasons = [BodySide.left, .right].compactMap { side -> PunchEvidenceValidator.InvalidReason? in
-            guard case let .invalid(reason)? = events[side] else { return nil }
-            return reason
-        }
+        let invalidReasons = Self.invalidReasons(from: events)
         if let reason = invalidReasons.first {
             resetSpeculation()
             return .invalid(reason)
@@ -880,11 +980,37 @@ nonisolated struct PunchEvidenceSideSelector: Sendable {
         }
     }
 
+    nonisolated private static func invalidReasons(
+        from events: [BodySide: PunchEvidenceValidator.Event]
+    ) -> [PunchEvidenceValidator.InvalidReason] {
+        [BodySide.left, .right].compactMap { side in
+            guard case let .invalid(reason)? = events[side] else { return nil }
+            return reason
+        }
+    }
+
+    nonisolated private mutating func commitSelection(
+        _ pendingSelection: PendingSelection,
+        selectedValidator: PunchEvidenceValidator? = nil
+    ) -> Event {
+        let side = pendingSelection.side
+        guard let selectedValidator = selectedValidator ?? validators[side] else {
+            resetSpeculation()
+            return .waiting
+        }
+        requiredHand = side
+        self.pendingSelection = nil
+        // The other speculative reducer is no longer part of this punch chain.
+        validators = [side: selectedValidator]
+        return .selected(side: side, event: pendingSelection.event)
+    }
+
     nonisolated private mutating func resetSpeculation() {
         validators = validators.mapValues {
             PunchEvidenceValidator(configuration: $0.configuration)
         }
         requiredHand = nil
+        pendingSelection = nil
     }
 }
 

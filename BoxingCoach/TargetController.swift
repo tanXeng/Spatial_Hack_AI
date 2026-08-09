@@ -15,6 +15,7 @@ final class TargetController {
     private weak var root: Entity?
     private(set) var activeTarget: ModelEntity?
     private(set) var activeTargetPosition: SIMD3<Float>?
+    private var activeTargetRadius: Float?
 
     private let idleColor = PlatformColor(red: 1.0, green: 0.55, blue: 0.1, alpha: 1.0)
     private let hitColor = PlatformColor(red: 0.2, green: 0.8, blue: 0.3, alpha: 1.0)
@@ -29,6 +30,13 @@ final class TargetController {
         at position: SIMD3<Float>,
         radius: Float
     ) -> ModelEntity {
+        if let activeTarget,
+           activeTargetPosition == position,
+           activeTargetRadius == radius {
+            activeTarget.model?.materials = [SimpleMaterial(color: idleColor, isMetallic: false)]
+            return activeTarget
+        }
+
         removeActiveTarget()
 
         let mesh = MeshResource.generateSphere(radius: radius)
@@ -40,6 +48,7 @@ final class TargetController {
         root?.addChild(entity)
         activeTarget = entity
         activeTargetPosition = position
+        activeTargetRadius = radius
         return entity
     }
 
@@ -59,5 +68,6 @@ final class TargetController {
         activeTarget?.removeFromParent()
         activeTarget = nil
         activeTargetPosition = nil
+        activeTargetRadius = nil
     }
 }

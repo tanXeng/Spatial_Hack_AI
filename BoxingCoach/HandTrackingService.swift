@@ -28,8 +28,487 @@ struct HandObservation: Sendable {
     var fistState: TrackedFistState
     var fistClosureRatio: Float
 
-    /// `CACurrentMediaTime()` when this sample was produced.
-    var timestamp: TimeInterval
+    /// ARKit's monotonic acquisition time for this hand anchor.
+    var acquisitionTimestamp: TimeInterval
+
+    /// Callback receipt time, retained only for latency telemetry and admission checks.
+    var receiptTimestamp: TimeInterval
+
+    /// Device pose queried at `acquisitionTimestamp`, not at callback time.
+    var deviceTransform: simd_float4x4
+    var deviceTimestamp: TimeInterval
+
+    /// Compatibility name used by motion/scoring call sites. Freshness is acquisition-based.
+    var timestamp: TimeInterval { acquisitionTimestamp }
+}
+
+/// A caller-owned cursor for detecting discontinuities in tracking evidence. Each capture or
+/// calibration loop keeps its own observer so one consumer cannot acknowledge a reset for another.
+nonisolated struct TrackingContinuityObserver: Sendable {
+    private(set) var epoch: UInt64
+
+    nonisolated init(epoch: UInt64) {
+        self.epoch = epoch
+    }
+
+    /// Returns `true` exactly once for each newly observed continuity epoch.
+    nonisolated mutating func observe(_ currentEpoch: UInt64) -> Bool {
+        guard currentEpoch != epoch else { return false }
+        epoch = currentEpoch
+        return true
+    }
+}
+
+nonisolated enum TrackingRuntimeState: String, Equatable, Sendable {
+    case idle
+    case requestingAuthorization
+    case starting
+    case running
+    case degraded
+    case paused
+    case stopped
+    case failed
+}
+
+nonisolated enum TrackingRuntimeAuthorizationStatus: Equatable, Sendable {
+    case notDetermined
+    case allowed
+    case denied
+}
+
+nonisolated enum TrackingRuntimeProviderState: Equatable, Sendable {
+    case initialized
+    case running
+    case paused
+    case stopped
+}
+
+nonisolated enum TrackingRuntimeRejectionReason: Equatable, Sendable {
+    case unsupported
+    case authorizationDenied
+    case authorizationRevoked
+    case providerPaused
+    case providerStopped
+    case providerFailed(message: String)
+    case sessionFailed(message: String)
+    case worldTrackingUnavailable
+    case reacquiring
+    case anchorRemoved(side: BodySide)
+    case untracked(side: BodySide)
+    case missingSkeleton(side: BodySide)
+    case missingRequiredJoint(side: BodySide, joint: String)
+    case missingDevicePose
+    case nonFiniteSample
+    case invalidTimestamp
+    case nonMonotonicSample(side: BodySide)
+    case staleSample(age: TimeInterval)
+    case sampleGap(duration: TimeInterval)
+}
+
+nonisolated enum TrackingRecoveryInstruction: String, Equatable, Sendable {
+    case none = ""
+    case keepHandsVisible = "Keep your hands visible and look forward while tracking stabilizes."
+    case waitForProvider = "Stay in the immersive space while tracking resumes."
+    case reviewAuthorization = "Allow hand tracking in Settings, then retry."
+    case retryTracking = "Retry hand tracking."
+}
+
+nonisolated enum TrackingRuntimeEffect: Hashable, Sendable {
+    case clearTrackingData
+    case cancelListeners
+    case stopSession
+    case prepareProviders
+    case bufferSample
+    case admitSample
+}
+
+nonisolated struct TrackingRuntimeSnapshot: Equatable, Sendable {
+    let state: TrackingRuntimeState
+    let providerGeneration: UInt64
+    let rejectionReason: TrackingRuntimeRejectionReason?
+    let acceptedSampleStreak: Int
+    let recoveryInstruction: TrackingRecoveryInstruction
+    let lastAcceptedAcquisitionTimestamps: [BodySide: TimeInterval]
+
+    nonisolated static let initial = TrackingRuntimeSnapshot(
+        state: .idle,
+        providerGeneration: 0,
+        rejectionReason: nil,
+        acceptedSampleStreak: 0,
+        recoveryInstruction: .none,
+        lastAcceptedAcquisitionTimestamps: [:]
+    )
+}
+
+nonisolated enum TrackingRuntimeEvent: Sendable {
+    case startRequested
+    case retryRequested
+    case authorizationCompleted(
+        generation: UInt64,
+        status: TrackingRuntimeAuthorizationStatus
+    )
+    case authorizationChanged(
+        generation: UInt64,
+        status: TrackingRuntimeAuthorizationStatus
+    )
+    case unsupported(generation: UInt64)
+    case sessionStarted(generation: UInt64, worldTrackingAvailable: Bool)
+    case startFailed(generation: UInt64, message: String)
+    case startCancelled(generation: UInt64)
+    case providerStateChanged(
+        generation: UInt64,
+        state: TrackingRuntimeProviderState,
+        errorDescription: String?
+    )
+    case sampleAccepted(
+        generation: UInt64,
+        side: BodySide,
+        acquisitionTimestamp: TimeInterval,
+        receiptTimestamp: TimeInterval
+    )
+    case sampleRejected(generation: UInt64, reason: TrackingRuntimeRejectionReason)
+    case stopRequested
+}
+
+nonisolated struct TrackingRuntimeTransition: Equatable, Sendable {
+    let snapshot: TrackingRuntimeSnapshot
+    let effects: Set<TrackingRuntimeEffect>
+}
+
+/// Pure lifecycle and sample-admission state machine. It deliberately has no ARKit dependency so
+/// tracking loss, stale callbacks, and reacquisition can be verified without hardware.
+nonisolated enum TrackingRuntimeReducer {
+    nonisolated static let requiredAcceptedSampleStreak = 3
+    nonisolated static let maximumAcquisitionAge: TimeInterval = 0.1
+    nonisolated static let maximumSampleGap: TimeInterval = 0.20
+
+    nonisolated static func isFreshForRecovery(
+        acquisitionTimestamp: TimeInterval,
+        at receiptTimestamp: TimeInterval
+    ) -> Bool {
+        guard acquisitionTimestamp.isFinite,
+              receiptTimestamp.isFinite,
+              acquisitionTimestamp >= 0,
+              receiptTimestamp >= acquisitionTimestamp else { return false }
+        return receiptTimestamp - acquisitionTimestamp <= maximumAcquisitionAge
+    }
+
+    nonisolated static func reduce(
+        _ snapshot: TrackingRuntimeSnapshot,
+        event: TrackingRuntimeEvent
+    ) -> TrackingRuntimeTransition {
+        switch event {
+        case .startRequested:
+            guard [.idle, .stopped, .failed].contains(snapshot.state) else {
+                return unchanged(snapshot)
+            }
+            return prepareStart(from: snapshot)
+
+        case .retryRequested:
+            guard [.stopped, .failed].contains(snapshot.state) else {
+                return unchanged(snapshot)
+            }
+            return prepareStart(from: snapshot)
+
+        case let .authorizationCompleted(generation, status):
+            guard generation == snapshot.providerGeneration,
+                  snapshot.state == .requestingAuthorization else {
+                return unchanged(snapshot)
+            }
+            switch status {
+            case .allowed:
+                return transition(
+                    state: .starting,
+                    generation: generation
+                )
+            case .notDetermined, .denied:
+                return terminalFailure(
+                    from: snapshot,
+                    reason: .authorizationDenied,
+                    recovery: .reviewAuthorization
+                )
+            }
+
+        case let .authorizationChanged(generation, status):
+            guard generation == snapshot.providerGeneration else {
+                return unchanged(snapshot)
+            }
+            guard status != .allowed else { return unchanged(snapshot) }
+            return terminalFailure(
+                from: snapshot,
+                reason: .authorizationRevoked,
+                recovery: .reviewAuthorization
+            )
+
+        case let .unsupported(generation):
+            guard generation == snapshot.providerGeneration else {
+                return unchanged(snapshot)
+            }
+            return terminalFailure(
+                from: snapshot,
+                reason: .unsupported,
+                recovery: .none
+            )
+
+        case let .sessionStarted(generation, worldTrackingAvailable):
+            guard generation == snapshot.providerGeneration,
+                  snapshot.state == .starting else {
+                return unchanged(snapshot)
+            }
+            if worldTrackingAvailable {
+                return transition(state: .running, generation: generation)
+            }
+            return terminalFailure(
+                from: snapshot,
+                reason: .worldTrackingUnavailable,
+                recovery: .none
+            )
+
+        case let .startFailed(generation, message):
+            guard generation == snapshot.providerGeneration else {
+                return unchanged(snapshot)
+            }
+            return terminalFailure(
+                from: snapshot,
+                reason: .sessionFailed(message: message),
+                recovery: .retryTracking
+            )
+
+        case let .startCancelled(generation):
+            guard generation == snapshot.providerGeneration,
+                  [.requestingAuthorization, .starting].contains(snapshot.state) else {
+                return unchanged(snapshot)
+            }
+            return stopped(from: snapshot)
+
+        case let .providerStateChanged(generation, providerState, errorDescription):
+            guard generation == snapshot.providerGeneration else {
+                return unchanged(snapshot)
+            }
+            if let errorDescription {
+                return terminalFailure(
+                    from: snapshot,
+                    reason: .providerFailed(message: errorDescription),
+                    recovery: .retryTracking
+                )
+            }
+            switch providerState {
+            case .initialized:
+                return unchanged(snapshot)
+            case .running:
+                guard snapshot.state == .paused else { return unchanged(snapshot) }
+                return transition(
+                    state: .degraded,
+                    generation: generation,
+                    reason: .reacquiring,
+                    recovery: .keepHandsVisible
+                )
+            case .paused:
+                guard [.starting, .running, .degraded].contains(snapshot.state) else {
+                    return unchanged(snapshot)
+                }
+                return transition(
+                    state: .paused,
+                    generation: generation,
+                    reason: .providerPaused,
+                    recovery: .waitForProvider,
+                    effects: [.clearTrackingData]
+                )
+            case .stopped:
+                return terminalFailure(
+                    from: snapshot,
+                    reason: .providerStopped,
+                    recovery: .retryTracking
+                )
+            }
+
+        case let .sampleRejected(generation, reason):
+            guard generation == snapshot.providerGeneration,
+                  [.running, .degraded].contains(snapshot.state) else {
+                return unchanged(snapshot)
+            }
+            return transition(
+                state: .degraded,
+                generation: generation,
+                reason: reason,
+                recovery: .keepHandsVisible,
+                effects: [.clearTrackingData]
+            )
+
+        case let .sampleAccepted(
+            generation,
+            side,
+            acquisitionTimestamp,
+            receiptTimestamp
+        ):
+            guard generation == snapshot.providerGeneration,
+                  [.running, .degraded].contains(snapshot.state) else {
+                return unchanged(snapshot)
+            }
+            guard isFreshForRecovery(
+                acquisitionTimestamp: acquisitionTimestamp,
+                at: receiptTimestamp
+            ) else {
+                guard acquisitionTimestamp.isFinite,
+                      receiptTimestamp.isFinite,
+                      acquisitionTimestamp >= 0,
+                      receiptTimestamp >= acquisitionTimestamp else {
+                    return sampleFailure(
+                        snapshot,
+                        reason: .invalidTimestamp
+                    )
+                }
+                let age = receiptTimestamp - acquisitionTimestamp
+                return sampleFailure(
+                    snapshot,
+                    reason: .staleSample(age: age)
+                )
+            }
+
+            let timestamps = snapshot.lastAcceptedAcquisitionTimestamps
+            if let mostRecent = timestamps.values.max() {
+                let interval = acquisitionTimestamp - mostRecent
+                guard interval >= 0 else {
+                    return sampleFailure(snapshot, reason: .nonMonotonicSample(side: side))
+                }
+                guard interval <= maximumSampleGap else {
+                    return sampleFailure(snapshot, reason: .sampleGap(duration: interval))
+                }
+            }
+
+            if let previous = timestamps[side] {
+                let interval = acquisitionTimestamp - previous
+                guard interval > 0 else {
+                    return sampleFailure(snapshot, reason: .nonMonotonicSample(side: side))
+                }
+                guard interval <= maximumSampleGap else {
+                    return sampleFailure(snapshot, reason: .sampleGap(duration: interval))
+                }
+            }
+
+            var updatedTimestamps = timestamps
+            updatedTimestamps[side] = acquisitionTimestamp
+            let streak = min(
+                snapshot.acceptedSampleStreak + 1,
+                requiredAcceptedSampleStreak
+            )
+            let hasReacquired = snapshot.state == .degraded
+                && streak >= requiredAcceptedSampleStreak
+            let effect: TrackingRuntimeEffect = snapshot.state == .degraded && !hasReacquired
+                ? .bufferSample
+                : .admitSample
+            return TrackingRuntimeTransition(
+                snapshot: TrackingRuntimeSnapshot(
+                    state: hasReacquired ? .running : snapshot.state,
+                    providerGeneration: generation,
+                    rejectionReason: hasReacquired ? nil : snapshot.rejectionReason,
+                    acceptedSampleStreak: streak,
+                    recoveryInstruction: hasReacquired ? .none : snapshot.recoveryInstruction,
+                    lastAcceptedAcquisitionTimestamps: updatedTimestamps
+                ),
+                effects: [effect]
+            )
+
+        case .stopRequested:
+            guard snapshot.state != .stopped else { return unchanged(snapshot) }
+            return stopped(from: snapshot)
+        }
+    }
+
+    nonisolated private static func stopped(
+        from snapshot: TrackingRuntimeSnapshot
+    ) -> TrackingRuntimeTransition {
+        TrackingRuntimeTransition(
+            snapshot: TrackingRuntimeSnapshot(
+                state: .stopped,
+                providerGeneration: nextGeneration(after: snapshot.providerGeneration),
+                rejectionReason: nil,
+                acceptedSampleStreak: 0,
+                recoveryInstruction: .none,
+                lastAcceptedAcquisitionTimestamps: [:]
+            ),
+            effects: [.clearTrackingData, .cancelListeners, .stopSession]
+        )
+    }
+
+    nonisolated private static func prepareStart(
+        from snapshot: TrackingRuntimeSnapshot
+    ) -> TrackingRuntimeTransition {
+        TrackingRuntimeTransition(
+            snapshot: TrackingRuntimeSnapshot(
+                state: .requestingAuthorization,
+                providerGeneration: nextGeneration(after: snapshot.providerGeneration),
+                rejectionReason: nil,
+                acceptedSampleStreak: 0,
+                recoveryInstruction: .none,
+                lastAcceptedAcquisitionTimestamps: [:]
+            ),
+            effects: [.clearTrackingData, .cancelListeners, .stopSession, .prepareProviders]
+        )
+    }
+
+    nonisolated private static func terminalFailure(
+        from snapshot: TrackingRuntimeSnapshot,
+        reason: TrackingRuntimeRejectionReason,
+        recovery: TrackingRecoveryInstruction
+    ) -> TrackingRuntimeTransition {
+        TrackingRuntimeTransition(
+            snapshot: TrackingRuntimeSnapshot(
+                state: .failed,
+                providerGeneration: nextGeneration(after: snapshot.providerGeneration),
+                rejectionReason: reason,
+                acceptedSampleStreak: 0,
+                recoveryInstruction: recovery,
+                lastAcceptedAcquisitionTimestamps: [:]
+            ),
+            effects: [.clearTrackingData, .cancelListeners, .stopSession]
+        )
+    }
+
+    nonisolated private static func sampleFailure(
+        _ snapshot: TrackingRuntimeSnapshot,
+        reason: TrackingRuntimeRejectionReason
+    ) -> TrackingRuntimeTransition {
+        transition(
+            state: .degraded,
+            generation: snapshot.providerGeneration,
+            reason: reason,
+            recovery: .keepHandsVisible,
+            effects: [.clearTrackingData]
+        )
+    }
+
+    nonisolated private static func transition(
+        state: TrackingRuntimeState,
+        generation: UInt64,
+        reason: TrackingRuntimeRejectionReason? = nil,
+        streak: Int = 0,
+        recovery: TrackingRecoveryInstruction = .none,
+        timestamps: [BodySide: TimeInterval] = [:],
+        effects: Set<TrackingRuntimeEffect> = []
+    ) -> TrackingRuntimeTransition {
+        TrackingRuntimeTransition(
+            snapshot: TrackingRuntimeSnapshot(
+                state: state,
+                providerGeneration: generation,
+                rejectionReason: reason,
+                acceptedSampleStreak: streak,
+                recoveryInstruction: recovery,
+                lastAcceptedAcquisitionTimestamps: timestamps
+            ),
+            effects: effects
+        )
+    }
+
+    nonisolated private static func unchanged(
+        _ snapshot: TrackingRuntimeSnapshot
+    ) -> TrackingRuntimeTransition {
+        TrackingRuntimeTransition(snapshot: snapshot, effects: [])
+    }
+
+    nonisolated private static func nextGeneration(after generation: UInt64) -> UInt64 {
+        generation &+ 1
+    }
 }
 
 nonisolated enum TrackedFistState: String, Codable, Sendable {
@@ -92,30 +571,31 @@ nonisolated enum HandObservationGeometry {
 ///   reconstruct an arm.
 @Observable
 final class HandTrackingService {
-    private(set) var isRunning = false
+    private(set) var runtimeSnapshot = TrackingRuntimeSnapshot.initial
     private(set) var statusMessage = "Hand tracking idle"
+    private(set) var continuityEpoch: UInt64 = 0
 
     private(set) var leftHand: HandObservation?
     private(set) var rightHand: HandObservation?
-
-    /// Last good observation per side, kept briefly after ARKit drops the anchor so cheek-height
-    /// guard in the headset's blind spot does not flicker to nil every frame.
-    private var leftHandLastGood: HandObservation?
-    private var rightHandLastGood: HandObservation?
-    private var leftHandLastGoodTime: TimeInterval = 0
-    private var rightHandLastGoodTime: TimeInterval = 0
+    private var reacquisitionCandidates: [BodySide: HandObservation] = [:]
     private var fistPrototypes: [BodySide: (closed: Float, open: Float)] = [:]
-
-    /// How long to reuse the last tracked pose when ARKit momentarily loses a hand.
-    private let defaultStaleHandDuration: TimeInterval = 0.2
-    private let attemptCaptureStaleDuration: TimeInterval = 0.35
     private var attemptCaptureCount = 0
 
-    private var effectiveStaleHandDuration: TimeInterval {
-        attemptCaptureCount > 0 ? attemptCaptureStaleDuration : defaultStaleHandDuration
+    var runtimeState: TrackingRuntimeState { runtimeSnapshot.state }
+    var providerGeneration: UInt64 { runtimeSnapshot.providerGeneration }
+    var rejectionReason: TrackingRuntimeRejectionReason? { runtimeSnapshot.rejectionReason }
+    var acceptedSampleStreak: Int { runtimeSnapshot.acceptedSampleStreak }
+    var recoveryInstruction: TrackingRecoveryInstruction {
+        runtimeSnapshot.recoveryInstruction
     }
 
-    /// Extends stale-hand grace while Aura Punch captures the scored throw.
+    /// Whether a provider generation is active. Degraded and paused generations remain active but
+    /// expose no samples until the reducer admits three fresh reacquisition updates.
+    var isRunning: Bool {
+        [.running, .degraded, .paused].contains(runtimeState)
+    }
+
+    /// Marks partial capture evidence so fail-closed resets can invalidate it immediately.
     func beginAttemptCapture() {
         attemptCaptureCount += 1
     }
@@ -126,6 +606,7 @@ final class HandTrackingService {
 
     /// Head pose in world space, from the device anchor. `nil` until world tracking settles.
     private(set) var deviceTransform: simd_float4x4?
+    private(set) var deviceTimestamp: TimeInterval?
 
     var leftFistPosition: SIMD3<Float>? { observation(for: .left)?.fistPosition }
     var rightFistPosition: SIMD3<Float>? { observation(for: .right)?.fistPosition }
@@ -137,22 +618,16 @@ final class HandTrackingService {
     }
 
     func observation(for side: BodySide) -> HandObservation? {
-        let now = CACurrentMediaTime()
         switch side {
-        case .left:
-            if let leftHand { return leftHand }
-            if now - leftHandLastGoodTime <= effectiveStaleHandDuration { return leftHandLastGood }
-            return nil
-        case .right:
-            if let rightHand { return rightHand }
-            if now - rightHandLastGoodTime <= effectiveStaleHandDuration { return rightHandLastGood }
-            return nil
+        case .left: leftHand
+        case .right: rightHand
         }
     }
 
     func freshObservation(for side: BodySide, maxAge: TimeInterval = 0.1) -> HandObservation? {
-        guard let observation = observation(for: side) else { return nil }
-        let age = CACurrentMediaTime() - observation.timestamp
+        guard maxAge.isFinite, maxAge >= 0,
+              let observation = observation(for: side) else { return nil }
+        let age = CACurrentMediaTime() - observation.acquisitionTimestamp
         guard age >= 0, age <= maxAge else { return nil }
         return observation
     }
@@ -166,18 +641,17 @@ final class HandTrackingService {
     private var session = ARKitSession()
     private var handTracking = HandTrackingProvider()
     private var worldTracking = WorldTrackingProvider()
-    private var updateTask: Task<Void, Never>?
+    private var anchorUpdateTask: Task<Void, Never>?
+    private var sessionEventTask: Task<Void, Never>?
+    private let startupIsCancelled: @MainActor @Sendable () -> Bool
 
-    /// Guards against overlapping starts. The immersive scene, Reactive Strike, and Aura Punch all
-    /// call `start()`, and the authorization `await` sits between the `isRunning` check and the
-    /// flag being set — so without this, two callers arriving together would each stand up their
-    /// own session and providers and then fight over the same hands.
-    private var isStarting = false
-
-    /// Bumped by every start and every stop, so a start that is still awaiting authorization can
-    /// tell that it has been superseded — closing the immersive space right after opening it
-    /// would otherwise let the cancelled start finish and mark a stopped session as running.
-    private var startGeneration = 0
+    init(
+        startupIsCancelled: @escaping @MainActor @Sendable () -> Bool = {
+            Task.isCancelled
+        }
+    ) {
+        self.startupIsCancelled = startupIsCancelled
+    }
 
     /// Closest tracked fist tip to a world-space point, if any hand is tracked.
     func nearestFistPosition(to point: SIMD3<Float>) -> SIMD3<Float>? {
@@ -187,129 +661,279 @@ final class HandTrackingService {
     }
 
     func start() async {
-        guard !isRunning, !isStarting else { return }
-        isStarting = true
-        startGeneration += 1
-        let generation = startGeneration
-        defer { isStarting = false }
+        await start(with: .startRequested)
+    }
 
-        guard HandTrackingProvider.isSupported else {
-            statusMessage = "Hand tracking not supported on this device"
-            return
-        }
-
-        // ARKit data providers are single-use: once their session stops they enter `.stopped` and
-        // can never be run again. The immersive space is opened and closed every time the user
-        // backs out of a technique, and closing it stops this service — so reusing the original
-        // instances meant tracking worked exactly once per launch and every drill after the first
-        // silently received no anchors at all. Build a fresh session and providers each start.
-        let session = ARKitSession()
-        let handTracking = HandTrackingProvider()
-        let worldTracking = WorldTrackingProvider()
-        self.session = session
-        self.handTracking = handTracking
-        self.worldTracking = worldTracking
-
-        let auth = await session.requestAuthorization(for: [.handTracking])
-        guard generation == startGeneration else {
-            session.stop()
-            return
-        }
-        guard auth[.handTracking] == .allowed else {
-            statusMessage = "Hand tracking permission denied"
-            return
-        }
-
-        do {
-            // World tracking needs no separate authorization prompt — only scene reconstruction
-            // and plane detection do. It is required here purely for the device (head) anchor.
-            if WorldTrackingProvider.isSupported {
-                try await session.run([handTracking, worldTracking])
-            } else {
-                try await session.run([handTracking])
-                statusMessage = "World tracking unavailable — Aura Punch needs head tracking"
-            }
-            guard generation == startGeneration else {
-                session.stop()
-                return
-            }
-            isRunning = true
-            if statusMessage.isEmpty || !statusMessage.hasPrefix("World tracking") {
-                statusMessage = "Hand tracking active"
-            }
-            startListening(on: handTracking)
-        } catch {
-            statusMessage = "Failed to start hand tracking: \(error.localizedDescription)"
-            isRunning = false
-        }
+    func retry() async {
+        await start(with: .retryRequested)
     }
 
     func stop() {
-        // Supersede any start still waiting on authorization so it cannot revive this service
-        // after the immersive space has already gone away.
-        startGeneration += 1
-        updateTask?.cancel()
-        updateTask = nil
-        session.stop()
-        isRunning = false
-        leftHand = nil
-        rightHand = nil
-        leftHandLastGood = nil
-        rightHandLastGood = nil
-        leftHandLastGoodTime = 0
-        rightHandLastGoodTime = 0
-        deviceTransform = nil
-        fistPrototypes.removeAll()
-        statusMessage = "Hand tracking stopped"
+        apply(TrackingRuntimeReducer.reduce(runtimeSnapshot, event: .stopRequested))
     }
 
-    /// Consumes anchor updates from the provider this session was started with.
-    ///
-    /// Takes the provider explicitly rather than reading the property: a restart replaces it, and
-    /// a listener that resolved `self.handTracking` later could attach to the wrong generation.
-    private func startListening(on provider: HandTrackingProvider) {
-        updateTask?.cancel()
-        updateTask = Task { [weak self] in
+    private func start(with event: TrackingRuntimeEvent) async {
+        let preparation = TrackingRuntimeReducer.reduce(runtimeSnapshot, event: event)
+        let shouldPrepareProviders = preparation.effects.contains(.prepareProviders)
+        apply(preparation)
+        guard shouldPrepareProviders else { return }
+
+        let generation = providerGeneration
+        guard !startupIsCancelled() else {
+            apply(
+                TrackingRuntimeReducer.reduce(
+                    runtimeSnapshot,
+                    event: .startCancelled(generation: generation)
+                )
+            )
+            return
+        }
+        guard HandTrackingProvider.isSupported else {
+            apply(
+                TrackingRuntimeReducer.reduce(
+                    runtimeSnapshot,
+                    event: .unsupported(generation: generation)
+                )
+            )
+            return
+        }
+
+        // Providers are single-use after stop. Every accepted start/retry owns fresh instances.
+        let newSession = ARKitSession()
+        let newHandTracking = HandTrackingProvider()
+        let newWorldTracking = WorldTrackingProvider()
+        session = newSession
+        handTracking = newHandTracking
+        worldTracking = newWorldTracking
+
+        let authorization = await newSession.requestAuthorization(for: [.handTracking])
+        guard !cancelStartIfNeeded(session: newSession, generation: generation) else {
+            return
+        }
+        guard generation == providerGeneration,
+              runtimeState == .requestingAuthorization else {
+            newSession.stop()
+            return
+        }
+
+        apply(
+            TrackingRuntimeReducer.reduce(
+                runtimeSnapshot,
+                event: .authorizationCompleted(
+                    generation: generation,
+                    status: runtimeAuthorizationStatus(authorization[.handTracking])
+                )
+            )
+        )
+        guard generation == providerGeneration, runtimeState == .starting else { return }
+
+        startSessionEventListener(
+            on: newSession,
+            handProvider: newHandTracking,
+            worldProvider: newWorldTracking,
+            generation: generation
+        )
+
+        let worldTrackingAvailable = WorldTrackingProvider.isSupported
+        do {
+            if worldTrackingAvailable {
+                try await newSession.run([newHandTracking, newWorldTracking])
+            } else {
+                try await newSession.run([newHandTracking])
+            }
+            guard !cancelStartIfNeeded(session: newSession, generation: generation) else {
+                return
+            }
+            guard generation == providerGeneration, runtimeState == .starting else {
+                newSession.stop()
+                return
+            }
+
+            apply(
+                TrackingRuntimeReducer.reduce(
+                    runtimeSnapshot,
+                    event: .sessionStarted(
+                        generation: generation,
+                        worldTrackingAvailable: worldTrackingAvailable
+                    )
+                )
+            )
+            guard generation == providerGeneration else { return }
+            startAnchorUpdateListener(on: newHandTracking, generation: generation)
+        } catch {
+            guard !cancelStartIfNeeded(session: newSession, generation: generation) else {
+                return
+            }
+            guard generation == providerGeneration else {
+                newSession.stop()
+                return
+            }
+            apply(
+                TrackingRuntimeReducer.reduce(
+                    runtimeSnapshot,
+                    event: .startFailed(
+                        generation: generation,
+                        message: error.localizedDescription
+                    )
+                )
+            )
+        }
+    }
+
+    private func cancelStartIfNeeded(
+        session: ARKitSession,
+        generation: UInt64
+    ) -> Bool {
+        guard startupIsCancelled() else { return false }
+        session.stop()
+        apply(
+            TrackingRuntimeReducer.reduce(
+                runtimeSnapshot,
+                event: .startCancelled(generation: generation)
+            )
+        )
+        return true
+    }
+
+    /// Anchor and session events are independent streams and therefore own independent tasks.
+    private func startAnchorUpdateListener(
+        on provider: HandTrackingProvider,
+        generation: UInt64
+    ) {
+        anchorUpdateTask?.cancel()
+        anchorUpdateTask = Task { [weak self] in
             for await update in provider.anchorUpdates {
-                if Task.isCancelled { break }
-                guard let self else { break }
-                self.handle(update.anchor)
+                guard !Task.isCancelled, let self else { break }
+                guard generation == self.providerGeneration else { break }
+                self.handle(
+                    update,
+                    generation: generation,
+                    receiptTimestamp: CACurrentMediaTime()
+                )
             }
         }
     }
 
-    private func handle(_ anchor: HandAnchor) {
-        // Refresh the head pose alongside the hand so both describe the same instant. Sampling
-        // them from different frames would shear the estimated shoulder against the tracked
-        // wrist, which shows up as the ghost arm swimming when the user turns their head.
-        refreshDeviceTransform()
+    private func startSessionEventListener(
+        on session: ARKitSession,
+        handProvider: HandTrackingProvider,
+        worldProvider: WorldTrackingProvider,
+        generation: UInt64
+    ) {
+        sessionEventTask?.cancel()
+        sessionEventTask = Task { [weak self] in
+            for await event in session.events {
+                guard !Task.isCancelled, let self else { break }
+                guard generation == self.providerGeneration else { break }
+                self.handle(
+                    event,
+                    handProvider: handProvider,
+                    worldProvider: worldProvider,
+                    generation: generation
+                )
+            }
+        }
+    }
 
-        guard anchor.isTracked, let skeleton = anchor.handSkeleton else {
-            clear(chirality: anchor.chirality)
+    private func handle(
+        _ event: ARKitSession.Event,
+        handProvider: HandTrackingProvider,
+        worldProvider: WorldTrackingProvider,
+        generation: UInt64
+    ) {
+        guard generation == providerGeneration else { return }
+        switch event {
+        case let .authorizationChanged(type, status):
+            guard type == .handTracking else { return }
+            apply(
+                TrackingRuntimeReducer.reduce(
+                    runtimeSnapshot,
+                    event: .authorizationChanged(
+                        generation: generation,
+                        status: runtimeAuthorizationStatus(status)
+                    )
+                )
+            )
+
+        case let .dataProviderStateChanged(dataProviders, newState, error):
+            let activeProviderIDs: Set<ObjectIdentifier> = [
+                ObjectIdentifier(handProvider),
+                ObjectIdentifier(worldProvider)
+            ]
+            guard dataProviders.contains(where: {
+                activeProviderIDs.contains(ObjectIdentifier($0))
+            }) else { return }
+            apply(
+                TrackingRuntimeReducer.reduce(
+                    runtimeSnapshot,
+                    event: .providerStateChanged(
+                        generation: generation,
+                        state: runtimeProviderState(newState),
+                        errorDescription: error?.localizedDescription
+                    )
+                )
+            )
+
+        @unknown default:
+            break
+        }
+    }
+
+    private func handle(
+        _ update: AnchorUpdate<HandAnchor>,
+        generation: UInt64,
+        receiptTimestamp: TimeInterval
+    ) {
+        let anchor = update.anchor
+        guard let side = bodySide(for: anchor.chirality) else { return }
+        guard update.event != .removed else {
+            reject(.anchorRemoved(side: side), generation: generation)
+            return
+        }
+        guard anchor.isTracked else {
+            reject(.untracked(side: side), generation: generation)
+            return
+        }
+        guard let skeleton = anchor.handSkeleton else {
+            reject(.missingSkeleton(side: side), generation: generation)
             return
         }
 
-        let side: BodySide
-        switch anchor.chirality {
-        case .left: side = .left
-        case .right: side = .right
-        @unknown default: return
+        // Xcode 27's Anchor protocol exposes this ARKit acquisition timestamp. Callback receipt
+        // time is intentionally not substituted for it.
+        let acquisitionTimestamp = anchor.timestamp
+        guard acquisitionTimestamp.isFinite,
+              receiptTimestamp.isFinite,
+              acquisitionTimestamp >= 0,
+              receiptTimestamp >= acquisitionTimestamp else {
+            reject(.invalidTimestamp, generation: generation)
+            return
         }
-
         let originFromAnchor = anchor.originFromAnchorTransform
 
-        /// World-space transform of a joint, or nil when that joint is not currently tracked.
         func worldTransform(_ name: HandSkeleton.JointName) -> simd_float4x4? {
             let joint = skeleton.joint(name)
             guard joint.isTracked else { return nil }
             return originFromAnchor * joint.anchorFromJointTransform
         }
 
-        // The wrist anchors the whole arm chain, so without it there is no usable observation.
         guard let wristTransform = worldTransform(.wrist) else {
-            clear(chirality: anchor.chirality)
+            reject(
+                .missingRequiredJoint(side: side, joint: "wrist"),
+                generation: generation
+            )
             return
         }
+
+        guard worldTracking.state == .running,
+              let deviceAnchor = worldTracking.queryDeviceAnchor(
+                atTimestamp: acquisitionTimestamp
+              ),
+              deviceAnchor.isTracked else {
+            reject(.missingDevicePose, generation: generation)
+            return
+        }
+        let matchedDeviceTransform = deviceAnchor.originFromAnchorTransform
 
         let fingerChains: [(HandSkeleton.JointName, HandSkeleton.JointName)] = [
             (.indexFingerKnuckle, .indexFingerTip),
@@ -321,9 +945,13 @@ final class HandTrackingService {
             worldTransform(knuckleName)?.translation
         }.filter(\.isFinite)
 
-        // Prefer knuckle centroid for a closed fist; fall back to fingertip / wrist when knuckles
-        // are occluded. Never drop tracking solely because knuckles are unavailable.
-        let fistTipCandidates: [HandSkeleton.JointName] = [.middleFingerTip, .indexFingerTip, .wrist]
+        // Fingertips are optional: a curled fist often occludes them. Wrist is the only required
+        // joint for this raw observation; missing optional chains make fist state uncertain.
+        let fistTipCandidates: [HandSkeleton.JointName] = [
+            .middleFingerTip,
+            .indexFingerTip,
+            .wrist
+        ]
         let fistPosition: SIMD3<Float>
         if let fistCenter = HandObservationGeometry.fistCenter(knuckles: knuckles) {
             fistPosition = fistCenter
@@ -333,25 +961,48 @@ final class HandTrackingService {
             fistPosition = wristTransform.translation
         }
 
-        let trackedChains = fingerChains.compactMap { knuckleName, tipName -> (SIMD3<Float>, SIMD3<Float>)? in
+        let trackedChains = fingerChains.compactMap {
+            knuckleName,
+            tipName -> (SIMD3<Float>, SIMD3<Float>)? in
             guard let knuckle = worldTransform(knuckleName)?.translation,
-                  let tip = worldTransform(tipName)?.translation else { return nil }
+                  let tip = worldTransform(tipName)?.translation,
+                  knuckle.isFinite,
+                  tip.isFinite else { return nil }
             return (knuckle, tip)
         }
         let indexKnuckle = worldTransform(.indexFingerKnuckle)?.translation
         let littleKnuckle = worldTransform(.littleFingerKnuckle)?.translation
         let palmWidth = indexKnuckle.flatMap { index in
             littleKnuckle.map { max(distance(index, $0), 0.001) }
-        } ?? max(distance(knuckles.first ?? wristTransform.translation, knuckles.last ?? wristTransform.translation), 0.001)
+        } ?? max(
+            distance(
+                knuckles.first ?? wristTransform.translation,
+                knuckles.last ?? wristTransform.translation
+            ),
+            0.001
+        )
         let ratios = trackedChains.map { distance($0.0, $0.1) / palmWidth }
-        let closureRatio = HandObservationGeometry.meanClosureRatio(ratios) ?? .nan
+        let closureRatio = HandObservationGeometry.meanClosureRatio(ratios) ?? 0
         let prototype = fistPrototypes[side]
+        let wristOrientation = simd_quatf(rotationMatrix(wristTransform))
+        let elbowHint = worldTransform(.forearmArm)?.translation
+
+        guard wristTransform.isFinite,
+              wristOrientation.vector.isFinite,
+              fistPosition.isFinite,
+              closureRatio.isFinite,
+              elbowHint?.isFinite != false,
+              matchedDeviceTransform.isFinite,
+              simd_length(matchedDeviceTransform.translation) > 0.01 else {
+            reject(.nonFiniteSample, generation: generation)
+            return
+        }
 
         let observation = HandObservation(
             side: side,
             wristPosition: wristTransform.translation,
-            wristOrientation: simd_quatf(rotationMatrix(wristTransform)),
-            elbowHint: worldTransform(.forearmArm)?.translation,
+            wristOrientation: wristOrientation,
+            elbowHint: elbowHint,
             fistPosition: fistPosition,
             fistState: FistStateClassifier.classify(
                 fingertipToKnuckleRatios: ratios,
@@ -359,54 +1010,95 @@ final class HandTrackingService {
                 openPrototype: prototype?.open
             ),
             fistClosureRatio: closureRatio,
-            timestamp: CACurrentMediaTime()
+            acquisitionTimestamp: acquisitionTimestamp,
+            receiptTimestamp: receiptTimestamp,
+            deviceTransform: matchedDeviceTransform,
+            deviceTimestamp: acquisitionTimestamp
         )
 
-        let now = CACurrentMediaTime()
-        switch side {
-        case .left:
-            leftHand = observation
-            leftHandLastGood = observation
-            leftHandLastGoodTime = now
-        case .right:
-            rightHand = observation
-            rightHandLastGood = observation
-            rightHandLastGoodTime = now
-        }
-    }
-
-    /// Pulls the current head pose. Unlike hands, the device anchor is a *query*, not a stream.
-    private func refreshDeviceTransform() {
-        guard worldTracking.state == .running,
-              let anchor = worldTracking.queryDeviceAnchor(atTimestamp: CACurrentMediaTime()),
-              anchor.isTracked
-        else {
-            deviceTransform = nil
+        let wasRecovering = runtimeState == .degraded
+        let admission = TrackingRuntimeReducer.reduce(
+            runtimeSnapshot,
+            event: .sampleAccepted(
+                generation: generation,
+                side: side,
+                acquisitionTimestamp: acquisitionTimestamp,
+                receiptTimestamp: receiptTimestamp
+            )
+        )
+        apply(admission)
+        if admission.effects.contains(.bufferSample) {
+            reacquisitionCandidates[side] = observation
             return
         }
+        guard admission.effects.contains(.admitSample),
+              generation == providerGeneration else { return }
 
-        let transform = anchor.originFromAnchorTransform
-
-        // World tracking is known to emit an identity/zero-translation pose for the first few
-        // frames after startup. Accepting one snaps every estimated shoulder to the world
-        // origin, which reads on-device as the ghost arms briefly collapsing to the floor.
-        let translation = transform.translation
-        guard translation.isFinite, simd_length(translation) > 0.01 else {
-            deviceTransform = nil
-            return
+        if wasRecovering {
+            reacquisitionCandidates[side] = observation
+            for candidate in reacquisitionCandidates.values where
+                TrackingRuntimeReducer.isFreshForRecovery(
+                    acquisitionTimestamp: candidate.acquisitionTimestamp,
+                    at: receiptTimestamp
+                ) {
+                publish(candidate)
+            }
+            reacquisitionCandidates.removeAll()
+        } else {
+            publish(observation)
         }
-
-        deviceTransform = transform
+        deviceTransform = matchedDeviceTransform
+        deviceTimestamp = acquisitionTimestamp
     }
 
-    private func clear(chirality: HandAnchor.Chirality) {
-        switch chirality {
-        case .left:
-            leftHand = nil
-        case .right:
-            rightHand = nil
-        @unknown default:
-            break
+    private func reject(
+        _ reason: TrackingRuntimeRejectionReason,
+        generation: UInt64
+    ) {
+        apply(
+            TrackingRuntimeReducer.reduce(
+                runtimeSnapshot,
+                event: .sampleRejected(generation: generation, reason: reason)
+            )
+        )
+    }
+
+    private func apply(_ transition: TrackingRuntimeTransition) {
+        runtimeSnapshot = transition.snapshot
+        if transition.effects.contains(.clearTrackingData) {
+            clearTrackingData()
+        }
+        if transition.effects.contains(.cancelListeners) {
+            cancelListenerTasks()
+        }
+        if transition.effects.contains(.stopSession) {
+            session.stop()
+        }
+        statusMessage = status(for: transition.snapshot)
+    }
+
+    private func cancelListenerTasks() {
+        anchorUpdateTask?.cancel()
+        anchorUpdateTask = nil
+        sessionEventTask?.cancel()
+        sessionEventTask = nil
+    }
+
+    private func clearTrackingData() {
+        continuityEpoch &+= 1
+        leftHand = nil
+        rightHand = nil
+        reacquisitionCandidates.removeAll()
+        deviceTransform = nil
+        deviceTimestamp = nil
+        fistPrototypes.removeAll()
+        attemptCaptureCount = 0
+    }
+
+    private func publish(_ observation: HandObservation) {
+        switch observation.side {
+        case .left: leftHand = observation
+        case .right: rightHand = observation
         }
     }
 
@@ -417,6 +1109,101 @@ final class HandTrackingService {
             SIMD3(m.columns.2.x, m.columns.2.y, m.columns.2.z)
         )
     }
+
+    private func bodySide(for chirality: HandAnchor.Chirality) -> BodySide? {
+        switch chirality {
+        case .left: .left
+        case .right: .right
+        @unknown default: nil
+        }
+    }
+
+    private func runtimeAuthorizationStatus(
+        _ status: ARKitSession.AuthorizationStatus?
+    ) -> TrackingRuntimeAuthorizationStatus {
+        switch status {
+        case .allowed: .allowed
+        case .notDetermined: .notDetermined
+        case .denied, nil: .denied
+        @unknown default: .denied
+        }
+    }
+
+    private func runtimeProviderState(
+        _ state: DataProviderState
+    ) -> TrackingRuntimeProviderState {
+        switch state {
+        case .initialized: .initialized
+        case .running: .running
+        case .paused: .paused
+        case .stopped: .stopped
+        @unknown default: .stopped
+        }
+    }
+
+    private func status(for snapshot: TrackingRuntimeSnapshot) -> String {
+        switch snapshot.state {
+        case .idle:
+            "Hand tracking idle"
+        case .requestingAuthorization:
+            "Requesting hand tracking permission"
+        case .starting:
+            "Starting hand tracking"
+        case .running:
+            "Hand tracking active"
+        case .degraded:
+            "Hand tracking degraded: \(reasonDescription(snapshot.rejectionReason))"
+        case .paused:
+            "Hand tracking paused: \(reasonDescription(snapshot.rejectionReason))"
+        case .stopped:
+            "Hand tracking stopped"
+        case .failed:
+            "Hand tracking failed: \(reasonDescription(snapshot.rejectionReason))"
+        }
+    }
+
+    private func reasonDescription(_ reason: TrackingRuntimeRejectionReason?) -> String {
+        switch reason {
+        case .unsupported:
+            "not supported on this device"
+        case .authorizationDenied:
+            "permission denied"
+        case .authorizationRevoked:
+            "permission was revoked"
+        case .providerPaused:
+            "the provider paused"
+        case .providerStopped:
+            "the provider stopped"
+        case let .providerFailed(message), let .sessionFailed(message):
+            message
+        case .worldTrackingUnavailable:
+            "head tracking is unavailable"
+        case .reacquiring:
+            "reacquiring fresh samples"
+        case let .anchorRemoved(side):
+            "\(side.rawValue) hand was removed"
+        case let .untracked(side):
+            "\(side.rawValue) hand is not tracked"
+        case let .missingSkeleton(side):
+            "\(side.rawValue) hand skeleton is unavailable"
+        case let .missingRequiredJoint(side, joint):
+            "\(side.rawValue) \(joint) is unavailable"
+        case .missingDevicePose:
+            "a matching head pose is unavailable"
+        case .nonFiniteSample:
+            "ARKit returned invalid geometry"
+        case .invalidTimestamp:
+            "ARKit returned an invalid timestamp"
+        case let .nonMonotonicSample(side):
+            "\(side.rawValue) hand time moved backwards"
+        case .staleSample:
+            "the acquired sample was stale"
+        case .sampleGap:
+            "the acquired sample followed a tracking gap"
+        case nil:
+            "unknown tracking state"
+        }
+    }
 }
 
 extension simd_float4x4 {
@@ -424,10 +1211,23 @@ extension simd_float4x4 {
     var translation: SIMD3<Float> {
         SIMD3(columns.3.x, columns.3.y, columns.3.z)
     }
+
+    nonisolated var isFinite: Bool {
+        columns.0.isFinite
+            && columns.1.isFinite
+            && columns.2.isFinite
+            && columns.3.isFinite
+    }
 }
 
 extension SIMD3 where Scalar == Float {
     nonisolated var isFinite: Bool {
         x.isFinite && y.isFinite && z.isFinite
+    }
+}
+
+extension SIMD4 where Scalar == Float {
+    nonisolated var isFinite: Bool {
+        x.isFinite && y.isFinite && z.isFinite && w.isFinite
     }
 }

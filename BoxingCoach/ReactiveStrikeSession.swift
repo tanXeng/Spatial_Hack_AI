@@ -436,8 +436,16 @@ final class ReactiveStrikeSession {
         var rightTotal = SIMD3<Float>.zero
         var sampleCount: Float = 0
         var lastPairTimestamp: TimeInterval?
+        var trackingContinuity = TrackingContinuityObserver(epoch: hands.continuityEpoch)
 
         while !Task.isCancelled, deadline.map({ Date() < $0 }) ?? true, phase == .calibrating {
+            if trackingContinuity.observe(hands.continuityEpoch) {
+                leftTotal = .zero
+                rightTotal = .zero
+                sampleCount = 0
+                lastPairTimestamp = nil
+                continue
+            }
             if let frame = currentBodyFrame(),
                let left = hands.leftHand,
                let right = hands.rightHand {
@@ -503,8 +511,17 @@ final class ReactiveStrikeSession {
         var lastAcceptedTimestamp: [BodySide: TimeInterval] = [:]
         var lastProcessedTimestamp: [BodySide: TimeInterval] = [:]
         var measuredReaches: [BodySide: Float] = [:]
+        var trackingContinuity = TrackingContinuityObserver(epoch: hands.continuityEpoch)
 
         while !Task.isCancelled, deadline.map({ Date() < $0 }) ?? true, phase == .calibrating {
+            if trackingContinuity.observe(hands.continuityEpoch) {
+                acceptedSamples = [.left: [], .right: []]
+                lastAcceptedTimestamp.removeAll(keepingCapacity: true)
+                lastProcessedTimestamp.removeAll(keepingCapacity: true)
+                measuredReaches.removeAll(keepingCapacity: true)
+                lastFeedback = "Tracking changed · Restarting reach calibration"
+                continue
+            }
             if let liveFrame = currentBodyFrame() {
                 for side in [BodySide.left, .right] where measuredReaches[side] == nil {
                     guard let guardPosition = guards[side],

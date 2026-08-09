@@ -5,6 +5,32 @@ import Testing
 
 @Suite("Tracking evidence contracts")
 struct TrackingEvidenceTests {
+    @Test("Raw observations separate ARKit acquisition time from callback receipt telemetry")
+    func rawObservationRetainsMatchedAcquisitionEvidence() {
+        var deviceTransform = matrix_identity_float4x4
+        deviceTransform.columns.3 = SIMD4(0.1, 1.7, -0.2, 1)
+
+        let observation = HandObservation(
+            side: .left,
+            wristPosition: SIMD3(-0.2, 1.2, -0.4),
+            wristOrientation: simd_quatf(angle: 0, axis: SIMD3(0, 1, 0)),
+            elbowHint: SIMD3(-0.25, 1.1, -0.2),
+            fistPosition: SIMD3(-0.2, 1.2, -0.5),
+            fistState: .closed,
+            fistClosureRatio: 0.9,
+            acquisitionTimestamp: 12,
+            receiptTimestamp: 12.04,
+            deviceTransform: deviceTransform,
+            deviceTimestamp: 12
+        )
+
+        #expect(observation.timestamp == 12)
+        #expect(observation.acquisitionTimestamp == 12)
+        #expect(observation.receiptTimestamp == 12.04)
+        #expect(observation.deviceTimestamp == observation.acquisitionTimestamp)
+        #expect(observation.deviceTransform.columns.3 == SIMD4(0.1, 1.7, -0.2, 1))
+    }
+
     @Test("A tracked finite hand becomes immutable accepted evidence")
     func validHandRetainsProvenance() throws {
         let hand = try makeHand(
@@ -235,7 +261,7 @@ struct TrackingEvidenceTests {
 
         #expect {
             let matchingStaleHand = try makeHand(timestamp: 9, generation: 2)
-            try ValidatedTrackingSnapshot(
+            _ = try ValidatedTrackingSnapshot(
                 generation: 2,
                 capturedAt: 10,
                 now: 10,

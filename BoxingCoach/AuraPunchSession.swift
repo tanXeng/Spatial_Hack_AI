@@ -703,6 +703,7 @@ final class AuraPunchSession {
         defer { hands.endAttemptCapture() }
 
         for recorder in recorders.values { recorder.begin(at: startTime) }
+        var trackingContinuity = TrackingContinuityObserver(epoch: hands.continuityEpoch)
 
         let armingDeadline = CACurrentMediaTime() + scoredPunchSafetyTimeout
         var hitDetected = false
@@ -711,6 +712,11 @@ final class AuraPunchSession {
 
         while true {
             if Task.isCancelled { break }
+            if trackingContinuity.observe(hands.continuityEpoch) {
+                for recorder in recorders.values { recorder.cancel() }
+                mirrorArm?.isVisible = false
+                return nil
+            }
 
             let now = CACurrentMediaTime()
             if !hitDetected, now >= armingDeadline { break }

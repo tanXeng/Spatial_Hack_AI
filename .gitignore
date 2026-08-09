@@ -49,6 +49,8 @@ Carthage/Build/
 .claude/
 .idea/
 .vscode/
+.worktrees/
+.superpowers/
 .xcodeshareddata/
 .xcuserdata/
 

@@ -128,6 +128,49 @@ nonisolated struct TechniqueScore: Sendable {
     func metric(_ kind: SubMetricKind) -> SubMetric? {
         metrics.first { $0.kind == kind }
     }
+
+    /// Combines multiple punch scores into one round grade (e.g. 3 target hits).
+    static func averaging(_ scores: [TechniqueScore], techniqueID: String) -> TechniqueScore? {
+        guard !scores.isEmpty else { return nil }
+
+        let overall = scores.map(\.overall).reduce(0, +) / Float(scores.count)
+        let trackedFraction = scores.map(\.trackedFraction).reduce(0, +) / Float(scores.count)
+        let duration = scores.map(\.duration).reduce(0, +) / Double(scores.count)
+        let wrongHand = scores.contains(where: \.wrongHand)
+
+        var averagedMetrics: [SubMetric] = []
+        for kind in SubMetricKind.allCases where kind != .guardHand {
+            let available = scores.compactMap { $0.metric(kind)?.score }
+            guard !available.isEmpty else { continue }
+            let meanScore = available.reduce(0, +) / Float(available.count)
+            let template = scores.compactMap { $0.metric(kind) }.first
+            averagedMetrics.append(
+                SubMetric(
+                    kind: kind,
+                    score: meanScore,
+                    measured: template?.measured ?? 0,
+                    detail: "Avg of \(scores.count) punches"
+                )
+            )
+        }
+
+        averagedMetrics.sort { a, b in
+            let order = SubMetricKind.allCases
+            return (order.firstIndex(of: a.kind) ?? 0) < (order.firstIndex(of: b.kind) ?? 0)
+        }
+
+        let first = scores[0]
+        return TechniqueScore(
+            techniqueID: techniqueID,
+            overall: overall,
+            metrics: averagedMetrics,
+            trackedFraction: trackedFraction,
+            duration: duration,
+            wrongHand: wrongHand,
+            thrownHandName: first.thrownHandName,
+            requiredHandName: first.requiredHandName
+        )
+    }
 }
 
 /// Error tolerances, in arm-reach units, for each sub-metric.

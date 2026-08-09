@@ -48,7 +48,7 @@ struct BoxingCoachImmersiveView: View {
             Attachment(id: instructionsAttachmentID) {
                 ImmersiveInstructionBanner(
                     instruction: currentInstruction,
-                    style: isAuraExperience ? .prominent : .compact
+                    style: auraBannerStyle
                 )
             }
 
@@ -111,6 +111,16 @@ struct BoxingCoachImmersiveView: View {
         return false
     }
 
+    private var auraBannerStyle: ImmersiveInstructionBannerStyle {
+        guard isAuraExperience else { return .compact }
+        switch session.auraPunch.phase {
+        case .guiding, .countdown, .attempting:
+            return .coaching
+        default:
+            return .prominent
+        }
+    }
+
     private func endTraining() {
         Task {
             await flow.endExperience(
@@ -161,32 +171,20 @@ struct BoxingCoachImmersiveView: View {
                 }
                 return ImmersiveInstruction(
                     stage: "GET READY",
-                    message: "Raise your guard — a ghost arm will demonstrate the \(action) on your body",
+                    message: "Raise your guard — the hologram will show you the punch",
                     symbol: "figure.boxing"
                 )
             case .acquiring:
                 return ImmersiveInstruction(
                     stage: "GET READY",
-                    message: "Raise your guard and keep both hands visible to follow the ghost",
+                    message: "Raise your guard and keep both hands visible",
                     symbol: "hand.raised.fill"
                 )
-            case .guiding:
+            case .guiding, .countdown, .attempting:
                 return ImmersiveInstruction(
-                    stage: "FOLLOW THE SAMPLE",
-                    message: session.auraPunch.statusMessage,
-                    symbol: "eye.fill"
-                )
-            case .countdown:
-                return ImmersiveInstruction(
-                    stage: "YOUR TURN",
-                    message: session.auraPunch.statusMessage,
-                    symbol: "timer"
-                )
-            case .attempting:
-                return ImmersiveInstruction(
-                    stage: "YOUR TURN",
-                    message: "Try the \(action) on your own",
-                    symbol: "figure.boxing"
+                    stage: session.auraPunch.coachingHeadline,
+                    message: session.auraPunch.coachingDetail,
+                    symbol: auraCoachingSymbol
                 )
             case .scoring:
                 return ImmersiveInstruction(
@@ -247,6 +245,19 @@ struct BoxingCoachImmersiveView: View {
                 message: "Preparing your training space",
                 symbol: "figure.boxing"
             )
+        }
+    }
+
+    private var auraCoachingSymbol: String {
+        switch session.auraPunch.phase {
+        case .guiding:
+            return "eye.fill"
+        case .countdown:
+            return "timer"
+        case .attempting:
+            return "figure.boxing"
+        default:
+            return "figure.boxing"
         }
     }
 }

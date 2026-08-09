@@ -167,8 +167,6 @@ struct AuraSetupView: View {
                     onStanceChange: onStanceChange
                 )
 
-                AuraPunchTutorialCard()
-
                 VStack(spacing: 12) {
                     ForEach(Technique.all) { technique in
                         Button {

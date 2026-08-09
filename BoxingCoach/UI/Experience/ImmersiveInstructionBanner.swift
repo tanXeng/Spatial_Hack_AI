@@ -9,6 +9,7 @@ struct ImmersiveInstruction: Equatable {
 enum ImmersiveInstructionBannerStyle {
     case compact
     case prominent
+    case coaching
 }
 
 /// A narrow, head-anchored cue that explains what the user should do without recreating the
@@ -18,6 +19,25 @@ struct ImmersiveInstructionBanner: View {
     var style: ImmersiveInstructionBannerStyle = .compact
 
     var body: some View {
+        Group {
+            if style == .coaching {
+                coachingBody
+            } else {
+                standardBody
+            }
+        }
+        .padding(.horizontal, horizontalPadding)
+        .padding(.vertical, verticalPadding)
+        .frame(width: bannerWidth, alignment: .leading)
+        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: cornerRadius))
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(instruction.stage)
+        .accessibilityValue(instruction.message)
+        .accessibilityAddTraits(.updatesFrequently)
+        .animation(.easeInOut(duration: 0.2), value: instruction)
+    }
+
+    private var standardBody: some View {
         HStack(spacing: iconSpacing) {
             Image(systemName: instruction.symbol)
                 .font(iconFont)
@@ -39,31 +59,56 @@ struct ImmersiveInstructionBanner: View {
 
             Spacer(minLength: 8)
         }
-        .padding(.horizontal, horizontalPadding)
-        .padding(.vertical, verticalPadding)
-        .frame(width: bannerWidth, alignment: .leading)
-        .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: cornerRadius))
-        .accessibilityElement(children: .ignore)
-        .accessibilityLabel(instruction.stage)
-        .accessibilityValue(instruction.message)
-        .accessibilityAddTraits(.updatesFrequently)
-        .animation(.easeInOut(duration: 0.2), value: instruction)
+    }
+
+    private var coachingBody: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 12) {
+                Image(systemName: instruction.symbol)
+                    .font(.title2.weight(.semibold))
+                    .foregroundStyle(.tint)
+                    .accessibilityHidden(true)
+
+                Text(instruction.stage)
+                    .font(.largeTitle.bold())
+                    .lineLimit(2)
+                    .minimumScaleFactor(0.75)
+            }
+
+            Text(instruction.message)
+                .font(.title3)
+                .foregroundStyle(.secondary)
+                .lineLimit(4)
+                .minimumScaleFactor(0.85)
+        }
     }
 
     private var bannerWidth: CGFloat {
-        style == .prominent ? 620 : 480
+        switch style {
+        case .compact: return 480
+        case .prominent: return 620
+        case .coaching: return 720
+        }
     }
 
     private var cornerRadius: CGFloat {
-        style == .prominent ? 20 : 18
+        style == .compact ? 18 : 20
     }
 
     private var horizontalPadding: CGFloat {
-        style == .prominent ? 24 : 20
+        switch style {
+        case .compact: return 20
+        case .prominent: return 24
+        case .coaching: return 28
+        }
     }
 
     private var verticalPadding: CGFloat {
-        style == .prominent ? 16 : 11
+        switch style {
+        case .compact: return 11
+        case .prominent: return 16
+        case .coaching: return 22
+        }
     }
 
     private var iconSpacing: CGFloat {
@@ -94,10 +139,11 @@ struct ImmersiveInstructionBanner: View {
 #Preview {
     ImmersiveInstructionBanner(
         instruction: ImmersiveInstruction(
-            stage: "FOLLOW THE SAMPLE",
-            message: "Rep 1 of 4: follow the ghost out",
+            stage: "FOLLOW THE HOLOGRAM",
+            message: "Rep 1 of 4 — extend with the hologram",
             symbol: "eye.fill"
-        )
+        ),
+        style: .coaching
     )
     .padding(40)
 }

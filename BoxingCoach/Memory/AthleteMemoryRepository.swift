@@ -130,7 +130,23 @@ final class InMemoryAthleteMemoryRepository: AthleteMemoryRepository {
         } else {
             saved = participant
         }
+        let affectedKeys = Set(attemptValues.values.compactMap { attempt in
+            attempt.athleteID == saved.id ? attempt.memoryKey : nil
+        }).union(memoryValues.keys.filter { $0.athleteID == saved.id })
+        let refreshedMemories = Dictionary(uniqueKeysWithValues: affectedKeys.map { key in
+            (
+                key,
+                AthleteSkillMemory.rebuilding(
+                    key: key,
+                    experienceLevel: saved.experienceLevel,
+                    from: Array(attemptValues.values)
+                )
+            )
+        })
         participantValues[participant.id] = saved
+        for (key, memory) in refreshedMemories {
+            memoryValues[key] = memory
+        }
         return saved
     }
 
@@ -471,9 +487,18 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
                 existing: existing.snapshot,
                 proposed: participant
             )
-            existing.apply(merged)
-            try saveContext()
-            return merged
+            do {
+                existing.apply(merged)
+                try refreshMemoryCaches(for: merged)
+                try saveContext()
+                return merged
+            } catch {
+                rollbackContext()
+                if let repositoryError = error as? AthleteMemoryRepositoryError {
+                    throw repositoryError
+                }
+                throw AthleteMemoryRepositoryError.corruptData
+            }
         } else {
             context.insert(CompetitionSchemaV3.CompetitionPlayerRecord(participant))
         }
@@ -735,6 +760,48 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
         }
     }
 
+    private func refreshMemoryCaches(for participant: CompetitionPlayer) throws {
+        let participantAttempts = try attemptRecords()
+            .filter { $0.athleteID == participant.id }
+            .map { record in
+                guard let snapshot = record.snapshot else {
+                    throw AthleteMemoryRepositoryError.corruptData
+                }
+                return snapshot
+            }
+        let keys = Set(participantAttempts.compactMap(\.memoryKey))
+        let allCaches = try memoryRecords()
+        var cachesByID: [String: CompetitionSchemaV3.AthleteSkillMemoryRecord] = [:]
+        for cache in allCaches {
+            guard cachesByID.updateValue(cache, forKey: cache.id) == nil else {
+                throw AthleteMemoryRepositoryError.corruptData
+            }
+        }
+        var staleCaches = Dictionary(uniqueKeysWithValues: allCaches.lazy
+            .filter { $0.athleteID == participant.id }
+            .map { ($0.id, $0) })
+
+        for key in keys {
+            guard let memory = AthleteSkillMemory.rebuilding(
+                key: key,
+                experienceLevel: participant.experienceLevel,
+                from: participantAttempts
+            ) else {
+                if let stale = cachesByID[key.storageKey] {
+                    staleCaches[stale.id] = stale
+                }
+                continue
+            }
+            if let existing = cachesByID[key.storageKey] {
+                try existing.apply(memory)
+                staleCaches.removeValue(forKey: existing.id)
+            } else {
+                context.insert(try CompetitionSchemaV3.AthleteSkillMemoryRecord(memory))
+            }
+        }
+        staleCaches.values.forEach(context.delete)
+    }
+
     private func participantForAttempt(
         _ attempt: TechniqueAttemptSnapshot
     ) throws -> CompetitionPlayer {
@@ -829,10 +896,14 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
         do {
             try context.save()
         } catch {
-            context.rollback()
-            context = Self.makeContext(container: container)
+            rollbackContext()
             throw AthleteMemoryRepositoryError.saveFailed
         }
+    }
+
+    private func rollbackContext() {
+        context.rollback()
+        context = Self.makeContext(container: container)
     }
 
     private static func makeContext(container: ModelContainer) -> ModelContext {

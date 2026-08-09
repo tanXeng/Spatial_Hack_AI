@@ -354,6 +354,19 @@ struct AthleteMemoryRepositoryTests {
         )
         _ = try repository.createEvent(firstEvent)
         _ = try repository.saveParticipant(original)
+        let attempt = makeAttempt(
+            id: id(104),
+            participant: original,
+            cycleID: id(105),
+            stage: .baseline,
+            score: 78,
+            metrics: [makeMetric("path", 78, .measured)],
+            correctionCode: "straight-path",
+            completedAt: 30
+        )
+        let key = try #require(attempt.memoryKey)
+        _ = try repository.insertAttempt(attempt)
+        #expect(try repository.memory(for: key)?.experienceLevel == .beginner)
 
         let update = CompetitionPlayer(
             id: original.id,
@@ -376,6 +389,8 @@ struct AthleteMemoryRepositoryTests {
             eventID: firstEvent.id,
             displayCode: "0102"
         ) == merged)
+        #expect(try repository.memory(for: key)?.experienceLevel == .intermediate)
+        #expect(try repository.memory(for: key)?.attempts == [attempt])
 
         _ = try repository.closeEvent(id: firstEvent.id, at: date(100))
         let secondEvent = makeEvent(id: id(103), openedAt: 101)
@@ -832,6 +847,78 @@ struct AthleteMemoryRepositoryTests {
                 #expect(try repository.attempts(for: key).isEmpty)
                 #expect(try repository.memory(for: key) == nil)
                 #expect(try repository.insertAttempt(attempt) == attempt)
+            }
+        }
+    }
+
+    @Test("A failed participant profile update rolls back its rebuilt memory cache")
+    func fileBackedExperienceUpdateFailureRollsBackMemoryAndProfile() throws {
+        try FileBackedMemoryFixture.use { storeURL in
+            let event = makeEvent(id: id(150), openedAt: 10)
+            let participant = makeParticipant(
+                id: id(151),
+                eventID: event.id,
+                name: "Gray",
+                code: "0151"
+            )
+            let attempt = makeAttempt(
+                id: id(152),
+                participant: participant,
+                cycleID: id(153),
+                stage: .baseline,
+                score: 85,
+                metrics: [makeMetric("path", 85, .measured)],
+                correctionCode: "straight-path",
+                completedAt: 30
+            )
+            let key = try #require(attempt.memoryKey)
+            let update = CompetitionPlayer(
+                id: participant.id,
+                name: participant.name,
+                normalizedName: participant.normalizedName,
+                rememberedStance: participant.rememberedStance,
+                reach: participant.reach,
+                calibrationVersion: participant.calibrationVersion,
+                calibratedAt: participant.calibratedAt,
+                createdAt: date(999),
+                lastSeenAt: date(40),
+                experienceLevel: .intermediate,
+                publicHandle: participant.publicHandle
+            )
+
+            try autoreleasepool {
+                let container = try CompetitionModelContainer.make(storeURL: storeURL)
+                let repository = SwiftDataAthleteMemoryRepository(container: container)
+                _ = try repository.createEvent(event)
+                _ = try repository.saveParticipant(participant)
+                _ = try repository.insertAttempt(attempt)
+                #expect(try repository.memory(for: key)?.experienceLevel == .beginner)
+            }
+            try autoreleasepool {
+                let container = try CompetitionModelContainer.make(
+                    storeURL: storeURL,
+                    allowsSave: false
+                )
+                let repository = SwiftDataAthleteMemoryRepository(container: container)
+                #expect(throws: AthleteMemoryRepositoryError.saveFailed) {
+                    _ = try repository.saveParticipant(update)
+                }
+                #expect(try repository.participant(
+                    eventID: event.id,
+                    displayCode: "0151"
+                ) == participant)
+                #expect(try repository.memory(for: key)?.experienceLevel == .beginner)
+            }
+            try autoreleasepool {
+                let container = try CompetitionModelContainer.make(storeURL: storeURL)
+                let repository = SwiftDataAthleteMemoryRepository(container: container)
+                #expect(try repository.participant(
+                    eventID: event.id,
+                    displayCode: "0151"
+                ) == participant)
+                #expect(try repository.memory(for: key)?.experienceLevel == .beginner)
+                #expect(try repository.saveParticipant(update).experienceLevel == .intermediate)
+                #expect(try repository.memory(for: key)?.experienceLevel == .intermediate)
             }
         }
     }

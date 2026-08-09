@@ -347,6 +347,61 @@ nonisolated enum CompetitionMemoryV3Migration {
             let caches = try context.fetch(
                 FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
             )
+            let attempts = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV3.TechniqueAttemptRecord>()
+            )
+            var attemptsByID: [UUID: CompetitionSchemaV3.TechniqueAttemptRecord] = [:]
+            for attempt in attempts {
+                guard attemptsByID.updateValue(attempt, forKey: attempt.id) == nil else {
+                    throw AthleteMemoryRepositoryError.corruptData
+                }
+            }
+
+            var attachments: [(CompetitionSchemaV3.TechniqueAttemptRecord, Data)] = []
+            var claimedAttemptIDs: Set<UUID> = []
+            for cache in caches {
+                guard let traceData = cache.pastSelfTraceData else { continue }
+                let trace = try JSONDecoder().decode(PastSelfTrace.self, from: traceData)
+                guard cache.id == legacyCacheID(
+                    athleteID: cache.athleteID,
+                    techniqueID: cache.techniqueID
+                ),
+                      cache.attemptIDs.contains(trace.attemptID),
+                      let experienceLevel = ExperienceLevel(
+                          rawValue: cache.experienceLevelRawValue
+                      ),
+                      let traceRecord = attemptsByID[trace.attemptID],
+                      let traceAttempt = traceRecord.snapshot,
+                      traceAttempt.pastSelfTrace == nil,
+                      traceAttempt.athleteID == cache.athleteID,
+                      traceAttempt.techniqueID == cache.techniqueID,
+                      !claimedAttemptIDs.contains(trace.attemptID)
+                else { throw AthleteMemoryRepositoryError.corruptData }
+
+                let memoryAttempts = try cache.attemptIDs.map { attemptID in
+                    guard let attempt = attemptsByID[attemptID]?.snapshot else {
+                        throw AthleteMemoryRepositoryError.corruptData
+                    }
+                    return attempt
+                }
+                guard AthleteSkillMemory(
+                    athleteID: cache.athleteID,
+                    techniqueID: cache.techniqueID,
+                    experienceLevel: experienceLevel,
+                    attempts: memoryAttempts,
+                    pastSelfTrace: trace,
+                    updatedAt: cache.updatedAt
+                ) != nil,
+                      let evidence = attaching(trace, to: traceAttempt)
+                else { throw AthleteMemoryRepositoryError.corruptData }
+
+                claimedAttemptIDs.insert(trace.attemptID)
+                attachments.append((traceRecord, try JSONEncoder().encode(evidence)))
+            }
+
+            for (attempt, snapshotData) in attachments {
+                attempt.snapshotData = snapshotData
+            }
             for cache in caches {
                 context.delete(cache)
             }
@@ -355,6 +410,40 @@ nonisolated enum CompetitionMemoryV3Migration {
             context.rollback()
             throw error
         }
+    }
+
+    private static func legacyCacheID(athleteID: UUID, techniqueID: String) -> String {
+        "\(athleteID.uuidString.lowercased())|\(techniqueID)"
+    }
+
+    private static func attaching(
+        _ trace: PastSelfTrace,
+        to attempt: TechniqueAttemptSnapshot
+    ) -> TechniqueAttemptSnapshot? {
+        TechniqueAttemptSnapshot(
+            id: attempt.id,
+            athleteID: attempt.athleteID,
+            eventID: attempt.eventID,
+            coachingCycleID: attempt.coachingCycleID,
+            stage: attempt.stage,
+            techniqueID: attempt.techniqueID,
+            stance: attempt.stance,
+            score: attempt.score,
+            metrics: attempt.metrics,
+            trackedFraction: attempt.trackedFraction,
+            duration: attempt.duration,
+            isValid: attempt.isValid,
+            wrongHand: attempt.wrongHand,
+            scoringVersion: attempt.scoringVersion,
+            referenceVersion: attempt.referenceVersion,
+            calibrationVersion: attempt.calibrationVersion,
+            correctionCode: attempt.correctionCode,
+            baselineAttemptID: attempt.baselineAttemptID,
+            startedAt: attempt.startedAt,
+            completedAt: attempt.completedAt,
+            pastSelfTrace: trace,
+            publicHandleSnapshot: attempt.publicHandleSnapshot
+        )
     }
 }
 

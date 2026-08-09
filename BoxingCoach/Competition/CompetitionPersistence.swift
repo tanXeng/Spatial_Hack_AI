@@ -172,7 +172,7 @@ enum CompetitionSchemaV1: VersionedSchema {
 
 enum CompetitionMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [CompetitionSchemaV1.self, CompetitionSchemaV2.self]
+        [CompetitionSchemaV1.self, CompetitionSchemaV2.self, CompetitionSchemaV3.self]
     }
 
     static var stages: [MigrationStage] {
@@ -184,6 +184,14 @@ enum CompetitionMigrationPlan: SchemaMigrationPlan {
                 didMigrate: { context in
                     try CompetitionLegacyMigration.migrate(context)
                 }
+            ),
+            .custom(
+                fromVersion: CompetitionSchemaV2.self,
+                toVersion: CompetitionSchemaV3.self,
+                willMigrate: nil,
+                didMigrate: { context in
+                    try CompetitionMemoryV3Migration.migrate(context)
+                }
             )
         ]
     }
@@ -194,12 +202,12 @@ enum CompetitionModelContainer {
     private static let legacyConfigurationName = "BoxingCoachCompetitionV1"
 
     static func make(inMemory: Bool) throws -> ModelContainer {
-        let schema = Schema(versionedSchema: CompetitionSchemaV2.self)
+        let schema = Schema(versionedSchema: CompetitionSchemaV3.self)
         return try make(schema: schema, configuration: configuration(inMemory: inMemory))
     }
 
     static func configuration(inMemory: Bool) -> ModelConfiguration {
-        let schema = Schema(versionedSchema: CompetitionSchemaV2.self)
+        let schema = Schema(versionedSchema: CompetitionSchemaV3.self)
         if inMemory {
             return ModelConfiguration(
                 configurationName,
@@ -220,7 +228,7 @@ enum CompetitionModelContainer {
     }
 
     static func make(storeURL: URL, allowsSave: Bool = true) throws -> ModelContainer {
-        let schema = Schema(versionedSchema: CompetitionSchemaV2.self)
+        let schema = Schema(versionedSchema: CompetitionSchemaV3.self)
         let configuration = ModelConfiguration(
             configurationName,
             schema: schema,
@@ -232,7 +240,7 @@ enum CompetitionModelContainer {
     }
 
     private static var legacyStoreURL: URL {
-        // Keep the shipped V1 file URL while giving the V2 configuration a version-neutral name.
+        // Keep the shipped V1 file URL while giving the current configuration a version-neutral name.
         // Changing both would abandon the existing store instead of migrating it.
         ModelConfiguration(
             legacyConfigurationName,
@@ -267,7 +275,7 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
     }
 
     func player(normalizedName: String) async throws -> CompetitionPlayer? {
-        try context.fetch(FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>())
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>())
             .first { $0.normalizedName == normalizedName }?.snapshot
     }
 
@@ -279,7 +287,7 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
         if let existing = try playerRecord(id: player.id) {
             existing.apply(player)
         } else {
-            context.insert(CompetitionSchemaV2.CompetitionPlayerRecord(player))
+            context.insert(CompetitionSchemaV3.CompetitionPlayerRecord(player))
         }
         try saveContext()
     }
@@ -289,30 +297,30 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
         guard try playerRecord(id: submission.playerID) != nil else {
             throw CompetitionRepositoryError.playerNotFound
         }
-        context.insert(CompetitionSchemaV2.CompetitionSubmissionRecord(submission))
+        context.insert(CompetitionSchemaV3.CompetitionSubmissionRecord(submission))
         try saveContext()
         return submission
     }
 
     func submissions() async throws -> [CompetitionSubmission] {
-        try context.fetch(FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>())
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.CompetitionSubmissionRecord>())
             .compactMap(\.snapshot)
             .sorted { $0.endedAt > $1.endedAt }
     }
 
     func reset() async throws {
-        try context.delete(model: CompetitionSchemaV2.CompetitionSubmissionRecord.self)
-        try context.delete(model: CompetitionSchemaV2.CompetitionPlayerRecord.self)
+        try context.delete(model: CompetitionSchemaV3.CompetitionSubmissionRecord.self)
+        try context.delete(model: CompetitionSchemaV3.CompetitionPlayerRecord.self)
         try saveContext()
     }
 
-    private func playerRecord(id: UUID) throws -> CompetitionSchemaV2.CompetitionPlayerRecord? {
-        try context.fetch(FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>())
+    private func playerRecord(id: UUID) throws -> CompetitionSchemaV3.CompetitionPlayerRecord? {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>())
             .first { $0.id == id }
     }
 
-    private func submissionRecord(id: UUID) throws -> CompetitionSchemaV2.CompetitionSubmissionRecord? {
-        try context.fetch(FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>())
+    private func submissionRecord(id: UUID) throws -> CompetitionSchemaV3.CompetitionSubmissionRecord? {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.CompetitionSubmissionRecord>())
             .first { $0.id == id }
     }
 
@@ -330,6 +338,23 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
         let context = ModelContext(container)
         context.autosaveEnabled = false
         return context
+    }
+}
+
+nonisolated enum CompetitionMemoryV3Migration {
+    static func migrate(_ context: ModelContext) throws {
+        do {
+            let caches = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
+            )
+            for cache in caches {
+                context.delete(cache)
+            }
+            try context.save()
+        } catch {
+            context.rollback()
+            throw error
+        }
     }
 }
 

@@ -1,13 +1,8 @@
 import Foundation
 import SwiftData
 
-nonisolated private enum AthleteMemoryPersistenceError: Error {
-    case incompatibleMemoryKey
-    case incompatibleRunIdentity
-}
-
-enum CompetitionSchemaV3: VersionedSchema {
-    static var versionIdentifier = Schema.Version(3, 0, 0)
+enum CompetitionSchemaV2: VersionedSchema {
+    static var versionIdentifier = Schema.Version(2, 0, 0)
 
     static var models: [any PersistentModel.Type] {
         [
@@ -75,11 +70,12 @@ enum CompetitionSchemaV3: VersionedSchema {
         }
     }
 
-    /// V3 retains the participant entity name so SwiftData maps every immutable V2 row.
+    /// The V2 participant entity intentionally retains the V1 entity name so SwiftData can
+    /// map every existing player row before the custom `didMigrate` stage enriches it.
     @Model
     final class CompetitionPlayerRecord {
         @Attribute(.unique) var id: UUID
-        var normalizedName: String
+        @Attribute(.unique) var normalizedName: String
         var name: String
         var stanceRawValue: String
         var leftReach: Float?
@@ -175,7 +171,6 @@ enum CompetitionSchemaV3: VersionedSchema {
         var completedAt: Date
         var publicDisplayName: String?
         var publicDisplayCode: String?
-        var snapshotData: Data?
 
         init(_ attempt: TechniqueAttemptSnapshot) {
             id = attempt.id
@@ -189,35 +184,10 @@ enum CompetitionSchemaV3: VersionedSchema {
             completedAt = attempt.completedAt
             publicDisplayName = attempt.publicHandleSnapshot?.displayName
             publicDisplayCode = attempt.publicHandleSnapshot?.displayCode
-            snapshotData = try? JSONEncoder().encode(attempt)
         }
 
         var snapshot: TechniqueAttemptSnapshot? {
-            if let snapshotData {
-                guard let decoded = try? JSONDecoder().decode(
-                    TechniqueAttemptSnapshot.self,
-                    from: snapshotData
-                ),
-                      decoded.id == id,
-                      decoded.athleteID == athleteID,
-                      decoded.eventID == eventID,
-                      decoded.techniqueID == techniqueID,
-                      decoded.score == score,
-                      decoded.scoringVersion == scoringVersion,
-                      decoded.calibrationVersion == calibrationVersion,
-                      decoded.startedAt == startedAt,
-                      decoded.completedAt == completedAt,
-                      decoded.publicHandleSnapshot?.displayName == publicDisplayName,
-                      decoded.publicHandleSnapshot?.displayCode == publicDisplayCode,
-                      decoded.publicHandleSnapshot == publicHandle(
-                          eventID: eventID,
-                          displayName: publicDisplayName,
-                          displayCode: publicDisplayCode
-                      )
-                else { return nil }
-                return decoded
-            }
-            return TechniqueAttemptSnapshot(
+            TechniqueAttemptSnapshot(
                 id: id,
                 athleteID: athleteID,
                 eventID: eventID,
@@ -247,19 +217,7 @@ enum CompetitionSchemaV3: VersionedSchema {
         var updatedAt: Date
 
         init(_ memory: AthleteSkillMemory) throws {
-            id = memory.key.storageKey
-            athleteID = memory.athleteID
-            techniqueID = memory.techniqueID
-            experienceLevelRawValue = memory.experienceLevel.rawValue
-            attemptIDs = memory.attempts.map(\.id)
-            pastSelfTraceData = try memory.pastSelfTrace.map { try JSONEncoder().encode($0) }
-            updatedAt = memory.updatedAt
-        }
-
-        func apply(_ memory: AthleteSkillMemory) throws {
-            guard id == memory.key.storageKey else {
-                throw AthleteMemoryPersistenceError.incompatibleMemoryKey
-            }
+            id = Self.key(athleteID: memory.athleteID, techniqueID: memory.techniqueID)
             athleteID = memory.athleteID
             techniqueID = memory.techniqueID
             experienceLevelRawValue = memory.experienceLevel.rawValue
@@ -269,33 +227,30 @@ enum CompetitionSchemaV3: VersionedSchema {
         }
 
         func snapshot(attempts: [TechniqueAttemptSnapshot]) -> AthleteSkillMemory? {
-            let keys = Set(attempts.compactMap(\.memoryKey))
-            guard keys.count == 1,
-                  let key = keys.first,
-                  id == key.storageKey,
-                  athleteID == key.athleteID,
-                  techniqueID == key.techniqueID,
-                  let experienceLevel = ExperienceLevel(rawValue: experienceLevelRawValue),
-                  let rebuilt = AthleteSkillMemory.rebuilding(
-                      key: key,
-                      experienceLevel: experienceLevel,
-                      from: attempts
-                  )
+            let attemptsByID = Dictionary(uniqueKeysWithValues: attempts.map { ($0.id, $0) })
+            let orderedAttempts = attemptIDs.compactMap { attemptsByID[$0] }
+            guard orderedAttempts.count == attemptIDs.count,
+                  let experienceLevel = ExperienceLevel(rawValue: experienceLevelRawValue)
             else { return nil }
 
-            let storedTrace: PastSelfTrace?
+            let trace: PastSelfTrace?
             do {
-                storedTrace = try pastSelfTraceData.map {
-                    try JSONDecoder().decode(PastSelfTrace.self, from: $0)
-                }
+                trace = try pastSelfTraceData.map { try JSONDecoder().decode(PastSelfTrace.self, from: $0) }
             } catch {
                 return nil
             }
-            guard attemptIDs == rebuilt.attempts.map(\.id),
-                  storedTrace == rebuilt.pastSelfTrace,
-                  updatedAt == rebuilt.updatedAt
-            else { return nil }
-            return rebuilt
+            return AthleteSkillMemory(
+                athleteID: athleteID,
+                techniqueID: techniqueID,
+                experienceLevel: experienceLevel,
+                attempts: orderedAttempts,
+                pastSelfTrace: trace,
+                updatedAt: updatedAt
+            )
+        }
+
+        private static func key(athleteID: UUID, techniqueID: String) -> String {
+            "\(athleteID.uuidString.lowercased())|\(techniqueID)"
         }
     }
 
@@ -306,7 +261,6 @@ enum CompetitionSchemaV3: VersionedSchema {
         var eventID: UUID?
         var techniqueID: String
         var requestedAt: Date
-        var snapshotData: Data?
 
         init(_ run: PendingTrainingRun) {
             id = run.id
@@ -314,7 +268,6 @@ enum CompetitionSchemaV3: VersionedSchema {
             eventID = run.eventID
             techniqueID = run.techniqueID
             requestedAt = run.requestedAt
-            snapshotData = TrainingRunSnapshot(run).flatMap { try? JSONEncoder().encode($0) }
         }
 
         var snapshot: PendingTrainingRun? {
@@ -326,36 +279,10 @@ enum CompetitionSchemaV3: VersionedSchema {
                 requestedAt: requestedAt
             )
         }
-
-        var runSnapshot: TrainingRunSnapshot? {
-            if let snapshotData {
-                guard let decoded = try? JSONDecoder().decode(
-                    TrainingRunSnapshot.self,
-                    from: snapshotData
-                ),
-                      decoded.id == id,
-                      decoded.athleteID == athleteID,
-                      decoded.eventID == eventID,
-                      decoded.techniqueID == techniqueID,
-                      decoded.requestedAt == requestedAt
-                else { return nil }
-                return decoded
-            }
-            return snapshot.flatMap(TrainingRunSnapshot.init)
-        }
-
-        func apply(_ run: TrainingRunSnapshot) throws {
-            guard run.id == id,
-                  run.athleteID == athleteID,
-                  run.eventID == eventID,
-                  run.techniqueID == techniqueID,
-                  run.requestedAt == requestedAt
-            else { throw AthleteMemoryPersistenceError.incompatibleRunIdentity }
-            snapshotData = try JSONEncoder().encode(run)
-        }
     }
 
-    /// V3 likewise keeps the submission entity name so V2 history maps without identity loss.
+    /// This type likewise keeps the V1 entity name so UUIDs, timestamps, scores, and tie-break
+    /// fields are mapped by SwiftData before V2 event provenance is added.
     @Model
     final class CompetitionSubmissionRecord {
         @Attribute(.unique) var id: UUID

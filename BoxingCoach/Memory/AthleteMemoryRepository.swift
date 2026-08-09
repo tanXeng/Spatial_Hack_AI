@@ -49,6 +49,31 @@ protocol AthleteMemoryRepository: AnyObject {
     func awards(eventID: UUID) throws -> [EventAward]
 }
 
+nonisolated private enum ParticipantMergePolicy {
+    static func merge(
+        existing: CompetitionPlayer,
+        proposed: CompetitionPlayer
+    ) throws -> CompetitionPlayer {
+        guard existing.id == proposed.id,
+              existing.eventID == proposed.eventID
+        else { throw AthleteMemoryRepositoryError.participantEventMismatch }
+
+        return CompetitionPlayer(
+            id: existing.id,
+            name: proposed.name,
+            normalizedName: proposed.normalizedName,
+            rememberedStance: proposed.rememberedStance,
+            reach: proposed.reach,
+            calibrationVersion: proposed.calibrationVersion,
+            calibratedAt: proposed.calibratedAt,
+            createdAt: existing.createdAt,
+            lastSeenAt: proposed.lastSeenAt,
+            experienceLevel: proposed.experienceLevel,
+            publicHandle: proposed.publicHandle
+        )
+    }
+}
+
 @MainActor
 final class InMemoryAthleteMemoryRepository: AthleteMemoryRepository {
     private var events: [UUID: EventEdition] = [:]
@@ -99,8 +124,14 @@ final class InMemoryAthleteMemoryRepository: AthleteMemoryRepository {
         }) {
             throw AthleteMemoryRepositoryError.duplicateDisplayCode
         }
-        participantValues[participant.id] = participant
-        return participant
+        let saved: CompetitionPlayer
+        if let existing = participantValues[participant.id] {
+            saved = try ParticipantMergePolicy.merge(existing: existing, proposed: participant)
+        } else {
+            saved = participant
+        }
+        participantValues[participant.id] = saved
+        return saved
     }
 
     func participant(eventID: UUID, displayCode: String) throws -> CompetitionPlayer? {
@@ -114,7 +145,12 @@ final class InMemoryAthleteMemoryRepository: AthleteMemoryRepository {
     }
 
     func insertAttempt(_ attempt: TechniqueAttemptSnapshot) throws -> TechniqueAttemptSnapshot {
-        if let existing = attemptValues[attempt.id] { return existing }
+        if let existing = attemptValues[attempt.id] {
+            guard existing == attempt else {
+                throw AthleteMemoryRepositoryError.attemptParticipantMismatch
+            }
+            return existing
+        }
         let participant = try participantForAttempt(attempt)
         try validateProof(attempt)
 
@@ -152,7 +188,15 @@ final class InMemoryAthleteMemoryRepository: AthleteMemoryRepository {
     }
 
     func reserveRun(_ run: PendingTrainingRun) throws -> TrainingRunSnapshot {
-        if let existing = runValues[run.id] { return existing }
+        if let existing = runValues[run.id] {
+            guard existing.id == run.id,
+                  existing.athleteID == run.athleteID,
+                  existing.eventID == run.eventID,
+                  existing.techniqueID == run.techniqueID,
+                  existing.requestedAt == run.requestedAt
+            else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+            return existing
+        }
         try validateRunOwner(run)
         guard let snapshot = TrainingRunSnapshot(run) else {
             throw AthleteMemoryRepositoryError.invalidRunTransition
@@ -208,7 +252,12 @@ final class InMemoryAthleteMemoryRepository: AthleteMemoryRepository {
     }
 
     func submit(_ submission: CompetitionSubmission) throws -> CompetitionSubmission {
-        if let existing = submissionValues[submission.id] { return existing }
+        if let existing = submissionValues[submission.id] {
+            guard existing == submission else {
+                throw AthleteMemoryRepositoryError.submissionMismatch
+            }
+            return existing
+        }
         try validateSubmission(submission)
         submissionValues[submission.id] = submission
         return submission
@@ -219,7 +268,12 @@ final class InMemoryAthleteMemoryRepository: AthleteMemoryRepository {
     }
 
     func saveAward(_ award: EventAward) throws -> EventAward {
-        if let existing = awardValues[award.id] { return existing }
+        if let existing = awardValues[award.id] {
+            guard existing == award else {
+                throw AthleteMemoryRepositoryError.awardMismatch
+            }
+            return existing
+        }
         try validateAward(award)
         awardValues[award.id] = award
         return award
@@ -259,12 +313,14 @@ final class InMemoryAthleteMemoryRepository: AthleteMemoryRepository {
         guard let baselineID = attempt.baselineAttemptID,
               let baseline = attemptValues[baselineID],
               baseline.stage == .baseline,
-              baseline.isValid,
               baseline.memoryKey == attempt.memoryKey,
               baseline.coachingCycleID == attempt.coachingCycleID,
-              baseline.hasCompatibleMetricAvailability(with: attempt),
-              baseline.correctionCode == attempt.correctionCode,
               baseline.completedAt <= attempt.completedAt
+        else { throw AthleteMemoryRepositoryError.incompatibleProof }
+        guard attempt.isValid else { return }
+        guard baseline.isValid,
+              baseline.hasCompatibleMetricAvailability(with: attempt),
+              baseline.correctionCode == attempt.correctionCode
         else { throw AthleteMemoryRepositoryError.incompatibleProof }
     }
 
@@ -370,7 +426,7 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
         guard try activeEvent() == nil else {
             throw AthleteMemoryRepositoryError.activeEventExists
         }
-        context.insert(CompetitionSchemaV2.EventEditionRecord(event))
+        context.insert(CompetitionSchemaV3.EventEditionRecord(event))
         try saveContext()
         return event
     }
@@ -411,12 +467,15 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
             throw AthleteMemoryRepositoryError.duplicateDisplayCode
         }
         if let existing = records.first(where: { $0.id == participant.id }) {
-            guard existing.eventID == eventID else {
-                throw AthleteMemoryRepositoryError.participantEventMismatch
-            }
-            existing.apply(participant)
+            let merged = try ParticipantMergePolicy.merge(
+                existing: existing.snapshot,
+                proposed: participant
+            )
+            existing.apply(merged)
+            try saveContext()
+            return merged
         } else {
-            context.insert(CompetitionSchemaV2.CompetitionPlayerRecord(participant))
+            context.insert(CompetitionSchemaV3.CompetitionPlayerRecord(participant))
         }
         try saveContext()
         return participant
@@ -439,6 +498,9 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
             guard let snapshot = existing.snapshot else {
                 throw AthleteMemoryRepositoryError.corruptData
             }
+            guard snapshot == attempt else {
+                throw AthleteMemoryRepositoryError.attemptParticipantMismatch
+            }
             return snapshot
         }
         let participant = try participantForAttempt(attempt)
@@ -447,7 +509,7 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
             throw AthleteMemoryRepositoryError.attemptParticipantMismatch
         }
 
-        let record = CompetitionSchemaV2.TechniqueAttemptRecord(attempt)
+        let record = CompetitionSchemaV3.TechniqueAttemptRecord(attempt)
         guard record.snapshot == attempt else {
             throw AthleteMemoryRepositoryError.corruptData
         }
@@ -469,10 +531,10 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
 
     func memory(for key: AthleteSkillMemoryKey) throws -> AthleteSkillMemory? {
         guard let record = try memoryRecord(key: key) else { return nil }
-        guard let snapshot = record.snapshot(attempts: try attempts(for: key)) else {
-            throw AthleteMemoryRepositoryError.corruptData
+        if let snapshot = record.snapshot(attempts: try attempts(for: key)) {
+            return snapshot
         }
-        return snapshot
+        return try rebuildMemory(for: key)
     }
 
     func rebuildMemory(for key: AthleteSkillMemoryKey) throws -> AthleteSkillMemory? {
@@ -494,10 +556,16 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
             guard let snapshot = existing.runSnapshot else {
                 throw AthleteMemoryRepositoryError.corruptData
             }
+            guard snapshot.id == run.id,
+                  snapshot.athleteID == run.athleteID,
+                  snapshot.eventID == run.eventID,
+                  snapshot.techniqueID == run.techniqueID,
+                  snapshot.requestedAt == run.requestedAt
+            else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
             return snapshot
         }
         try validateRunOwner(run)
-        let record = CompetitionSchemaV2.PendingTrainingRunRecord(run)
+        let record = CompetitionSchemaV3.PendingTrainingRunRecord(run)
         guard let snapshot = record.runSnapshot else {
             throw AthleteMemoryRepositoryError.corruptData
         }
@@ -538,10 +606,13 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
             guard let snapshot = existing.snapshot else {
                 throw AthleteMemoryRepositoryError.corruptData
             }
+            guard snapshot == submission else {
+                throw AthleteMemoryRepositoryError.submissionMismatch
+            }
             return snapshot
         }
         try validateSubmission(submission)
-        context.insert(CompetitionSchemaV2.CompetitionSubmissionRecord(submission))
+        context.insert(CompetitionSchemaV3.CompetitionSubmissionRecord(submission))
         try saveContext()
         return submission
     }
@@ -558,10 +629,13 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
             guard let snapshot = existing.snapshot else {
                 throw AthleteMemoryRepositoryError.corruptData
             }
+            guard snapshot == award else {
+                throw AthleteMemoryRepositoryError.awardMismatch
+            }
             return snapshot
         }
         try validateAward(award)
-        context.insert(CompetitionSchemaV2.EventAwardRecord(award))
+        context.insert(CompetitionSchemaV3.EventAwardRecord(award))
         try saveContext()
         return award
     }
@@ -573,31 +647,31 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
         }
     }
 
-    private func eventRecords() throws -> [CompetitionSchemaV2.EventEditionRecord] {
-        try context.fetch(FetchDescriptor<CompetitionSchemaV2.EventEditionRecord>())
+    private func eventRecords() throws -> [CompetitionSchemaV3.EventEditionRecord] {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>())
     }
 
-    private func eventRecord(id: UUID) throws -> CompetitionSchemaV2.EventEditionRecord? {
+    private func eventRecord(id: UUID) throws -> CompetitionSchemaV3.EventEditionRecord? {
         try eventRecords().first { $0.id == id }
     }
 
-    private func participantRecords() throws -> [CompetitionSchemaV2.CompetitionPlayerRecord] {
-        try context.fetch(FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>())
+    private func participantRecords() throws -> [CompetitionSchemaV3.CompetitionPlayerRecord] {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>())
     }
 
     private func participantRecord(
         id: UUID
-    ) throws -> CompetitionSchemaV2.CompetitionPlayerRecord? {
+    ) throws -> CompetitionSchemaV3.CompetitionPlayerRecord? {
         try participantRecords().first { $0.id == id }
     }
 
-    private func attemptRecords() throws -> [CompetitionSchemaV2.TechniqueAttemptRecord] {
-        try context.fetch(FetchDescriptor<CompetitionSchemaV2.TechniqueAttemptRecord>())
+    private func attemptRecords() throws -> [CompetitionSchemaV3.TechniqueAttemptRecord] {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.TechniqueAttemptRecord>())
     }
 
     private func attemptRecord(
         id: UUID
-    ) throws -> CompetitionSchemaV2.TechniqueAttemptRecord? {
+    ) throws -> CompetitionSchemaV3.TechniqueAttemptRecord? {
         try attemptRecords().first { $0.id == id }
     }
 
@@ -610,39 +684,39 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
         }
     }
 
-    private func memoryRecords() throws -> [CompetitionSchemaV2.AthleteSkillMemoryRecord] {
-        try context.fetch(FetchDescriptor<CompetitionSchemaV2.AthleteSkillMemoryRecord>())
+    private func memoryRecords() throws -> [CompetitionSchemaV3.AthleteSkillMemoryRecord] {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>())
     }
 
     private func memoryRecord(
         key: AthleteSkillMemoryKey
-    ) throws -> CompetitionSchemaV2.AthleteSkillMemoryRecord? {
+    ) throws -> CompetitionSchemaV3.AthleteSkillMemoryRecord? {
         try memoryRecords().first { $0.id == key.storageKey }
     }
 
-    private func runRecords() throws -> [CompetitionSchemaV2.PendingTrainingRunRecord] {
-        try context.fetch(FetchDescriptor<CompetitionSchemaV2.PendingTrainingRunRecord>())
+    private func runRecords() throws -> [CompetitionSchemaV3.PendingTrainingRunRecord] {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.PendingTrainingRunRecord>())
     }
 
-    private func runRecord(id: UUID) throws -> CompetitionSchemaV2.PendingTrainingRunRecord? {
+    private func runRecord(id: UUID) throws -> CompetitionSchemaV3.PendingTrainingRunRecord? {
         try runRecords().first { $0.id == id }
     }
 
-    private func submissionRecords() throws -> [CompetitionSchemaV2.CompetitionSubmissionRecord] {
-        try context.fetch(FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>())
+    private func submissionRecords() throws -> [CompetitionSchemaV3.CompetitionSubmissionRecord] {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.CompetitionSubmissionRecord>())
     }
 
     private func submissionRecord(
         id: UUID
-    ) throws -> CompetitionSchemaV2.CompetitionSubmissionRecord? {
+    ) throws -> CompetitionSchemaV3.CompetitionSubmissionRecord? {
         try submissionRecords().first { $0.id == id }
     }
 
-    private func awardRecords() throws -> [CompetitionSchemaV2.EventAwardRecord] {
-        try context.fetch(FetchDescriptor<CompetitionSchemaV2.EventAwardRecord>())
+    private func awardRecords() throws -> [CompetitionSchemaV3.EventAwardRecord] {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.EventAwardRecord>())
     }
 
-    private func awardRecord(id: UUID) throws -> CompetitionSchemaV2.EventAwardRecord? {
+    private func awardRecord(id: UUID) throws -> CompetitionSchemaV3.EventAwardRecord? {
         try awardRecords().first { $0.id == id }
     }
 
@@ -654,7 +728,7 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
             if let existing = try memoryRecord(key: key) {
                 try existing.apply(memory)
             } else {
-                context.insert(try CompetitionSchemaV2.AthleteSkillMemoryRecord(memory))
+                context.insert(try CompetitionSchemaV3.AthleteSkillMemoryRecord(memory))
             }
         } else if let existing = try memoryRecord(key: key) {
             context.delete(existing)
@@ -683,12 +757,14 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
         guard let baselineID = attempt.baselineAttemptID,
               let baseline = try attemptRecord(id: baselineID)?.snapshot,
               baseline.stage == .baseline,
-              baseline.isValid,
               baseline.memoryKey == attempt.memoryKey,
               baseline.coachingCycleID == attempt.coachingCycleID,
-              baseline.hasCompatibleMetricAvailability(with: attempt),
-              baseline.correctionCode == attempt.correctionCode,
               baseline.completedAt <= attempt.completedAt
+        else { throw AthleteMemoryRepositoryError.incompatibleProof }
+        guard attempt.isValid else { return }
+        guard baseline.isValid,
+              baseline.hasCompatibleMetricAvailability(with: attempt),
+              baseline.correctionCode == attempt.correctionCode
         else { throw AthleteMemoryRepositoryError.incompatibleProof }
     }
 

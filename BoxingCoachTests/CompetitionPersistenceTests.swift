@@ -182,7 +182,7 @@ final class CompetitionPersistenceTests: XCTestCase {
     }
 }
 
-@Suite("Competition SwiftData V2 persistence")
+@Suite("Competition current SwiftData persistence")
 @MainActor
 struct CompetitionSwiftDataV2PersistenceTests {
     @Test("Production disk configuration retains the shipped V1 store URL")
@@ -202,7 +202,7 @@ struct CompetitionSwiftDataV2PersistenceTests {
         #expect(configuration.url.lastPathComponent == "BoxingCoachCompetitionV1.store")
     }
 
-    @Test("Current V2 schema round-trips participant and submission snapshots")
+    @Test("Current V3 schema round-trips participant and submission snapshots")
     func currentSchemaRoundTripsCompetitionValues() async throws {
         let container = try CompetitionModelContainer.make(inMemory: true)
         let repository = SwiftDataCompetitionRepository(container: container)
@@ -215,11 +215,11 @@ struct CompetitionSwiftDataV2PersistenceTests {
         #expect(try await repository.player(id: player.id) == player)
         #expect(try await repository.submissions() == [submission])
         #expect(try ModelContext(container).fetch(
-            FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>()
+            FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>()
         ).count == 1)
     }
 
-    @Test("Current V2 schema round-trips event, attempt, memory, pending run, and award records")
+    @Test("Current V3 schema round-trips event, attempt, memory, pending run, and award records")
     func currentSchemaRoundTripsAthleteMemoryValues() throws {
         let container = try CompetitionModelContainer.make(inMemory: true)
         let context = ModelContext(container)
@@ -273,35 +273,35 @@ struct CompetitionSwiftDataV2PersistenceTests {
             awardedAt: Date(timeIntervalSince1970: 13)
         ))
 
-        context.insert(CompetitionSchemaV2.EventEditionRecord(event))
-        context.insert(CompetitionSchemaV2.TechniqueAttemptRecord(attempt))
-        context.insert(try CompetitionSchemaV2.AthleteSkillMemoryRecord(memory))
-        context.insert(CompetitionSchemaV2.PendingTrainingRunRecord(pending))
-        context.insert(CompetitionSchemaV2.EventAwardRecord(award))
+        context.insert(CompetitionSchemaV3.EventEditionRecord(event))
+        context.insert(CompetitionSchemaV3.TechniqueAttemptRecord(attempt))
+        context.insert(try CompetitionSchemaV3.AthleteSkillMemoryRecord(memory))
+        context.insert(CompetitionSchemaV3.PendingTrainingRunRecord(pending))
+        context.insert(CompetitionSchemaV3.EventAwardRecord(award))
         try context.save()
 
         let restoredContext = ModelContext(container)
         #expect(try restoredContext.fetch(
-            FetchDescriptor<CompetitionSchemaV2.EventEditionRecord>()
+            FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>()
         ).only?.snapshot == event)
         #expect(try restoredContext.fetch(
-            FetchDescriptor<CompetitionSchemaV2.TechniqueAttemptRecord>()
+            FetchDescriptor<CompetitionSchemaV3.TechniqueAttemptRecord>()
         ).only?.snapshot == attempt)
         #expect(try restoredContext.fetch(
-            FetchDescriptor<CompetitionSchemaV2.AthleteSkillMemoryRecord>()
+            FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
         ).only?.snapshot(attempts: [attempt]) == memory)
         #expect(try restoredContext.fetch(
-            FetchDescriptor<CompetitionSchemaV2.PendingTrainingRunRecord>()
+            FetchDescriptor<CompetitionSchemaV3.PendingTrainingRunRecord>()
         ).only?.snapshot == pending)
         #expect(try restoredContext.fetch(
-            FetchDescriptor<CompetitionSchemaV2.EventAwardRecord>()
+            FetchDescriptor<CompetitionSchemaV3.EventAwardRecord>()
         ).only?.snapshot == award)
     }
 
     @Test("A failed save rolls back the inserted participant")
     func saveFailureRollsBackContext() async throws {
         try await FileBackedCompetitionFixture.use { storeURL in
-            try createWritableV2Store(at: storeURL)
+            try createWritableCurrentStore(at: storeURL)
 
             let container = try CompetitionModelContainer.make(storeURL: storeURL, allowsSave: false)
             let repository = SwiftDataCompetitionRepository(container: container)
@@ -313,7 +313,7 @@ struct CompetitionSwiftDataV2PersistenceTests {
 
             #expect(try await repository.player(id: player.id) == nil)
             #expect(try ModelContext(container).fetch(
-                FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>()
+                FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>()
             ).isEmpty)
         }
     }
@@ -323,20 +323,17 @@ struct CompetitionSwiftDataV2PersistenceTests {
 private enum FileBackedCompetitionFixture {
     static func use(_ body: (URL) async throws -> Void) async throws {
         let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CompetitionRollbackTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(
+                "CompetitionRollbackTests-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
+                isDirectory: true
+            )
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        do {
-            try await body(directoryURL.appendingPathComponent("competition.store"))
-            try FileManager.default.removeItem(at: directoryURL)
-        } catch {
-            try? FileManager.default.removeItem(at: directoryURL)
-            throw error
-        }
+        try await body(directoryURL.appendingPathComponent("competition.store"))
     }
 }
 
 @MainActor
-private func createWritableV2Store(at storeURL: URL) throws {
+private func createWritableCurrentStore(at storeURL: URL) throws {
     try autoreleasepool {
         _ = try CompetitionModelContainer.make(storeURL: storeURL)
     }

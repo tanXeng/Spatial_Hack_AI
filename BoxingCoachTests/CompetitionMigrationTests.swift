@@ -3,7 +3,7 @@ import SwiftData
 import Testing
 @testable import BoxingCoach
 
-@Suite("Competition V1 to V2 migration")
+@Suite("Competition V1 migration")
 @MainActor
 struct CompetitionMigrationTests {
     @Test("V1 players and submissions migrate losslessly into one closed legacy event")
@@ -13,12 +13,12 @@ struct CompetitionMigrationTests {
         let before = fixture.expectedStandings
         let container = try CompetitionModelContainer.make(storeURL: fixture.storeURL)
         let context = ModelContext(container)
-        let events = try context.fetch(FetchDescriptor<CompetitionSchemaV2.EventEditionRecord>())
+        let events = try context.fetch(FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>())
         let participants = try context.fetch(
-            FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>()
+            FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>()
         ).sorted { $0.id.uuidString < $1.id.uuidString }
         let submissions = try context.fetch(
-            FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>()
+            FetchDescriptor<CompetitionSchemaV3.CompetitionSubmissionRecord>()
         ).sorted { $0.id.uuidString < $1.id.uuidString }
 
         let event = try #require(events.only)
@@ -75,7 +75,7 @@ struct CompetitionMigrationTests {
         }
     }
 
-    @Test("Reopening a V2 store does not rerun migration or duplicate the legacy event")
+    @Test("Reopening the current store does not rerun migration or duplicate the legacy event")
     func currentSchemaReopensWithoutDuplicateArchive() throws {
         try MigrationFixture.use { fixture in
 
@@ -83,20 +83,20 @@ struct CompetitionMigrationTests {
             let first = try CompetitionModelContainer.make(storeURL: fixture.storeURL)
             let context = ModelContext(first)
             #expect(try context.fetchCount(
-                FetchDescriptor<CompetitionSchemaV2.EventEditionRecord>()
+                FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>()
             ) == 1)
         }
 
         let reopened = try CompetitionModelContainer.make(storeURL: fixture.storeURL)
         let context = ModelContext(reopened)
         #expect(try context.fetchCount(
-            FetchDescriptor<CompetitionSchemaV2.EventEditionRecord>()
+            FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>()
         ) == 1)
         #expect(try context.fetchCount(
-            FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>()
+            FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>()
         ) == fixture.players.count)
         #expect(try context.fetchCount(
-            FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>()
+            FetchDescriptor<CompetitionSchemaV3.CompetitionSubmissionRecord>()
         ) == fixture.submissions.count)
         }
     }
@@ -133,10 +133,10 @@ struct CompetitionMigrationTests {
         let retried = try CompetitionModelContainer.make(storeURL: fixture.storeURL)
         let retryContext = ModelContext(retried)
         #expect(try retryContext.fetchCount(
-            FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>()
+            FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>()
         ) == fixture.players.count)
         #expect(try retryContext.fetchCount(
-            FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>()
+            FetchDescriptor<CompetitionSchemaV3.CompetitionSubmissionRecord>()
         ) == fixture.submissions.count)
         }
     }
@@ -178,7 +178,10 @@ private struct MigrationFixture {
 
     static func make() throws -> MigrationFixture {
         let directoryURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("CompetitionMigrationTests-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent(
+                "CompetitionMigrationTests-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
+                isDirectory: true
+            )
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
 
         let firstPlayer = CompetitionPlayer(
@@ -242,15 +245,9 @@ private struct MigrationFixture {
 
     static func use(_ body: (MigrationFixture) throws -> Void) throws {
         let fixture = try make()
-        do {
-            try autoreleasepool {
-                try fixture.writeV1Store()
-                try body(fixture)
-            }
-            try FileManager.default.removeItem(at: fixture.directoryURL)
-        } catch {
-            try? FileManager.default.removeItem(at: fixture.directoryURL)
-            throw error
+        try autoreleasepool {
+            try fixture.writeV1Store()
+            try body(fixture)
         }
     }
 

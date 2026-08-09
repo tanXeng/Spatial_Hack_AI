@@ -133,7 +133,8 @@ struct AthleteMemoryRepositoryTests {
         #expect(rebuilt.attemptCount == 4)
         #expect(rebuilt.latestAttempt?.id == retest2.id)
         #expect(rebuilt.bestAttempt?.id == baseline2.id)
-        #expect(rebuilt.rollingLastThreeScore == (72 + 92 + 86) / 3)
+        let rollingScore = try #require(rebuilt.rollingLastThreeScore)
+        #expect(abs(rollingScore - Float(250) / 3) < 0.0001)
         #expect(rebuilt.latestMetric(kind: "path") == makeMetric("path", 86, .measured))
         #expect(rebuilt.bestMetric(kind: "path") == makeMetric("path", 92, .measured))
         #expect(rebuilt.latestMetric(kind: "elbow") == makeMetric("elbow", 65, .inferred))
@@ -338,6 +339,394 @@ struct AthleteMemoryRepositoryTests {
         }
     }
 
+    @Test(
+        "Participant updates preserve creation identity and UUIDs cannot move across events",
+        arguments: RepositoryBackend.allCases
+    )
+    func participantImmutableMergeAndEventIsolation(_ backend: RepositoryBackend) throws {
+        let repository = try makeRepository(backend)
+        let firstEvent = makeEvent(id: id(101), openedAt: 10)
+        let original = makeParticipant(
+            id: id(102),
+            eventID: firstEvent.id,
+            name: "Alex",
+            code: "0102"
+        )
+        _ = try repository.createEvent(firstEvent)
+        _ = try repository.saveParticipant(original)
+
+        let update = CompetitionPlayer(
+            id: original.id,
+            name: "Alex Updated",
+            normalizedName: "alex updated",
+            rememberedStance: .southpaw,
+            reach: BilateralReach(left: 0.70, right: 0.71),
+            calibrationVersion: 1,
+            calibratedAt: date(20),
+            createdAt: date(999),
+            lastSeenAt: date(21),
+            experienceLevel: .intermediate,
+            publicHandle: original.publicHandle
+        )
+        let merged = try repository.saveParticipant(update)
+        #expect(merged.createdAt == original.createdAt)
+        #expect(merged.name == update.name)
+        #expect(merged.rememberedStance == update.rememberedStance)
+        #expect(try repository.participant(
+            eventID: firstEvent.id,
+            displayCode: "0102"
+        ) == merged)
+
+        _ = try repository.closeEvent(id: firstEvent.id, at: date(100))
+        let secondEvent = makeEvent(id: id(103), openedAt: 101)
+        _ = try repository.createEvent(secondEvent)
+        let reusedAcrossEvents = makeParticipant(
+            id: original.id,
+            eventID: secondEvent.id,
+            name: "Other Alex",
+            code: "0103"
+        )
+        #expect(throws: AthleteMemoryRepositoryError.participantEventMismatch) {
+            _ = try repository.saveParticipant(reusedAcrossEvents)
+        }
+        #expect(try repository.participants(eventID: secondEvent.id).isEmpty)
+        #expect(try repository.participant(
+            eventID: firstEvent.id,
+            displayCode: "0102"
+        ) == merged)
+    }
+
+    @Test(
+        "Duplicate UUIDs are idempotent only for the complete immutable object",
+        arguments: RepositoryBackend.allCases
+    )
+    func duplicateUUIDOwnershipAndIdentity(_ backend: RepositoryBackend) throws {
+        let repository = try makeRepository(backend)
+        let firstEvent = makeEvent(id: id(110), openedAt: 10)
+        let firstParticipant = makeParticipant(
+            id: id(111),
+            eventID: firstEvent.id,
+            name: "Ari",
+            code: "0111"
+        )
+        _ = try repository.createEvent(firstEvent)
+        _ = try repository.saveParticipant(firstParticipant)
+
+        let attempt = makeAttempt(
+            id: id(112),
+            participant: firstParticipant,
+            cycleID: id(113),
+            stage: .baseline,
+            score: 81,
+            metrics: [makeMetric("path", 81, .measured)],
+            correctionCode: "straight-path",
+            completedAt: 30
+        )
+        let run = PendingTrainingRun(
+            id: id(114),
+            athleteID: firstParticipant.id,
+            eventID: firstEvent.id,
+            techniqueID: Technique.jab.id,
+            requestedAt: date(20)
+        )!
+        let submission = makeSubmission(
+            id: id(115),
+            participant: firstParticipant,
+            event: firstEvent
+        )
+        let award = EventAward(
+            id: id(116),
+            eventID: firstEvent.id,
+            athleteID: firstParticipant.id,
+            publicHandleSnapshot: firstParticipant.publicHandle!,
+            kind: .personalBest,
+            attemptID: attempt.id,
+            awardedAt: date(40)
+        )!
+        _ = try repository.insertAttempt(attempt)
+        _ = try repository.reserveRun(run)
+        _ = try repository.submit(submission)
+        _ = try repository.saveAward(award)
+
+        let changedAttempt = makeAttempt(
+            id: attempt.id,
+            participant: firstParticipant,
+            cycleID: attempt.coachingCycleID!,
+            stage: .baseline,
+            score: 82,
+            metrics: [makeMetric("path", 82, .measured)],
+            correctionCode: "straight-path",
+            completedAt: 30
+        )
+        #expect(throws: AthleteMemoryRepositoryError.attemptParticipantMismatch) {
+            _ = try repository.insertAttempt(changedAttempt)
+        }
+        let changedRun = PendingTrainingRun(
+            id: run.id,
+            athleteID: run.athleteID,
+            eventID: run.eventID,
+            techniqueID: run.techniqueID,
+            requestedAt: date(19)
+        )!
+        #expect(throws: AthleteMemoryRepositoryError.runParticipantMismatch) {
+            _ = try repository.reserveRun(changedRun)
+        }
+        let changedSubmission = CompetitionSubmission(
+            id: submission.id,
+            playerID: submission.playerID,
+            playerName: submission.playerName,
+            normalizedPlayerName: submission.normalizedPlayerName,
+            mode: submission.mode,
+            score: submission.score + 1,
+            validSteps: submission.validSteps,
+            totalSteps: submission.totalSteps,
+            completedRepetitions: submission.completedRepetitions,
+            meanCentreErrorMeters: submission.meanCentreErrorMeters,
+            speedTieBreakSeconds: submission.speedTieBreakSeconds,
+            startedAt: submission.startedAt,
+            endedAt: submission.endedAt,
+            trackingStatus: submission.trackingStatus,
+            eventID: submission.eventID,
+            scoringVersion: submission.scoringVersion,
+            calibrationVersion: submission.calibrationVersion,
+            publicHandleSnapshot: submission.publicHandleSnapshot
+        )
+        #expect(throws: AthleteMemoryRepositoryError.submissionMismatch) {
+            _ = try repository.submit(changedSubmission)
+        }
+        let changedAward = EventAward(
+            id: award.id,
+            eventID: award.eventID,
+            athleteID: award.athleteID,
+            publicHandleSnapshot: award.publicHandleSnapshot,
+            kind: .completion,
+            attemptID: award.attemptID,
+            awardedAt: award.awardedAt
+        )!
+        #expect(throws: AthleteMemoryRepositoryError.awardMismatch) {
+            _ = try repository.saveAward(changedAward)
+        }
+
+        _ = try repository.closeEvent(id: firstEvent.id, at: date(100))
+        let secondEvent = makeEvent(id: id(117), openedAt: 101)
+        let secondParticipant = makeParticipant(
+            id: id(118),
+            eventID: secondEvent.id,
+            name: "Blair",
+            code: "0118"
+        )
+        _ = try repository.createEvent(secondEvent)
+        _ = try repository.saveParticipant(secondParticipant)
+        #expect(throws: AthleteMemoryRepositoryError.attemptParticipantMismatch) {
+            _ = try repository.insertAttempt(makeAttempt(
+                id: attempt.id,
+                participant: secondParticipant,
+                cycleID: id(119),
+                stage: .baseline,
+                score: 90,
+                metrics: [makeMetric("path", 90, .measured)],
+                correctionCode: "extend-fully",
+                completedAt: 120
+            ))
+        }
+        #expect(throws: AthleteMemoryRepositoryError.runParticipantMismatch) {
+            _ = try repository.reserveRun(PendingTrainingRun(
+                id: run.id,
+                athleteID: secondParticipant.id,
+                eventID: secondEvent.id,
+                techniqueID: Technique.jab.id,
+                requestedAt: date(110)
+            )!)
+        }
+        #expect(throws: AthleteMemoryRepositoryError.submissionMismatch) {
+            _ = try repository.submit(makeSubmission(
+                id: submission.id,
+                participant: secondParticipant,
+                event: secondEvent
+            ))
+        }
+        #expect(throws: AthleteMemoryRepositoryError.awardMismatch) {
+            _ = try repository.saveAward(EventAward(
+                id: award.id,
+                eventID: secondEvent.id,
+                athleteID: secondParticipant.id,
+                publicHandleSnapshot: secondParticipant.publicHandle!,
+                kind: .completion,
+                attemptID: nil,
+                awardedAt: date(121)
+            )!)
+        }
+        #expect(try repository.attempts(for: attempt.memoryKey!) == [attempt])
+        #expect(try repository.submissions(eventID: firstEvent.id) == [submission])
+        #expect(try repository.awards(eventID: firstEvent.id) == [award])
+        #expect(try repository.submissions(eventID: secondEvent.id).isEmpty)
+        #expect(try repository.awards(eventID: secondEvent.id).isEmpty)
+    }
+
+    @Test(
+        "Invalid retests remain immutable history without proof-comparability filtering",
+        arguments: RepositoryBackend.allCases
+    )
+    func invalidRetestHistoryIsRetained(_ backend: RepositoryBackend) throws {
+        let repository = try makeRepository(backend)
+        let event = makeEvent(id: id(120), openedAt: 10)
+        let participant = makeParticipant(
+            id: id(121),
+            eventID: event.id,
+            name: "Cory",
+            code: "0121"
+        )
+        _ = try repository.createEvent(event)
+        _ = try repository.saveParticipant(participant)
+        let cycleID = id(122)
+        let baseline = makeAttempt(
+            id: id(123),
+            participant: participant,
+            cycleID: cycleID,
+            stage: .baseline,
+            score: 75,
+            metrics: [
+                makeMetric("path", 75, .measured),
+                makeMetric("elbow", 60, .measured)
+            ],
+            correctionCode: "straight-path",
+            completedAt: 20
+        )
+        let invalidRetest = makeAttempt(
+            id: id(124),
+            participant: participant,
+            cycleID: cycleID,
+            stage: .retest,
+            score: 0,
+            metrics: [makeMetric("path", nil, .unavailable)],
+            correctionCode: "different-correction",
+            baselineAttemptID: baseline.id,
+            completedAt: 30,
+            isValid: false,
+            wrongHand: true
+        )
+        _ = try repository.insertAttempt(baseline)
+        #expect(try repository.insertAttempt(invalidRetest) == invalidRetest)
+        let key = try #require(baseline.memoryKey)
+        #expect(try repository.attempts(for: key) == [baseline, invalidRetest])
+        let memory = try #require(try repository.memory(for: key))
+        #expect(memory.attempts == [baseline])
+        #expect(memory.lastProofDelta == nil)
+    }
+
+    @Test("Encoded attempt and run snapshots must match their authoritative scalar identity")
+    func encodedSnapshotIntegrity() throws {
+        let event = makeEvent(id: id(130), openedAt: 10)
+        let participant = makeParticipant(
+            id: id(131),
+            eventID: event.id,
+            name: "Devon",
+            code: "0131"
+        )
+        let attempt = makeAttempt(
+            id: id(132),
+            participant: participant,
+            cycleID: id(133),
+            stage: .baseline,
+            score: 82,
+            metrics: [makeMetric("path", 82, .measured)],
+            correctionCode: "straight-path",
+            completedAt: 30
+        )
+
+        let wrongOwner = CompetitionSchemaV3.TechniqueAttemptRecord(attempt)
+        wrongOwner.athleteID = id(134)
+        #expect(wrongOwner.snapshot == nil)
+        let wrongEvent = CompetitionSchemaV3.TechniqueAttemptRecord(attempt)
+        wrongEvent.eventID = id(135)
+        #expect(wrongEvent.snapshot == nil)
+        let wrongTechnique = CompetitionSchemaV3.TechniqueAttemptRecord(attempt)
+        wrongTechnique.techniqueID = Technique.cross.id
+        #expect(wrongTechnique.snapshot == nil)
+        let wrongTime = CompetitionSchemaV3.TechniqueAttemptRecord(attempt)
+        wrongTime.completedAt = date(31)
+        #expect(wrongTime.snapshot == nil)
+        let wrongScore = CompetitionSchemaV3.TechniqueAttemptRecord(attempt)
+        wrongScore.score = 99
+        #expect(wrongScore.snapshot == nil)
+        let wrongHandle = CompetitionSchemaV3.TechniqueAttemptRecord(attempt)
+        wrongHandle.publicDisplayCode = "9999"
+        #expect(wrongHandle.snapshot == nil)
+
+        let pending = PendingTrainingRun(
+            id: id(136),
+            athleteID: participant.id,
+            eventID: event.id,
+            techniqueID: Technique.jab.id,
+            requestedAt: date(20)
+        )!
+        let wrongRunOwner = CompetitionSchemaV3.PendingTrainingRunRecord(pending)
+        wrongRunOwner.athleteID = id(137)
+        #expect(wrongRunOwner.runSnapshot == nil)
+        let wrongRunEvent = CompetitionSchemaV3.PendingTrainingRunRecord(pending)
+        wrongRunEvent.eventID = id(138)
+        #expect(wrongRunEvent.runSnapshot == nil)
+        let wrongRunTechnique = CompetitionSchemaV3.PendingTrainingRunRecord(pending)
+        wrongRunTechnique.techniqueID = Technique.cross.id
+        #expect(wrongRunTechnique.runSnapshot == nil)
+        let wrongRunTime = CompetitionSchemaV3.PendingTrainingRunRecord(pending)
+        wrongRunTime.requestedAt = date(19)
+        #expect(wrongRunTime.runSnapshot == nil)
+    }
+
+    @Test("Corrupt derived memory metadata and traces rebuild from immutable attempts")
+    func corruptMemoryCacheRebuilds() throws {
+        let container = try CompetitionModelContainer.make(inMemory: true)
+        let repository = SwiftDataAthleteMemoryRepository(container: container)
+        let event = makeEvent(id: id(140), openedAt: 10)
+        let participant = makeParticipant(
+            id: id(141),
+            eventID: event.id,
+            name: "Emery",
+            code: "0141"
+        )
+        let attempt = makeAttempt(
+            id: id(142),
+            participant: participant,
+            cycleID: id(143),
+            stage: .baseline,
+            score: 88,
+            metrics: [makeMetric("path", 88, .inferred)],
+            correctionCode: "straight-path",
+            completedAt: 30,
+            trace: makeTrace(attemptID: id(142), offset: 0.2)
+        )
+        let key = try #require(attempt.memoryKey)
+        _ = try repository.createEvent(event)
+        _ = try repository.saveParticipant(participant)
+        _ = try repository.insertAttempt(attempt)
+        let original = try #require(try repository.memory(for: key))
+
+        let detached = try CompetitionSchemaV3.AthleteSkillMemoryRecord(original)
+        detached.id = "wrong-key"
+        #expect(detached.snapshot(attempts: [attempt]) == nil)
+
+        let corruptionContext = ModelContext(container)
+        let record = try #require(corruptionContext.fetch(
+            FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
+        ).first)
+        record.pastSelfTraceData = try JSONEncoder().encode(
+            makeTrace(attemptID: attempt.id, offset: 0.9)
+        )
+        try corruptionContext.save()
+
+        let reopened = SwiftDataAthleteMemoryRepository(container: container)
+        let repaired = try #require(try reopened.memory(for: key))
+        #expect(repaired == original)
+        #expect(repaired.pastSelfTrace == attempt.pastSelfTrace)
+
+        let verificationContext = ModelContext(container)
+        let repairedRecord = try #require(verificationContext.fetch(
+            FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
+        ).first)
+        #expect(repairedRecord.snapshot(attempts: [attempt]) == original)
+    }
+
     @Test("File-backed SwiftData memory rebuilds from attempts after cache loss and reopen")
     func fileBackedMemoryRebuildsAfterCacheLoss() throws {
         try FileBackedMemoryFixture.use { storeURL in
@@ -373,7 +762,7 @@ struct AthleteMemoryRepositoryTests {
                 let container = try CompetitionModelContainer.make(storeURL: storeURL)
                 let context = ModelContext(container)
                 let records = try context.fetch(
-                    FetchDescriptor<CompetitionSchemaV2.AthleteSkillMemoryRecord>()
+                    FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
                 )
                 #expect(records.count == 1)
                 records.forEach(context.delete)
@@ -465,20 +854,14 @@ struct AthleteMemoryRepositoryTests {
 private enum FileBackedMemoryFixture {
     static func use(_ body: (URL) throws -> Void) throws {
         let directoryURL = FileManager.default.temporaryDirectory.appendingPathComponent(
-            "AthleteMemoryRepositoryTests-\(UUID().uuidString)",
+            "AthleteMemoryRepositoryTests-\(ProcessInfo.processInfo.processIdentifier)-\(UUID().uuidString)",
             isDirectory: true
         )
         try FileManager.default.createDirectory(
             at: directoryURL,
             withIntermediateDirectories: true
         )
-        do {
-            try body(directoryURL.appendingPathComponent("memory.store"))
-            try FileManager.default.removeItem(at: directoryURL)
-        } catch {
-            try? FileManager.default.removeItem(at: directoryURL)
-            throw error
-        }
+        try body(directoryURL.appendingPathComponent("memory.store"))
     }
 }
 

@@ -1,97 +1,93 @@
 import Foundation
 
-/// Maps user speech to a pre-recorded coach clip without sending speech off device.
-nonisolated struct CoachClipRouter {
+/// Chooses an authored response only after a typed voice intent has been accepted and executed.
+nonisolated struct CoachClipRouter: Sendable {
+    func responseClip(after intent: VoiceIntent) -> CoachClipID? {
+        switch intent {
+        case .correction:
+            .qaWhatFix
+        case .guardExplanation:
+            .qaWhyGuard
+        case .repeatDemo:
+            .qaRepeatDemo
+        case .slower:
+            .qaSlower
+        case .targetHelp:
+            .qaHitTarget
+        case .progress:
+            .qaThreePunches
+        case .pause:
+            .pauseAck
+        case .resume:
+            .resumeAck
+        case .help:
+            .helpCommands
+        case .requestEnd, .confirmEnd, .cancelEnd, .normalPace, .faster, .next, .score,
+             .why, .leaderboard, .participantHandoff:
+            nil
+        }
+    }
+
+    /// Transitional entry point for the existing Ask Coach facade. It is intentionally limited
+    /// to informational intents so raw speech can never claim that a session action executed.
     func resolve(transcript: String, context: CoachVoiceContext) async -> CoachClipID {
-        let normalized = transcript.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !normalized.isEmpty else { return .didntCatch }
-        return Self.keywordMatch(for: normalized) ?? .didntCatch
-    }
-
-    // MARK: - Catalog + keywords
-
-    private struct CatalogEntry: Sendable {
-        let id: CoachClipID
-        let title: String
-        let whenToUse: String
-        let keywords: [String]
-    }
-
-    private static let voiceCatalog: [CatalogEntry] = [
-        CatalogEntry(
-            id: .qaWhatFix,
-            title: "What to fix",
-            whenToUse: "User asks how they did or what to improve",
-            keywords: ["fix", "wrong", "improve", "mistake", "score", "how was", "what should"]
-        ),
-        CatalogEntry(
-            id: .qaWhyGuard,
-            title: "Why guard",
-            whenToUse: "User asks about keeping hands up or guard position",
-            keywords: ["guard", "hands up", "chin", "why guard", "protect"]
-        ),
-        CatalogEntry(
-            id: .qaRepeatDemo,
-            title: "Repeat demo",
-            whenToUse: "User wants to see the demonstration again",
-            keywords: ["again", "repeat", "demo", "show me", "watch"]
-        ),
-        CatalogEntry(
-            id: .qaSlower,
-            title: "Go slower",
-            whenToUse: "User wants a slower pace",
-            keywords: ["slow", "slower", "too fast", "pace"]
-        ),
-        CatalogEntry(
-            id: .qaHitTarget,
-            title: "Hit target",
-            whenToUse: "User asks where or how to punch the target",
-            keywords: ["target", "where", "punch", "hit", "orange", "sphere"]
-        ),
-        CatalogEntry(
-            id: .qaThreePunches,
-            title: "Three punches",
-            whenToUse: "User asks how many punches in the scored round",
-            keywords: ["how many", "three", "punches", "reps", "round"]
-        ),
-        CatalogEntry(
-            id: .pauseAck,
-            title: "Pause",
-            whenToUse: "User wants to pause or stop briefly",
-            keywords: ["pause", "stop", "hold on", "wait"]
-        ),
-        CatalogEntry(
-            id: .resumeAck,
-            title: "Resume",
-            whenToUse: "User wants to continue training",
-            keywords: ["continue", "resume", "ready", "go", "start again"]
-        ),
-        CatalogEntry(
-            id: .helpCommands,
-            title: "Help",
-            whenToUse: "User asks what they can say",
-            keywords: ["help", "commands", "what can i say", "options"]
-        ),
-        CatalogEntry(
-            id: .didntCatch,
-            title: "Didn't catch",
-            whenToUse: "Unclear or unsupported request",
-            keywords: []
+        let commandContext = Self.commandContext(from: context)
+        let result = VoiceIntentParser().parse(
+            VoiceUtterance(
+                transcript: transcript,
+                localeIdentifier: "en-US",
+                isFinal: true,
+                confidence: .high
+            ),
+            in: commandContext
         )
+        guard let intent = result.acceptedIntent,
+              Self.legacyInformationalIntents.contains(intent) else {
+            return .didntCatch
+        }
+        return responseClip(after: intent) ?? .didntCatch
+    }
+
+    private static let legacyInformationalIntents: Set<VoiceIntent> = [
+        .correction,
+        .guardExplanation,
+        .targetHelp,
+        .progress,
+        .help
     ]
 
-    static func keywordMatch(for transcript: String) -> CoachClipID? {
-        let lowered = transcript.lowercased()
-        var best: (CoachClipID, Int)?
-        for entry in voiceCatalog where !entry.keywords.isEmpty {
-            let hits = entry.keywords.filter { lowered.contains($0) }.count
-            guard hits > 0 else { continue }
-            if let current = best {
-                if hits > current.1 { best = (entry.id, hits) }
-            } else {
-                best = (entry.id, hits)
+    private static func commandContext(from context: CoachVoiceContext) -> VoiceCommandContext {
+        let state = commandState(from: context)
+        let capabilities = Set(
+            VoiceIntent.allCases
+                .filter { $0.isAvailable(in: state) }
+                .map(\.requiredCapability)
+        )
+        return VoiceCommandContext(state: state, capabilities: capabilities)
+    }
+
+    private static func commandState(from context: CoachVoiceContext) -> VoiceCommandState {
+        switch context.feature {
+        case .auraPunch:
+            switch context.auraPhase {
+            case .idle, nil:
+                .idle
+            case .acquiring, .guiding, .countdown:
+                .learn
+            case .attempting:
+                .baseline
+            case .scoring, .results:
+                .results
+            }
+        case .reactiveStrike:
+            switch context.drillPhase {
+            case .idle, nil:
+                .idle
+            case .calibrating, .running:
+                .transfer
+            case .finished:
+                .results
             }
         }
-        return best?.0
     }
 }

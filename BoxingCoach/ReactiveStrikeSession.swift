@@ -69,8 +69,9 @@ final class ReactiveStrikeSession {
     private var activeAttemptID: UUID?
     private var spawnTime: Date?
     private var fistPositionAtSpawn: SIMD3<Float>?
+    private var fistPositionsAtSpawn: [BodySide: SIMD3<Float>] = [:]
     private var capturesCompetitionEvidence = false
-    private var competitionCalibrationOnly = false
+    private var calibrationOnly = false
     private var competitionStartedAt: TimeInterval?
     private var competitionPausedDuration: TimeInterval = 0
     private var trackingResumeRequested = false
@@ -102,6 +103,11 @@ final class ReactiveStrikeSession {
         }
     }
 
+    var hasCalibratedReach: Bool {
+        guard let reaches = calibratedReaches[.air] else { return false }
+        return ReachCalibration.conservativeBilateralReach(reaches) != nil
+    }
+
     func immersiveSpaceDidOpen() {
         isImmersiveSpaceOpen = true
         auraPunch.prepareCoachAudio()
@@ -117,8 +123,9 @@ final class ReactiveStrikeSession {
         combination: Combination?,
         stance: Stance
     ) {
+        config = DrillConfig()
         capturesCompetitionEvidence = false
-        competitionCalibrationOnly = false
+        calibrationOnly = false
         self.mode = mode
         self.stance = stance
         if let combination {
@@ -135,9 +142,20 @@ final class ReactiveStrikeSession {
     }
 
     func configureCompetitionCalibration() {
+        configureReachCalibration(capturingCompetitionEvidence: true)
+    }
+
+    /// Runs reach setup without creating or looking up a competition player. The resulting
+    /// bilateral measurement is cached by the session and reused by regular Reactive Strike and
+    /// Combination runs.
+    func configureReachCalibration() {
+        configureReachCalibration(capturingCompetitionEvidence: false)
+    }
+
+    private func configureReachCalibration(capturingCompetitionEvidence: Bool) {
         configure(mode: .air, combination: nil, stance: stance)
-        capturesCompetitionEvidence = true
-        competitionCalibrationOnly = true
+        capturesCompetitionEvidence = capturingCompetitionEvidence
+        calibrationOnly = true
         calibratedReaches[.air] = nil
         latestCalibratedReaches.removeAll()
         config.targetCount = CompetitionMode.reactiveStrike.totalSteps
@@ -158,7 +176,7 @@ final class ReactiveStrikeSession {
             stance: stance
         )
         capturesCompetitionEvidence = true
-        competitionCalibrationOnly = false
+        calibrationOnly = false
         calibratedReaches[.air] = reach.bySide
         latestCalibratedReaches = reach.bySide
         comboRepeatCount = 5
@@ -267,7 +285,7 @@ final class ReactiveStrikeSession {
         trackingResumeRequested = false
         if !keepingCompetitionConfiguration {
             capturesCompetitionEvidence = false
-            competitionCalibrationOnly = false
+            calibrationOnly = false
         }
     }
 
@@ -318,7 +336,7 @@ final class ReactiveStrikeSession {
                 ) {
                 latestCalibratedReaches = cached
                 reachProfile = guardedProfile
-            } else if capturesCompetitionEvidence, !competitionCalibrationOnly {
+            } else if capturesCompetitionEvidence, !calibrationOnly {
                 competitionRequiresRecalibration = true
                 failDrill("Your saved reach no longer clears your current guard. Recalibrate before competing.")
                 return
@@ -353,7 +371,7 @@ final class ReactiveStrikeSession {
             reachProfile = guardedProfile
         }
 
-        if competitionCalibrationOnly {
+        if calibrationOnly {
             competitionTrackingStatus = .complete
             phase = .finished
             lastFeedback = "Reach calibrated"
@@ -661,8 +679,23 @@ final class ReactiveStrikeSession {
                 trackingLostAt = nil
             }
 
-            if let punchingSide = nearestPunchingSide(to: worldPosition),
-               nonPunchingGuardStatus(punchingSide: punchingSide) == false {
+            let shouldPauseForGuard: Bool
+            if capturesCompetitionEvidence {
+                let punchingSide = competitionPunchingSide(to: worldPosition)
+                if let punchingSide {
+                    shouldPauseForGuard = nonPunchingGuardStatus(punchingSide: punchingSide) != true
+                } else {
+                    // Before an outbound hand is identifiable, both fists must remain in their
+                    // captured guard. This prevents a dropped hand from bypassing the guard check.
+                    shouldPauseForGuard = guardStatus(for: .left) != true
+                        || guardStatus(for: .right) != true
+                }
+            } else {
+                shouldPauseForGuard = nearestPunchingSide(to: worldPosition).map {
+                    nonPunchingGuardStatus(punchingSide: $0) == false
+                } ?? false
+            }
+            if shouldPauseForGuard {
                 guardPausedAt = guardPausedAt ?? now
                 lastFeedback = GuardCoach.waitMessage
                 lastTick = now
@@ -1075,6 +1108,14 @@ final class ReactiveStrikeSession {
         activeAttemptID = UUID()
         spawnTime = Date()
         fistPositionAtSpawn = fistAtSpawn
+        if capturesCompetitionEvidence {
+            fistPositionsAtSpawn = Dictionary(uniqueKeysWithValues: [BodySide.left, .right]
+                .compactMap { side in
+                    hands.freshObservation(for: side).map { (side, $0.fistPosition) }
+                })
+        } else {
+            fistPositionsAtSpawn.removeAll(keepingCapacity: true)
+        }
     }
 
     private func shiftAttemptStart(by pausedDuration: TimeInterval) {
@@ -1170,6 +1211,7 @@ final class ReactiveStrikeSession {
         activeAttemptID = nil
         spawnTime = nil
         fistPositionAtSpawn = nil
+        fistPositionsAtSpawn.removeAll(keepingCapacity: true)
     }
 
     private func failDrill(_ message: String) {
@@ -1198,23 +1240,38 @@ final class ReactiveStrikeSession {
         return "Done · \(accuracyPercent)% accuracy"
     }
 
+    private func competitionPunchingSide(to target: SIMD3<Float>) -> BodySide? {
+        let current = Dictionary(uniqueKeysWithValues: [BodySide.left, .right]
+            .compactMap { side in
+                hands.freshObservation(for: side).map { (side, $0.fistPosition) }
+            })
+        return GuardCoach.punchingSide(
+            current: current,
+            starts: fistPositionsAtSpawn,
+            target: target
+        )
+    }
+
     private func nearestPunchingSide(to point: SIMD3<Float>) -> BodySide? {
-        let left = capturesCompetitionEvidence
-            ? hands.freshObservation(for: .left)?.fistPosition
-            : hands.leftFistPosition
-        let right = capturesCompetitionEvidence
-            ? hands.freshObservation(for: .right)?.fistPosition
-            : hands.rightFistPosition
+        let left = hands.leftFistPosition
+        let right = hands.rightFistPosition
         switch (left, right) {
         case let (left?, right?):
             return distance(left, point) <= distance(right, point) ? .left : .right
-        case (nil, .some):
-            return .right
-        case (.some, nil):
-            return .left
-        case (nil, nil):
+        case (nil, .some): return .right
+        case (.some, nil): return .left
+        case (nil, nil): return nil
+        }
+    }
+
+    private func guardStatus(for side: BodySide) -> Bool? {
+        guard let frame = currentBodyFrame(), let captured = guardPositionsBody[side] else {
             return nil
         }
+        return GuardCoach.isGuardUp(
+            guardFistBody: hands.freshObservation(for: side).map { frame.toBody($0.fistPosition) },
+            capturedGuardBody: captured
+        )
     }
 
     private func nonPunchingGuardStatus(punchingSide: BodySide) -> Bool? {

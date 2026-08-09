@@ -26,12 +26,14 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 enum TrainingSelection: Hashable, Sendable {
     case reactive(mode: ReactiveStrikeMode, combination: Combination?, stance: Stance)
     case aura(technique: Technique, stance: Stance)
+    case reachCalibration
     case competitionCalibration(playerID: UUID)
     case competition(playerID: UUID, mode: CompetitionMode, stance: Stance, reach: BilateralReach)
 
     var feature: TrainingFeature {
         switch self {
-        case .reactive, .competitionCalibration, .competition: return .reactiveStrike
+        case .reactive, .reachCalibration, .competitionCalibration, .competition:
+            return .reactiveStrike
         case .aura: return .auraPunch
         }
     }
@@ -215,6 +217,11 @@ final class TrainingFlowCoordinator {
             session.auraPunch.reset()
             session.auraPunch.start()
 
+        case .reachCalibration:
+            session.configureReachCalibration()
+            session.resetForNewRound(keepingCompetitionConfiguration: true)
+            session.startDrill()
+
         case .competitionCalibration:
             session.configureCompetitionCalibration()
             session.resetForNewRound(keepingCompetitionConfiguration: true)
@@ -312,7 +319,7 @@ final class TrainingFlowCoordinator {
             session.auraPunch.reset()
             route = .auraSetup
 
-        case .competitionCalibration, .competition:
+        case .reachCalibration, .competitionCalibration, .competition:
             session.resetForNewRound()
             route = .features
         }

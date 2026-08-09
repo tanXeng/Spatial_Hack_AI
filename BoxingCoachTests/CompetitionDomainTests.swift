@@ -105,6 +105,26 @@ final class CompetitionDomainTests: XCTestCase {
         XCTAssertNil(GuardCoach.isGuardUp(guardFistBody: nil, capturedGuardBody: captured))
     }
 
+    func testPunchingHandRequiresOutboundTravelInsteadOfTargetProximity() {
+        let target = SIMD3<Float>(0, 0, 1)
+        let starts: [BodySide: SIMD3<Float>] = [
+            .left: SIMD3<Float>(-0.2, 0, 0.3),
+            .right: SIMD3<Float>(0.2, 0, 0.3)
+        ]
+
+        XCTAssertNil(GuardCoach.punchingSide(
+            current: [.left: SIMD3<Float>(-0.02, 0, 0.95), .right: starts[.right]!],
+            starts: [.right: starts[.right]!],
+            target: target
+        ), "A nearby lowered hand without a captured outbound start must not become the punch")
+
+        XCTAssertEqual(GuardCoach.punchingSide(
+            current: [.left: starts[.left]!, .right: SIMD3<Float>(0.12, 0, 0.62)],
+            starts: starts,
+            target: target
+        ), .right)
+    }
+
     func testNameNormalizationCollapsesWhitespaceAndReopensEquivalentNames() throws {
         let display = try CompetitionName.display("  José   Lee  ")
         XCTAssertEqual(display, "José Lee")

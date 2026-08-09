@@ -13,6 +13,7 @@ struct CompetitionSheetView: View {
     private enum FocusTarget: Hashable {
         case name
         case heading
+        case leaderboard
     }
 
     var body: some View {
@@ -47,7 +48,11 @@ struct CompetitionSheetView: View {
         .frame(minWidth: 520, minHeight: 520)
         .task(id: store.sheetRoute) {
             try? await Task.sleep(for: .milliseconds(120))
-            focus = store.sheetRoute == .nameEntry ? .name : .heading
+            switch store.sheetRoute {
+            case .nameEntry: focus = .name
+            case .leaderboard: focus = .leaderboard
+            default: focus = .heading
+            }
         }
         .onChange(of: store.errorMessage) { _, message in
             guard let message else { return }
@@ -119,12 +124,17 @@ struct CompetitionSheetView: View {
                 .accessibilityLabel("Player name")
                 .accessibilityHint("Enter two to twenty-four letters, numbers, spaces, hyphens, or underscores")
                 .accessibilityFocused($focus, equals: .name)
+                .disabled(store.isLoading)
 
             Button("Continue", systemImage: "arrow.right") { join() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(store.isLoading)
                 .frame(minHeight: 44)
+
+            if store.isLoading {
+                ProgressView("Finding player…")
+            }
         }
     }
 
@@ -147,6 +157,7 @@ struct CompetitionSheetView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .frame(minHeight: 44)
+            .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
 
             Button("Use a Different Player") { store.showNameEntry() }
                 .frame(minHeight: 44)
@@ -169,7 +180,7 @@ struct CompetitionSheetView: View {
                     CompetitionModeRow(mode: mode)
                 }
                 .buttonStyle(.plain)
-                .disabled(store.isSaving)
+                .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Compete in \(mode.title), \(mode.subtitle)")
                 .accessibilityHint("Starts setup for this leaderboard")
@@ -178,6 +189,10 @@ struct CompetitionSheetView: View {
             ViewThatFits(in: .horizontal) {
                 HStack { modeUtilities }
                 VStack(alignment: .leading) { modeUtilities }
+            }
+
+            if store.isSaving {
+                ProgressView("Preparing competition…")
             }
         }
     }
@@ -188,12 +203,15 @@ struct CompetitionSheetView: View {
             store.showLeaderboard(.reactiveStrike)
         }
         .frame(minHeight: 44)
+        .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
         Button("Recalibrate Reach", systemImage: "ruler") {
             if let selection = store.prepareCalibration() { onStart(selection) }
         }
         .frame(minHeight: 44)
+        .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
         Button("Change Player", systemImage: "person.2") { store.showNameEntry() }
             .frame(minHeight: 44)
+            .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
     }
 
     private var stanceSelection: some View {
@@ -225,51 +243,16 @@ struct CompetitionSheetView: View {
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
             .frame(minHeight: 44)
+            .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
 
             Button("Back to Modes") { store.showModes() }
                 .frame(minHeight: 44)
+                .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
         }
     }
 
     private func leaderboard(_ mode: CompetitionMode) -> some View {
-        ViewThatFits(in: .horizontal) {
-            HStack(alignment: .top, spacing: 18) {
-                leaderboardCalibrationTab
-                leaderboardBoard(mode)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-            }
-            VStack(alignment: .leading, spacing: 18) {
-                leaderboardCalibrationTab
-                leaderboardBoard(mode)
-            }
-        }
-    }
-
-    private var leaderboardCalibrationTab: some View {
-        Button {
-            if let selection = store.prepareCalibration() { onStart(selection) }
-        } label: {
-            VStack(spacing: 8) {
-                Image(systemName: "ruler")
-                    .font(.title2)
-                    .accessibilityHidden(true)
-                Text(store.currentPlayer?.hasCurrentCalibration == true ? "Recalibrate" : "Calibrate")
-                    .font(.caption.weight(.semibold))
-                    .multilineTextAlignment(.center)
-            }
-            .frame(minWidth: 96, minHeight: 72)
-            .padding(.vertical, 8)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-        }
-        .buttonStyle(.plain)
-        .disabled(store.currentPlayer == nil || store.activeRun != nil || store.isSaving)
-        .accessibilityLabel(
-            store.currentPlayer?.hasCurrentCalibration == true
-                ? "Recalibrate reach"
-                : "Calibrate reach"
-        )
-        .accessibilityHint("Updates target placement for Reactive Strike and Combo")
-        .accessibilityInputLabels(["Calibrate", "Recalibrate reach", "Reach settings"])
+        leaderboardBoard(mode)
     }
 
     private func leaderboardBoard(_ mode: CompetitionMode) -> some View {
@@ -282,6 +265,7 @@ struct CompetitionSheetView: View {
                 Text("Combo").tag(CompetitionMode.combination)
             }
             .pickerStyle(.segmented)
+            .accessibilityFocused($focus, equals: .leaderboard)
 
             let standings = store.standings(for: mode)
             if standings.isEmpty {

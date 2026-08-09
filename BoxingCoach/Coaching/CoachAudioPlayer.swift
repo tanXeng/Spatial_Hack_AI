@@ -210,26 +210,18 @@ final class CoachAudioPlayer {
     private func registerForInterruptionsIfNeeded() {
         guard interruptionObserver == nil else { return }
         interruptionObserver = NotificationCenter.default.addObserver(
-            forName: AVAudioSession.interruptionNotification,
+            forName: AVAudioSession.didBecomeActiveNotification,
             object: AVAudioSession.sharedInstance(),
             queue: .main
-        ) { [weak self] notification in
+        ) { [weak self] _ in
             guard let self else { return }
             Task { @MainActor in
-                self.handleInterruption(notification)
+                self.resumeAfterAudioSessionActivation()
             }
         }
     }
 
-    private func handleInterruption(_ notification: Notification) {
-        guard
-            let info = notification.userInfo,
-            let typeValue = info[AVAudioSessionInterruptionTypeKey] as? UInt,
-            let type = AVAudioSession.InterruptionType(rawValue: typeValue),
-            type == .ended
-        else { return }
-
-        try? AVAudioSession.sharedInstance().setActive(true)
+    private func resumeAfterAudioSessionActivation() {
         if isPlaying {
             player?.play()
         }

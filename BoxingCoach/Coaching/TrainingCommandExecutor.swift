@@ -161,6 +161,7 @@ nonisolated enum TrainingDemoRate: String, CaseIterable, Hashable, Sendable {
 
 nonisolated enum TrainingCommandConfirmation: String, Hashable, Sendable {
     case endTraining
+    case endTrainingRetry
     case participantHandoff
 }
 

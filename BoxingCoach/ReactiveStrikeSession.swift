@@ -162,6 +162,7 @@ nonisolated struct ReactiveTargetRetryPlan: Sendable {
 
 nonisolated enum ReactiveVoiceResumeLocation: Equatable, Sendable {
     case calibration
+    case readyToStart
     case airTarget(index: Int)
     case combination(rep: Int, step: Int)
 }
@@ -171,6 +172,7 @@ nonisolated enum ReactiveVoiceResumeLocation: Equatable, Sendable {
 /// as the execution cursor would replay that completed score on resume.
 nonisolated enum ReactiveVoiceContinuationCheckpoint: Equatable, Sendable {
     case calibration
+    case readyToStart
     case activeAirTarget(index: Int)
     case interTargetDelay(displayedTargetIndex: Int, nextTargetIndex: Int)
     case activeCombinationStep(rep: Int, step: Int)
@@ -185,6 +187,8 @@ nonisolated enum ReactiveVoiceContinuationCheckpoint: Equatable, Sendable {
         switch self {
         case .calibration:
             return .calibration
+        case .readyToStart:
+            return .readyToStart
         case let .activeAirTarget(index):
             return .airTarget(index: index)
         case let .interTargetDelay(_, nextTargetIndex):
@@ -197,6 +201,12 @@ nonisolated enum ReactiveVoiceContinuationCheckpoint: Equatable, Sendable {
             return .combination(rep: nextRepIndex, step: 0)
         }
     }
+}
+
+nonisolated struct ReactiveCombinationAttemptContext: Equatable, Sendable {
+    let rep: Int
+    let step: Int
+    let stepCount: Int
 }
 
 /// Owns Reactive Strike calibration and the target/combination drill loops.
@@ -258,13 +268,17 @@ final class ReactiveStrikeSession {
     private var trackingResumeRequested = false
     private var phaseBeforeVoicePause: DrillPhase?
     let audioCoordinator: TrainingAudioCoordinator
+    private let roundReadyDelay: @MainActor () async throws -> Void
+    private let postAttemptRecordDelay: @MainActor () async throws -> Void
     let voiceCoach: CoachVoiceCoach
 
     init(
         feedbackGenerator: some FeedbackGenerating = MockFeedbackGenerator(),
         audienceTrack: CoachLearnerLevel = .beginner,
         audioCoordinator: TrainingAudioCoordinator? = nil,
-        speechClient: (any SpeechRecognizing)? = nil
+        speechClient: (any SpeechRecognizing)? = nil,
+        roundReadyDelay: (@MainActor () async throws -> Void)? = nil,
+        postAttemptRecordDelay: (@MainActor () async throws -> Void)? = nil
     ) {
         let audioCoordinator = audioCoordinator ?? TrainingAudioCoordinator()
         self.audioCoordinator = audioCoordinator
@@ -272,6 +286,12 @@ final class ReactiveStrikeSession {
             audioCoordinator: audioCoordinator,
             speechClient: speechClient
         )
+        self.roundReadyDelay = roundReadyDelay ?? {
+            try await Task.sleep(for: .milliseconds(450))
+        }
+        self.postAttemptRecordDelay = postAttemptRecordDelay ?? {
+            try await Task.sleep(for: .milliseconds(220))
+        }
         auraPunch = AuraPunchSession(
             hands: hands,
             feedbackGenerator: feedbackGenerator,
@@ -708,21 +728,31 @@ final class ReactiveStrikeSession {
         voiceContinuationCheckpoint = .activeCombinationStep(rep: rep, step: step)
     }
 
-    func voiceCombinationStepDidComplete(rep: Int, step: Int, stepCount: Int) {
-        guard step + 1 < stepCount else { return }
-        voiceContinuationCheckpoint = .interCombinationStepDelay(
-            displayedRepIndex: rep,
-            displayedStepIndex: step,
-            nextStepIndex: step + 1
-        )
-    }
+    private func commitCombinationAttempt(
+        _ context: ReactiveCombinationAttemptContext,
+        result: AttemptResult
+    ) {
+        guard context.rep >= 0,
+              context.step >= 0,
+              context.step < context.stepCount else { return }
+        currentTargetIndex = context.rep
+        currentComboStepIndex = context.step
 
-    func voiceCombinationRepDidComplete(at rep: Int) {
-        comboRepsCompleted += 1
-        voiceContinuationCheckpoint = .interCombinationDelay(
-            displayedRepIndex: rep,
-            nextRepIndex: rep + 1
-        )
+        if result == .hit, context.step + 1 < context.stepCount {
+            voiceContinuationCheckpoint = .interCombinationStepDelay(
+                displayedRepIndex: context.rep,
+                displayedStepIndex: context.step,
+                nextStepIndex: context.step + 1
+            )
+        } else {
+            if result == .hit {
+                comboRepsCompleted += 1
+            }
+            voiceContinuationCheckpoint = .interCombinationDelay(
+                displayedRepIndex: context.rep,
+                nextRepIndex: context.rep + 1
+            )
+        }
     }
 
     private func invalidateVoiceResume() {
@@ -766,6 +796,12 @@ final class ReactiveStrikeSession {
         switch checkpoint.resumeLocation {
         case .calibration:
             await runDrillLoop()
+        case .readyToStart:
+            if mode == .combination {
+                await runCombinationLoop()
+            } else {
+                await runTargetLoop()
+            }
         case let .airTarget(index):
             await runTargetLoop(startingAt: index)
         case let .combination(rep, step):
@@ -861,11 +897,7 @@ final class ReactiveStrikeSession {
             return
         }
 
-        guard !Task.isCancelled, phase == .calibrating else { return }
-        phase = .running
-        lastFeedback = "Guard set · Get ready…"
-        try? await Task.sleep(for: .milliseconds(450))
-        guard !Task.isCancelled, phase == .running else { return }
+        guard await beginRoundReadyDelay() else { return }
         if capturesCompetitionEvidence {
             competitionStartedAt = ProcessInfo.processInfo.systemUptime
             playCoachCue(.countdown, caption: "Get ready.")
@@ -889,6 +921,24 @@ final class ReactiveStrikeSession {
         phase = .finished
         lastFeedback = summaryFeedback()
         audioCoordinator.handleImmediately(.experienceDidEnter(.celebrate))
+    }
+
+    /// Commits the post-calibration execution cursor before the user-facing get-ready delay.
+    /// Voice pause can cancel that delay without sending resume back through guard acquisition.
+    @discardableResult
+    func beginRoundReadyDelay() async -> Bool {
+        guard !Task.isCancelled,
+              phase == .calibrating,
+              !isVoicePaused else { return false }
+        voiceContinuationCheckpoint = .readyToStart
+        phase = .running
+        lastFeedback = "Guard set · Get ready…"
+        do {
+            try await roundReadyDelay()
+        } catch {
+            return false
+        }
+        return !Task.isCancelled && phase == .running && !isVoicePaused
     }
 
 
@@ -1795,7 +1845,12 @@ final class ReactiveStrikeSession {
                             result: .miss,
                             hitTime: nil,
                             fistAtHit: hands.freshObservation(for: target.requiredHand)?.fistPosition,
-                            targetPosition: worldPosition
+                            targetPosition: worldPosition,
+                            combinationContext: ReactiveCombinationAttemptContext(
+                                rep: rep,
+                                step: target.index,
+                                stepCount: resolvedTargets.count
+                            )
                         )
                         break
                     }
@@ -1857,12 +1912,12 @@ final class ReactiveStrikeSession {
                                         ),
                                         fistAtHit: contactFist ?? required?.fistPosition,
                                         targetPosition: worldPosition,
-                                        landingError: evidence.landingError
-                                    )
-                                    voiceCombinationStepDidComplete(
-                                        rep: rep,
-                                        step: target.index,
-                                        stepCount: resolvedTargets.count
+                                        landingError: evidence.landingError,
+                                        combinationContext: ReactiveCombinationAttemptContext(
+                                            rep: rep,
+                                            step: target.index,
+                                            stepCount: resolvedTargets.count
+                                        )
                                     )
                                     stepHit = true
                                     centerError = evidence.landingError
@@ -1924,7 +1979,6 @@ final class ReactiveStrikeSession {
             }
 
             if completedRep {
-                voiceCombinationRepDidComplete(at: rep)
                 lastFeedback = "Combination complete"
             }
 
@@ -2000,7 +2054,8 @@ final class ReactiveStrikeSession {
         fistAtHit: SIMD3<Float>?,
         targetPosition: SIMD3<Float>,
         landingError: Float? = nil,
-        feedback: String? = nil
+        feedback: String? = nil,
+        combinationContext: ReactiveCombinationAttemptContext? = nil
     ) async {
         guard let spawnTime else { return }
 
@@ -2029,9 +2084,51 @@ final class ReactiveStrikeSession {
             estimatedSpeedMetersPerSecond: speed
         )
 
+        if let combinationContext {
+            await finishRecordedCombinationAttempt(
+                attempt,
+                context: combinationContext,
+                feedback: feedback,
+                targetPosition: targetPosition
+            )
+        } else {
+            await finishRecordedAttempt(
+                attempt,
+                feedback: feedback,
+                targetPosition: targetPosition
+            )
+        }
+    }
+
+    /// The live combination loop and deterministic boundary tests share this exact finalization
+    /// path. Its checkpoint is committed in the same actor turn as the metric, before any delay
+    /// can be cancelled by a voice pause.
+    func finishRecordedCombinationAttempt(
+        _ attempt: TargetAttempt,
+        context: ReactiveCombinationAttemptContext,
+        feedback: String? = nil,
+        targetPosition: SIMD3<Float>? = nil
+    ) async {
+        await finishRecordedAttempt(
+            attempt,
+            feedback: feedback,
+            combinationContext: context,
+            targetPosition: targetPosition
+        )
+    }
+
+    private func finishRecordedAttempt(
+        _ attempt: TargetAttempt,
+        feedback: String?,
+        combinationContext: ReactiveCombinationAttemptContext? = nil,
+        targetPosition: SIMD3<Float>?
+    ) async {
         metrics.record(attempt)
-        targets.flash(result: result)
-        if result == .hit {
+        if let combinationContext {
+            commitCombinationAttempt(combinationContext, result: attempt.result)
+        }
+        targets.flash(result: attempt.result)
+        if attempt.result == .hit, let targetPosition {
             audioCoordinator.handleImmediately(.validatedImpact(
                 position: targetPosition,
                 quality: .clean
@@ -2040,14 +2137,14 @@ final class ReactiveStrikeSession {
 
         if let feedback {
             lastFeedback = feedback
-        } else if result == .hit, let reaction = attempt.reactionTime {
+        } else if attempt.result == .hit, let reaction = attempt.reactionTime {
             lastFeedback = String(format: "Hit · %.0f ms", reaction * 1000)
         } else {
             lastFeedback = "Miss"
         }
 
         clearAttemptState()
-        try? await Task.sleep(for: .milliseconds(220))
+        try? await postAttemptRecordDelay()
         targets.removeActiveTarget()
     }
 

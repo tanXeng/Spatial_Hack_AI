@@ -226,40 +226,102 @@ struct TrainingCommandExecutorTests {
         #expect(session.metrics.attempts.map(\.id) == [completedAttempt.id])
     }
 
-    @Test("Combination pause during completed-rep delay resumes once at the next rep")
-    func combinationDelayDoesNotReplayCompletedStepOrDoubleRep() {
-        let session = makeCommandSession()
+    @Test(
+        "Combination outcome is committed before its post-record delay",
+        arguments: CombinationVoiceBoundaryCase.all
+    )
+    func combinationOutcomeCommitsBeforeVoicePause(
+        testCase: CombinationVoiceBoundaryCase
+    ) async {
+        var session: ReactiveStrikeSession!
+        session = makeCommandSession(
+            roundReadyDelay: {},
+            postAttemptRecordDelay: {
+                #expect(session.pauseForVoice() != nil)
+            }
+        )
         session.configure(
             mode: .combination,
             combination: .oneTwo,
             stance: .orthodox
         )
-        let completedAttempts = [0, 1].map { index in
-            TargetAttempt(
-                id: UUID(),
-                spawnTime: Date(timeIntervalSince1970: TimeInterval(index)),
-                hitTime: Date(timeIntervalSince1970: TimeInterval(index) + 0.2),
-                result: .hit,
-                distanceAtHit: 0.01,
-                fistTravelDistance: 0.4,
-                estimatedSpeedMetersPerSecond: 2
-            )
+        session.startDrill()
+        defer {
+            session.stopDrill()
+            session.hands.stop()
         }
-        completedAttempts.forEach(session.metrics.record)
+        #expect(await session.beginRoundReadyDelay())
+        let attempt = TargetAttempt(
+            id: UUID(),
+            spawnTime: Date(timeIntervalSince1970: 10),
+            hitTime: testCase.result == .hit ? Date(timeIntervalSince1970: 10.2) : nil,
+            result: testCase.result,
+            distanceAtHit: testCase.result == .hit ? 0.01 : nil,
+            fistTravelDistance: testCase.result == .hit ? 0.4 : nil,
+            estimatedSpeedMetersPerSecond: testCase.result == .hit ? 2 : nil
+        )
 
-        session.voiceCombinationStepDidBegin(rep: 1, step: 1)
-        session.voiceCombinationStepDidComplete(rep: 1, step: 1, stepCount: 2)
-        session.voiceCombinationRepDidComplete(at: 1)
+        await session.finishRecordedCombinationAttempt(
+            attempt,
+            context: ReactiveCombinationAttemptContext(
+                rep: 1,
+                step: testCase.step,
+                stepCount: 2
+            )
+        )
 
+        #expect(session.isVoicePaused)
+        #expect(session.metrics.attempts.map(\.id) == [attempt.id])
+        #expect(session.comboRepsCompleted == testCase.expectedCompletedReps)
         #expect(session.voiceContinuationCheckpoint == .interCombinationDelay(
             displayedRepIndex: 1,
             nextRepIndex: 2
         ))
+
+        let response = await session.resumeAfterFreshGuard(
+            using: makeVoiceGuardSnapshot(),
+            countdown: { _ in }
+        )
+
+        #expect(response != nil)
         #expect(session.voiceContinuationCheckpoint.resumeLocation == .combination(rep: 2, step: 0))
         #expect(session.currentTargetIndex == 1)
-        #expect(session.currentComboStepIndex == 1)
-        #expect(session.comboRepsCompleted == 1)
-        #expect(session.metrics.attempts.map(\.id) == completedAttempts.map(\.id))
+        #expect(session.currentComboStepIndex == testCase.step)
+        #expect(session.comboRepsCompleted == testCase.expectedCompletedReps)
+        #expect(session.metrics.attempts.map(\.id) == [attempt.id])
+    }
+
+    @Test("Pre-round voice pause resumes at the first target without recalibrating")
+    func preRoundPauseResumesAtFirstTarget() async {
+        var session: ReactiveStrikeSession!
+        session = makeCommandSession(
+            roundReadyDelay: {
+                #expect(session.pauseForVoice() != nil)
+            }
+        )
+        session.selectMode(.air)
+        session.startDrill()
+        defer {
+            session.stopDrill()
+            session.hands.stop()
+        }
+
+        let readyDelayCompleted = await session.beginRoundReadyDelay()
+        #expect(!readyDelayCompleted)
+        #expect(session.isVoicePaused)
+        #expect(session.voiceContinuationCheckpoint == .readyToStart)
+        #expect(session.voiceContinuationCheckpoint.resumeLocation == .readyToStart)
+
+        let response = await session.resumeAfterFreshGuard(
+            using: makeVoiceGuardSnapshot(),
+            countdown: { _ in }
+        )
+
+        #expect(response != nil)
+        #expect(session.phase == .running)
+        #expect(session.currentTargetIndex == 0)
+        #expect(session.metrics.attempts.isEmpty)
+        #expect(session.errorMessage == nil)
     }
 
     @Test("Resume rejects before countdown unless tracking is running with fresh guard")
@@ -601,13 +663,30 @@ struct TrainingCommandExecutorTests {
 
         #expect(firstConfirm == .rejected(.targetRejected(intent: .confirmEnd)))
         #expect(firstConfirm.receipt == nil)
-        #expect(flow.pendingVoiceConfirmation == .endTraining)
+        #expect(flow.pendingVoiceConfirmation == .endTrainingRetry)
         #expect(target.commandContext.state == .awaitingEndConfirmation)
-        #expect(target.commandContext.capabilities.contains(.confirmEnd))
-        #expect(target.commandContext.capabilities.contains(.cancelEnd))
+        #expect(target.commandContext.capabilities == [.confirmEnd, .help])
+        #expect(flow.route == .experience(selection))
+        #expect(!flow.controlsDisabled)
         #expect(session.isImmersiveSpaceOpen)
         #expect(showCount == 1)
         #expect(dismissCount == 0)
+
+        let cancel = await executor.execute(
+            .cancelEnd,
+            issuedFor: target.commandGeneration,
+            on: target
+        )
+        #expect(cancel == .rejected(.unavailableCapability(intent: .cancelEnd)))
+        #expect(flow.pendingVoiceConfirmation == .endTrainingRetry)
+
+        let help = await executor.execute(
+            .help,
+            issuedFor: target.commandGeneration,
+            on: target
+        )
+        #expect(help.receipt?.response == "Available commands: confirmEnd, help.")
+        #expect(flow.pendingVoiceConfirmation == .endTrainingRetry)
 
         let secondConfirm = await executor.execute(
             .confirmEnd,
@@ -750,14 +829,21 @@ struct TrainingCommandExecutorTests {
         #expect(dismissCount == 0)
     }
 
-    private func makeCommandSession() -> ReactiveStrikeSession {
+    private func makeCommandSession(
+        roundReadyDelay: (@MainActor () async throws -> Void)? = nil,
+        postAttemptRecordDelay: (@MainActor () async throws -> Void)? = nil
+    ) -> ReactiveStrikeSession {
         let audioSystem = SilentCommandAudioSystem()
         let coordinator = TrainingAudioCoordinator(
             backend: audioSystem,
             resources: audioSystem,
             decayWaiter: audioSystem
         )
-        return ReactiveStrikeSession(audioCoordinator: coordinator)
+        return ReactiveStrikeSession(
+            audioCoordinator: coordinator,
+            roundReadyDelay: roundReadyDelay,
+            postAttemptRecordDelay: postAttemptRecordDelay
+        )
     }
 
     private func makeVoiceGuardSnapshot(
@@ -801,6 +887,30 @@ struct TrainingCommandExecutorTests {
 
     nonisolated private func requireSendable<T: Sendable>(_: T.Type) {}
 
+}
+
+nonisolated struct CombinationVoiceBoundaryCase: Sendable, CustomTestStringConvertible {
+    let name: String
+    let result: AttemptResult
+    let step: Int
+    let expectedCompletedReps: Int
+
+    var testDescription: String { name }
+
+    static let all: [Self] = [
+        Self(
+            name: "timeout miss during post-record delay",
+            result: .miss,
+            step: 0,
+            expectedCompletedReps: 0
+        ),
+        Self(
+            name: "final-step hit during post-record delay",
+            result: .hit,
+            step: 1,
+            expectedCompletedReps: 1
+        )
+    ]
 }
 
 @MainActor

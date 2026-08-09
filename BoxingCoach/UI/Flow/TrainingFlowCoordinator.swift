@@ -362,7 +362,8 @@ final class TrainingFlowCoordinator {
     }
 
     func voiceCommandState(session: ReactiveStrikeSession) -> VoiceCommandState {
-        if pendingVoiceConfirmation == .endTraining {
+        if pendingVoiceConfirmation == .endTraining
+            || pendingVoiceConfirmation == .endTrainingRetry {
             return .awaitingEndConfirmation
         }
 
@@ -421,7 +422,9 @@ final class TrainingFlowCoordinator {
         case .trackingPaused:
             capabilities = [.resume, .requestEnd, .guardExplanation, .help]
         case .awaitingEndConfirmation:
-            capabilities = [.confirmEnd, .cancelEnd, .help]
+            capabilities = pendingVoiceConfirmation == .endTrainingRetry
+                ? [.confirmEnd, .help]
+                : [.confirmEnd, .cancelEnd, .help]
         }
         return VoiceCommandContext(state: state, capabilities: capabilities)
     }
@@ -467,7 +470,8 @@ final class TrainingFlowCoordinator {
         dismissImmersive: () async -> Void
     ) async -> String? {
         guard generation == commandGeneration,
-              pendingVoiceConfirmation == .endTraining,
+              pendingVoiceConfirmation == .endTraining
+                || pendingVoiceConfirmation == .endTrainingRetry,
               transition == .idle else { return nil }
         pendingVoiceConfirmation = nil
         let outcome = await endExperience(
@@ -485,7 +489,7 @@ final class TrainingFlowCoordinator {
                 return nil
             } else if transition == .idle,
                       case .experience = route {
-                pendingVoiceConfirmation = .endTraining
+                pendingVoiceConfirmation = .endTrainingRetry
             }
             return nil
         }

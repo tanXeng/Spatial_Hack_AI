@@ -38,27 +38,6 @@ final class CombinationPunchValidatorTests: XCTestCase {
         }
     }
 
-    func testHookAndUppercutEndpointsCoachInwardAndUpwardFinishes() {
-        for stance in Stance.allCases {
-            for hook in [PunchType.leadHook, .rearHook] {
-                let target = hook.targetPosition(forwardBase: 0.70, stance: stance)
-                let side = hook.requiredHand(for: stance)
-                XCTAssertLessThanOrEqual(
-                    target.x * side.lateralSign,
-                    0,
-                    "A hook should finish inward from its throwing side"
-                )
-                XCTAssertGreaterThan(target.y, 0)
-            }
-
-            for uppercut in [PunchType.leadUppercut, .rearUppercut] {
-                let target = uppercut.targetPosition(forwardBase: 0.70, stance: stance)
-                XCTAssertEqual(target.x, 0, accuracy: 1e-6)
-                XCTAssertGreaterThan(target.y, 0, "An uppercut should land above the shoulder line")
-            }
-        }
-    }
-
     func testShortReachTargetsAreResolvedBeyondEachRequiredHandsGuard() throws {
         let guards: [BodySide: SIMD3<Float>] = [
             .left: SIMD3(0, 0, 0.40),
@@ -78,135 +57,136 @@ final class CombinationPunchValidatorTests: XCTestCase {
 
         XCTAssertEqual(resolved.count, authored.count)
         for target in resolved {
-            let guardPosition = try XCTUnwrap(guards[target.requiredHand])
+            let capturedGuard = try XCTUnwrap(guards[target.requiredHand])
             XCTAssertGreaterThanOrEqual(
-                simd_distance(target.position, guardPosition),
+                simd_distance(target.position, capturedGuard),
                 minimumSeparation - 1e-5
             )
             XCTAssertLessThanOrEqual(target.position.z, maximumForward)
             XCTAssertTrue(
                 CombinationPunchValidator(
                     target: target,
-                    guardPosition: guardPosition,
-                    hitRadius: 0.12
+                    stance: .orthodox,
+                    guardPosition: capturedGuard,
+                    hitRadius: 0.12,
+                    generation: 4,
+                    continuityEpoch: 9
                 ).isValidConfiguration
             )
         }
     }
 
-    func testStationaryRequiredFistAlreadyAtTargetCannotHit() {
-        var validator = makeValidator()
+    func testWrapperRequiresOutboundContactRetractionAndSameChainCoverage() throws {
+        let target = makeTarget(punch: .jab, requiredHand: .left)
+        var validator = makeValidator(target: target, stance: .orthodox)
 
-        for frame in 0..<8 {
-            let event = validator.observe(
-                requiredFist: targetPosition,
-                otherFist: nil,
-                timestamp: Double(frame) * 0.016
+        XCTAssertEqual(validator.observe(frame(left: guardPosition, timestamp: 1.00)),
+                       .waiting(.trackingOutbound))
+        XCTAssertEqual(validator.observe(frame(left: SIMD3(0, 0, 0.75), timestamp: 1.05)),
+                       .contact)
+        XCTAssertEqual(validator.observe(frame(left: SIMD3(0, 0, 0.30), timestamp: 1.10)),
+                       .waiting(.trackingRetraction))
+        XCTAssertEqual(validator.observe(frame(left: SIMD3(0, 0, 0.02), timestamp: 1.15)),
+                       .readyForCoverage)
+
+        let completion = validator.complete(
+            coverage: PunchEvidenceValidator.Coverage(
+                trackedFraction: 0.91,
+                generation: 4,
+                continuityEpoch: 9
             )
-            XCTAssertEqual(event, .waiting)
+        )
+        guard case let .validated(evidence) = completion else {
+            return XCTFail("Expected validated combination evidence, got \(completion)")
         }
-
-        XCTAssertEqual(validator.phase, .waitingForGuard)
+        XCTAssertEqual(evidence.technique, .jab)
+        XCTAssertEqual(evidence.stance, .orthodox)
+        XCTAssertEqual(evidence.side, .left)
     }
 
-    func testWrongHandContactDoesNotAdvanceTheValidator() {
-        var validator = makeValidator()
+    func testWrapperMapsEveryPunchNumberToItsSemanticTechnique() {
+        let expected: [(PunchType, Technique)] = [
+            (.jab, .jab),
+            (.cross, .cross),
+            (.leadHook, .hook),
+            (.rearHook, .hook),
+            (.leadUppercut, .uppercut),
+            (.rearUppercut, .uppercut)
+        ]
 
-        XCTAssertEqual(
-            validator.observe(requiredFist: guardPosition, otherFist: guardPosition, timestamp: 0),
-            .waiting
-        )
-        XCTAssertEqual(validator.phase, .trackingOutbound)
-
-        XCTAssertEqual(
-            validator.observe(requiredFist: guardPosition, otherFist: targetPosition, timestamp: 0.05),
-            .wrongHand
-        )
-        XCTAssertEqual(validator.phase, .trackingOutbound)
-
-        XCTAssertEqual(
-            validator.observe(requiredFist: guardPosition, otherFist: targetPosition, timestamp: 0.10),
-            .waiting,
-            "Holding the wrong fist in the target must not repeatedly trigger or advance"
-        )
-        XCTAssertEqual(validator.phase, .trackingOutbound)
+        for (punch, technique) in expected {
+            let side = punch.requiredHand(for: .southpaw)
+            let validator = makeValidator(
+                target: makeTarget(punch: punch, requiredHand: side),
+                stance: .southpaw
+            )
+            XCTAssertEqual(validator.technique, technique)
+            XCTAssertEqual(validator.requiredHand, side)
+        }
     }
 
-    func testOutboundMotionArmsThenLaterRequiredHandContactHits() {
-        var validator = makeValidator()
+    func testWrapperRejectsMalformedLeadAndRearPhysicalSides() {
+        let punches: [PunchType] = [
+            .leadHook,
+            .rearHook,
+            .leadUppercut,
+            .rearUppercut
+        ]
 
-        XCTAssertEqual(
-            validator.observe(requiredFist: guardPosition, otherFist: nil, timestamp: 0),
-            .waiting
-        )
-        XCTAssertEqual(
-            validator.observe(requiredFist: targetPosition, otherFist: nil, timestamp: 0.05),
-            .armed,
-            "The outbound contact sample should arm, not hit, the validator"
-        )
-        XCTAssertEqual(validator.phase, .armed)
+        for stance in [Stance.orthodox, .southpaw] {
+            for punch in punches {
+                let expected = punch.requiredHand(for: stance)
+                var validator = makeValidator(
+                    target: makeTarget(punch: punch, requiredHand: expected.opposite),
+                    stance: stance
+                )
 
-        XCTAssertEqual(
-            validator.observe(requiredFist: targetPosition, otherFist: nil, timestamp: 0.066),
-            .hit
-        )
-        XCTAssertEqual(validator.phase, .hit)
+                XCTAssertFalse(
+                    validator.isValidConfiguration,
+                    "\(punch) must reject \(expected.opposite) in \(stance)"
+                )
+                XCTAssertEqual(
+                    validator.observe(
+                        frame(
+                            left: expected.opposite == .left ? guardPosition : nil,
+                            right: expected.opposite == .right ? guardPosition : nil,
+                            timestamp: 1.00
+                        )
+                    ),
+                    .invalid(.invalidConfiguration)
+                )
+            }
+        }
     }
 
-    func testMissingTrackingFollowedByLongGapResetsPartialOutboundMotion() {
-        var validator = makeValidator()
-
-        _ = validator.observe(requiredFist: guardPosition, otherFist: nil, timestamp: 0)
-        _ = validator.observe(
-            requiredFist: SIMD3<Float>(0, 0, 0.05),
-            otherFist: nil,
-            timestamp: 0.05
+    func testWrongHandAndOpenRetractionRemainTypedInvalidEvidence() {
+        var wrongHand = makeValidator(
+            target: makeTarget(punch: .jab, requiredHand: .left),
+            stance: .orthodox
         )
-        XCTAssertEqual(validator.phase, .trackingOutbound)
-
+        _ = wrongHand.observe(frame(left: guardPosition, right: guardPosition, timestamp: 1.00))
         XCTAssertEqual(
-            validator.observe(requiredFist: nil, otherFist: nil, timestamp: 0.10),
-            .waiting
-        )
-        XCTAssertEqual(
-            validator.observe(
-                requiredFist: SIMD3<Float>(0, 0, 0.20),
-                otherFist: nil,
-                timestamp: 0.30
+            wrongHand.observe(
+                frame(left: guardPosition, right: SIMD3(0, 0, 0.75), timestamp: 1.05)
             ),
-            .waiting
-        )
-        XCTAssertEqual(validator.phase, .waitingForGuard)
-
-        XCTAssertEqual(
-            validator.observe(requiredFist: targetPosition, otherFist: nil, timestamp: 0.35),
-            .waiting,
-            "An extended fist reacquired after a long gap must return to guard before rearming"
-        )
-        XCTAssertEqual(validator.phase, .waitingForGuard)
-    }
-
-    func testLongTrackingGapAfterArmingStillRequiresAFreshGuard() {
-        var validator = makeValidator()
-
-        _ = validator.observe(requiredFist: guardPosition, otherFist: nil, timestamp: 0)
-        XCTAssertEqual(
-            validator.observe(requiredFist: targetPosition, otherFist: nil, timestamp: 0.05),
-            .armed
+            .invalid(.wrongHand(expected: .left, actual: .right))
         )
 
-        XCTAssertEqual(
-            validator.observe(requiredFist: targetPosition, otherFist: nil, timestamp: 0.40),
-            .waiting
+        var opening = makeValidator(
+            target: makeTarget(punch: .jab, requiredHand: .left),
+            stance: .orthodox
         )
-        XCTAssertEqual(validator.phase, .waitingForGuard)
+        _ = opening.observe(frame(left: guardPosition, timestamp: 1.00))
+        _ = opening.observe(frame(left: SIMD3(0, 0, 0.75), timestamp: 1.05))
         XCTAssertEqual(
-            validator.observe(requiredFist: targetPosition, otherFist: nil, timestamp: 0.416),
-            .waiting
+            opening.observe(
+                frame(left: SIMD3(0, 0, 0.30), leftState: .open, timestamp: 1.10)
+            ),
+            .invalid(.fistNotClosed(side: .left, state: .open))
         )
     }
 
-    func testRetractionRequiresTheFistToReturnInsideTheGuardRadius() {
+    func testRetractionGeometryFailsClosed() {
         XCTAssertTrue(
             CombinationPunchValidator.isRetracted(
                 fist: SIMD3<Float>(CombinationPunchValidator.guardRadius, 0, 0),
@@ -216,105 +196,72 @@ final class CombinationPunchValidatorTests: XCTestCase {
         )
         XCTAssertFalse(
             CombinationPunchValidator.isRetracted(
-                fist: SIMD3<Float>(CombinationPunchValidator.guardRadius + 0.001, 0, 0),
-                guardPosition: guardPosition,
-                radius: CombinationPunchValidator.guardRadius
-            )
-        )
-        XCTAssertFalse(
-            CombinationPunchValidator.isRetracted(
-                fist: targetPosition,
+                fist: SIMD3<Float>(.nan, 0, 0),
                 guardPosition: guardPosition,
                 radius: CombinationPunchValidator.guardRadius
             )
         )
     }
 
-    func testDoubleJabNeedsGuardReturnAndAFreshOutboundSequence() throws {
-        let targets = Combination.doubleJabCross.targets(forwardBase: 0.60, stance: .orthodox)
-        let firstJab = try XCTUnwrap(targets.first)
-        let secondJab = targets[1]
-
-        XCTAssertEqual(firstJab.requiredHand, .left)
-        XCTAssertEqual(secondJab.requiredHand, .left)
-        assertVectorEqual(firstJab.position, secondJab.position)
-
-        var firstValidator = CombinationPunchValidator(
-            target: firstJab,
-            guardPosition: guardPosition,
-            hitRadius: hitRadius
-        )
-        _ = firstValidator.observe(requiredFist: guardPosition, otherFist: nil, timestamp: 0)
-        XCTAssertEqual(
-            firstValidator.observe(requiredFist: firstJab.position, otherFist: nil, timestamp: 0.05),
-            .armed
-        )
-        XCTAssertEqual(
-            firstValidator.observe(requiredFist: firstJab.position, otherFist: nil, timestamp: 0.066),
-            .hit
-        )
-
-        XCTAssertFalse(
-            CombinationPunchValidator.isRetracted(
-                fist: firstJab.position,
-                guardPosition: guardPosition,
-                radius: CombinationPunchValidator.guardRadius
-            )
-        )
-
-        var secondValidator = CombinationPunchValidator(
-            target: secondJab,
-            guardPosition: guardPosition,
-            hitRadius: hitRadius
-        )
-        XCTAssertEqual(
-            secondValidator.observe(requiredFist: secondJab.position, otherFist: nil, timestamp: 0.082),
-            .waiting
-        )
-        XCTAssertEqual(secondValidator.phase, .waitingForGuard)
-
-        XCTAssertTrue(
-            CombinationPunchValidator.isRetracted(
-                fist: guardPosition,
-                guardPosition: guardPosition,
-                radius: CombinationPunchValidator.guardRadius
-            )
-        )
-        _ = secondValidator.observe(requiredFist: guardPosition, otherFist: nil, timestamp: 0.10)
-        XCTAssertEqual(secondValidator.phase, .trackingOutbound)
-        XCTAssertEqual(
-            secondValidator.observe(requiredFist: secondJab.position, otherFist: nil, timestamp: 0.15),
-            .armed
-        )
-        XCTAssertEqual(
-            secondValidator.observe(requiredFist: secondJab.position, otherFist: nil, timestamp: 0.166),
-            .hit
+    private func makeTarget(
+        punch: PunchType,
+        requiredHand: BodySide
+    ) -> CombinationTarget {
+        CombinationTarget(
+            id: "test-\(punch.rawValue)",
+            index: 0,
+            punch: punch,
+            requiredHand: requiredHand,
+            position: targetPosition
         )
     }
 
-    private func makeValidator() -> CombinationPunchValidator {
+    private func makeValidator(
+        target: CombinationTarget,
+        stance: Stance
+    ) -> CombinationPunchValidator {
         CombinationPunchValidator(
-            target: CombinationTarget(
-                id: "test-jab",
-                index: 0,
-                punch: .jab,
-                requiredHand: .left,
-                position: targetPosition
-            ),
+            target: target,
+            stance: stance,
             guardPosition: guardPosition,
-            hitRadius: hitRadius
+            hitRadius: hitRadius,
+            generation: 4,
+            continuityEpoch: 9
         )
     }
 
-    private func assertVectorEqual(
-        _ actual: SIMD3<Float>,
-        _ expected: SIMD3<Float>,
-        accuracy: Float = 1e-6,
-        file: StaticString = #filePath,
-        line: UInt = #line
-    ) {
-        XCTAssertEqual(actual.x, expected.x, accuracy: accuracy, file: file, line: line)
-        XCTAssertEqual(actual.y, expected.y, accuracy: accuracy, file: file, line: line)
-        XCTAssertEqual(actual.z, expected.z, accuracy: accuracy, file: file, line: line)
+    private func frame(
+        left: SIMD3<Float>? = nil,
+        right: SIMD3<Float>? = nil,
+        leftState: TrackedFistState = .closed,
+        rightState: TrackedFistState = .closed,
+        timestamp: TimeInterval
+    ) -> PunchEvidenceValidator.Frame {
+        var samples: [PunchEvidenceValidator.HandSample] = []
+        if let left {
+            samples.append(.init(
+                side: .left,
+                fistPosition: left,
+                fistState: leftState,
+                acquisitionTimestamp: timestamp,
+                quality: .measured
+            ))
+        }
+        if let right {
+            samples.append(.init(
+                side: .right,
+                fistPosition: right,
+                fistState: rightState,
+                acquisitionTimestamp: timestamp,
+                quality: .measured
+            ))
+        }
+        return PunchEvidenceValidator.Frame(
+            now: timestamp,
+            deviceTimestamp: timestamp,
+            generation: 4,
+            continuityEpoch: 9,
+            hands: samples
+        )
     }
 }

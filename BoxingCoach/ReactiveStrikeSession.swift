@@ -1,4 +1,5 @@
 import Foundation
+import QuartzCore
 import RealityKit
 import simd
 
@@ -663,9 +664,26 @@ final class ReactiveStrikeSession {
 
         let bodyPosition = reachProfile.randomBodyTargetPosition()
         let worldPosition = frame.toWorld(bodyPosition)
+        let worldGuards = guardPositionsBody.mapValues(frame.toWorld)
         targets.spawnTarget(at: worldPosition, radius: config.targetRadius)
 
-        beginAttempt(fistAtSpawn: fistPositionForCurrentRun(nearestTo: worldPosition))
+        let captureChain = PunchEvidenceCaptureChain(
+            generation: hands.providerGeneration,
+            continuityEpoch: hands.continuityEpoch
+        )
+        var selector = PunchEvidenceSideSelector(
+            // An unsequenced reactive target accepts either physical hand. The selector still
+            // locks the first validated outbound side and keeps it fixed through retraction.
+            technique: .hook,
+            stance: stance,
+            guardPositions: worldGuards,
+            targetPosition: worldPosition,
+            targetRadius: config.hitRadius,
+            generation: captureChain.generation,
+            continuityEpoch: captureChain.continuityEpoch
+        )
+
+        beginAttempt(fistAtSpawn: nil)
         lastFeedback = "Punch!"
         if capturesCompetitionEvidence {
             coachAudio.play(id: .hitTarget)
@@ -675,10 +693,25 @@ final class ReactiveStrikeSession {
         var lastTick = Date()
         var trackingLostAt: Date?
         var guardPausedAt: Date?
+        var contactTime: Date?
+        var contactFist: SIMD3<Float>?
+        var lastEvidenceTimestamps: [BodySide: TimeInterval] = [:]
+        var evidencePollCount = 0
+        var trackedPollCount: [BodySide: Int] = [:]
 
         while !Task.isCancelled, phase == .running, activeAttemptID != nil {
             let now = Date()
-            let currentFist = fistPositionForCurrentRun(nearestTo: worldPosition)
+            let evidenceNow = CACurrentMediaTime()
+
+            guard hands.providerGeneration == captureChain.generation,
+                  hands.continuityEpoch == captureChain.continuityEpoch else {
+                if capturesCompetitionEvidence {
+                    return await recoverCompetitionTracking() ? .retry : .aborted
+                }
+                await discardAttempt(feedback: "Tracking changed · punch discarded")
+                return .retry
+            }
+
             if capturesCompetitionEvidence {
                 let hasFreshPair = hands.freshObservation(for: .left) != nil
                     && hands.freshObservation(for: .right) != nil
@@ -700,23 +733,69 @@ final class ReactiveStrikeSession {
                 trackingLostAt = nil
             }
 
-            let shouldPauseForGuard: Bool
-            if capturesCompetitionEvidence {
-                let punchingSide = competitionPunchingSide(to: worldPosition)
-                if let punchingSide {
-                    shouldPauseForGuard = nonPunchingGuardStatus(punchingSide: punchingSide) != true
-                } else {
-                    // Before an outbound hand is identifiable, both fists must remain in their
-                    // captured guard. This prevents a dropped hand from bypassing the guard check.
-                    shouldPauseForGuard = guardStatus(for: .left) != true
-                        || guardStatus(for: .right) != true
+            evidencePollCount += 1
+            for side in [BodySide.left, .right]
+            where hands.freshObservation(for: side) != nil {
+                trackedPollCount[side, default: 0] += 1
+            }
+
+            var selectorEvent = PunchEvidenceSideSelector.Event.waiting
+            if let evidenceFrame = punchEvidenceFrame(
+                now: evidenceNow,
+                requiredSide: selector.requiredHand
+            ) {
+                let hasNewAnchor = evidenceFrame.hands.contains { sample in
+                    sample.acquisitionTimestamp
+                        > (lastEvidenceTimestamps[sample.side] ?? -.infinity)
                 }
+                if hasNewAnchor {
+                    for sample in evidenceFrame.hands {
+                        lastEvidenceTimestamps[sample.side] = max(
+                            lastEvidenceTimestamps[sample.side] ?? -.infinity,
+                            sample.acquisitionTimestamp
+                        )
+                    }
+                    selectorEvent = selector.observe(evidenceFrame)
+                }
+            }
+
+            var selectedSide: BodySide?
+            var attemptAction: PunchEvidenceAttemptAction?
+            switch selectorEvent {
+            case .waiting:
+                break
+            case let .invalid(reason):
+                await discardAttempt(feedback: PunchEvidenceFeedback.message(for: reason))
+                return .retry
+            case let .selected(side, event):
+                selectedSide = side
+                attemptAction = PunchEvidenceAttemptAction(event: event)
+                if fistPositionAtSpawn == nil {
+                    fistPositionAtSpawn = fistPositionsAtSpawn[side]
+                }
+                if case let .retry(reason) = attemptAction {
+                    await discardAttempt(feedback: PunchEvidenceFeedback.message(for: reason))
+                    return .retry
+                }
+            }
+
+            let shouldPauseForGuard: Bool
+            if let requiredHand = selector.requiredHand {
+                shouldPauseForGuard = nonPunchingGuardStatus(punchingSide: requiredHand) != true
             } else {
-                shouldPauseForGuard = nearestPunchingSide(to: worldPosition).map {
-                    nonPunchingGuardStatus(punchingSide: $0) == false
-                } ?? false
+                // Before validated outbound motion identifies a side, both fists stay in their
+                // captured guard. Target proximity never chooses the required hand.
+                shouldPauseForGuard = guardStatus(for: .left) != true
+                    || guardStatus(for: .right) != true
             }
             if shouldPauseForGuard {
+                if attemptAction?.canBeDeferredByGuard == false {
+                    // Contact/retraction/coverage events are one-shot reducer transitions. Once
+                    // one arrives, a dropped guard invalidates and retries the whole target rather
+                    // than consuming that transition behind the coaching pause.
+                    await discardAttempt(feedback: GuardCoach.waitMessage)
+                    return .retry
+                }
                 guardPausedAt = guardPausedAt ?? now
                 lastFeedback = GuardCoach.waitMessage
                 lastTick = now
@@ -739,24 +818,85 @@ final class ReactiveStrikeSession {
             lastTick = now
 
             if activeElapsed >= config.timeout {
+                let side = selector.requiredHand
                 await finishAttempt(
                     result: .miss,
                     hitTime: nil,
-                    fistAtHit: currentFist,
+                    fistAtHit: side.flatMap { hands.freshObservation(for: $0)?.fistPosition },
                     targetPosition: worldPosition
                 )
                 return .completed
             }
 
-            if let fist = currentFist,
-               distance(fist, worldPosition) <= config.hitRadius {
-                await finishAttempt(
-                    result: .hit,
-                    hitTime: Date(),
-                    fistAtHit: fist,
-                    targetPosition: worldPosition
+            switch attemptAction {
+            case nil, .waiting:
+                break
+            case .armed:
+                if let selectedSide {
+                    lastFeedback = PunchEvidenceFeedback.strikeNow(side: selectedSide)
+                }
+            case .contact:
+                guard let selectedSide else {
+                    await discardAttempt(feedback: "Punch evidence was invalid · reset in guard")
+                    return .retry
+                }
+                contactTime = contactTime ?? now
+                contactFist = contactFist
+                    ?? hands.freshObservation(for: selectedSide)?.fistPosition
+                lastFeedback = PunchEvidenceFeedback.returnToGuard(
+                    side: selectedSide,
+                    style: .return
                 )
-                return .completed
+            case .completeCoverage:
+                guard let selectedSide else {
+                    await discardAttempt(feedback: "Punch evidence was invalid · reset in guard")
+                    return .retry
+                }
+                let trackedFraction = Float(trackedPollCount[selectedSide, default: 0])
+                    / Float(max(1, evidencePollCount))
+                guard let coverage = captureChain.coverage(
+                    trackedFraction: trackedFraction,
+                    currentGeneration: hands.providerGeneration,
+                    currentContinuityEpoch: hands.continuityEpoch
+                ) else {
+                    await discardAttempt(feedback: "Tracking changed · punch discarded")
+                    return .retry
+                }
+
+                guard case let .selected(_, completionEvent) = selector.complete(
+                    coverage: coverage
+                ) else {
+                    await discardAttempt(feedback: "Punch evidence was invalid · reset in guard")
+                    return .retry
+                }
+                switch PunchEvidenceAttemptAction(event: completionEvent) {
+                case let .admit(evidence):
+                    await finishAttempt(
+                        result: .hit,
+                        hitTime: wallClockDate(
+                            forAcquisitionTimestamp: evidence.landedAt,
+                            fallback: contactTime ?? now
+                        ),
+                        fistAtHit: contactFist
+                            ?? hands.freshObservation(for: selectedSide)?.fistPosition,
+                        targetPosition: worldPosition,
+                        landingError: evidence.landingError
+                    )
+                    return .completed
+                case let .retry(reason):
+                    await discardAttempt(feedback: PunchEvidenceFeedback.message(for: reason))
+                    return .retry
+                case .waiting, .armed, .contact, .completeCoverage:
+                    await discardAttempt(feedback: "Punch evidence was incomplete")
+                    return .retry
+                }
+            case let .retry(reason):
+                await discardAttempt(feedback: PunchEvidenceFeedback.message(for: reason))
+                return .retry
+            case .admit:
+                // Admission is produced only by the explicit coverage completion above.
+                await discardAttempt(feedback: "Punch evidence was invalid · reset in guard")
+                return .retry
             }
 
             try? await Task.sleep(for: .milliseconds(16))
@@ -857,7 +997,8 @@ final class ReactiveStrikeSession {
             currentTargetIndex = rep
             var completedRep = true
 
-            for target in resolvedTargets {
+            targetLoop: for target in resolvedTargets {
+                evidenceRetryLoop: while true {
                 guard !Task.isCancelled, phase == .running else { return }
                 currentComboStepIndex = target.index
 
@@ -891,16 +1032,29 @@ final class ReactiveStrikeSession {
                     requiredHand: target.requiredHand,
                     position: worldPosition
                 )
+                var captureChain = PunchEvidenceCaptureChain(
+                    generation: hands.providerGeneration,
+                    continuityEpoch: hands.continuityEpoch
+                )
                 var validator = CombinationPunchValidator(
                     target: worldTarget,
+                    stance: stance,
                     guardPosition: worldGuardPosition,
-                    hitRadius: config.hitRadius
+                    hitRadius: config.hitRadius,
+                    generation: captureChain.generation,
+                    continuityEpoch: captureChain.continuityEpoch
                 )
                 var deadline = Date().addingTimeInterval(config.timeout)
                 var stepHit = false
+                var retryInvalidEvidence = false
                 var centerError: Float?
                 var reactionTime: TimeInterval?
+                var contactTime: Date?
+                var contactFist: SIMD3<Float>?
                 var trackingLostAt: Date?
+                var evidencePollCount = 0
+                var trackedPollCount = 0
+                var lastEvidenceTimestamps: [BodySide: TimeInterval] = [:]
 
                 while !Task.isCancelled,
                       phase == .running,
@@ -909,7 +1063,11 @@ final class ReactiveStrikeSession {
                     let other = hands.freshObservation(for: target.requiredHand.opposite)
 
                     if capturesCompetitionEvidence,
-                       required == nil || other == nil || hands.deviceTransform == nil {
+                       required == nil
+                        || other == nil
+                        || hands.deviceTransform == nil
+                        || hands.providerGeneration != captureChain.generation
+                        || hands.continuityEpoch != captureChain.continuityEpoch {
                         trackingLostAt = trackingLostAt ?? Date()
                         if Date().timeIntervalSince(trackingLostAt!)
                             >= CompetitionTrackingRecoveryGate.lossGraceSeconds {
@@ -930,16 +1088,28 @@ final class ReactiveStrikeSession {
                                 requiredHand: target.requiredHand,
                                 position: worldPosition
                             )
+                            captureChain = PunchEvidenceCaptureChain(
+                                generation: hands.providerGeneration,
+                                continuityEpoch: hands.continuityEpoch
+                            )
                             validator = CombinationPunchValidator(
                                 target: worldTarget,
+                                stance: stance,
                                 guardPosition: worldGuardPosition,
-                                hitRadius: config.hitRadius
+                                hitRadius: config.hitRadius,
+                                generation: captureChain.generation,
+                                continuityEpoch: captureChain.continuityEpoch
                             )
                             targets.spawnTarget(at: worldPosition, radius: config.targetRadius)
                             beginAttempt(
                                 fistAtSpawn: hands.freshObservation(for: target.requiredHand)?.fistPosition
                             )
                             deadline = Date().addingTimeInterval(config.timeout)
+                            contactTime = nil
+                            contactFist = nil
+                            evidencePollCount = 0
+                            trackedPollCount = 0
+                            lastEvidenceTimestamps.removeAll(keepingCapacity: true)
                             trackingLostAt = nil
                             lastFeedback = "\(target.punch.displayName)!"
                         }
@@ -958,37 +1128,86 @@ final class ReactiveStrikeSession {
                         break
                     }
 
-                    let timestamp = required?.timestamp
-                        ?? other?.timestamp
-                        ?? ProcessInfo.processInfo.systemUptime
+                    evidencePollCount += 1
+                    if required != nil { trackedPollCount += 1 }
 
-                    switch validator.observe(
-                        requiredFist: required?.fistPosition,
-                        otherFist: other?.fistPosition,
-                        timestamp: timestamp
+                    if let evidenceFrame = punchEvidenceFrame(
+                        now: CACurrentMediaTime(),
+                        requiredSide: target.requiredHand
                     ) {
-                    case .waiting:
-                        break
-                    case .armed:
-                        lastFeedback = "\(target.punch.displayName) · strike now"
-                    case .wrongHand:
-                        await finishAttempt(
-                            result: .miss,
-                            hitTime: nil,
-                            fistAtHit: other?.fistPosition,
-                            targetPosition: worldPosition,
-                            feedback: "Wrong hand · use your \(target.requiredHand.rawValue) hand"
-                        )
-                    case .hit:
-                        await finishAttempt(
-                            result: .hit,
-                            hitTime: Date(),
-                            fistAtHit: required?.fistPosition,
-                            targetPosition: worldPosition
-                        )
-                        stepHit = true
-                        centerError = required.map { distance($0.fistPosition, worldPosition) }
-                        reactionTime = metrics.lastAttempt?.reactionTime
+                        let hasNewAnchor = evidenceFrame.hands.contains { sample in
+                            sample.acquisitionTimestamp
+                                > (lastEvidenceTimestamps[sample.side] ?? -.infinity)
+                        }
+                        if hasNewAnchor {
+                            for sample in evidenceFrame.hands {
+                                lastEvidenceTimestamps[sample.side] = max(
+                                    lastEvidenceTimestamps[sample.side] ?? -.infinity,
+                                    sample.acquisitionTimestamp
+                                )
+                            }
+
+                            switch validator.observe(evidenceFrame) {
+                            case .waiting:
+                                break
+                            case .armed:
+                                lastFeedback = "\(target.punch.displayName) · strike now"
+                            case .contact:
+                                contactTime = contactTime ?? Date()
+                                contactFist = contactFist ?? required?.fistPosition
+                                lastFeedback = PunchEvidenceFeedback.returnToGuard(
+                                    side: target.requiredHand,
+                                    style: .return
+                                )
+                            case .readyForCoverage:
+                                let trackedFraction = Float(trackedPollCount)
+                                    / Float(max(1, evidencePollCount))
+                                guard let coverage = captureChain.coverage(
+                                    trackedFraction: trackedFraction,
+                                    currentGeneration: hands.providerGeneration,
+                                    currentContinuityEpoch: hands.continuityEpoch
+                                ) else {
+                                    await discardAttempt(
+                                        feedback: "Tracking changed · punch discarded"
+                                    )
+                                    retryInvalidEvidence = true
+                                    break
+                                }
+                                switch PunchEvidenceAttemptAction(
+                                    event: validator.complete(coverage: coverage)
+                                ) {
+                                case let .admit(evidence):
+                                    await finishAttempt(
+                                        result: .hit,
+                                        hitTime: wallClockDate(
+                                            forAcquisitionTimestamp: evidence.landedAt,
+                                            fallback: contactTime ?? Date()
+                                        ),
+                                        fistAtHit: contactFist ?? required?.fistPosition,
+                                        targetPosition: worldPosition,
+                                        landingError: evidence.landingError
+                                    )
+                                    stepHit = true
+                                    centerError = evidence.landingError
+                                    reactionTime = metrics.lastAttempt?.reactionTime
+                                case let .retry(reason):
+                                    await discardAttempt(
+                                        feedback: PunchEvidenceFeedback.message(for: reason)
+                                    )
+                                    retryInvalidEvidence = true
+                                case .waiting, .armed, .contact, .completeCoverage:
+                                    await discardAttempt(feedback: "Punch evidence was incomplete")
+                                    retryInvalidEvidence = true
+                                }
+                            case let .invalid(reason):
+                                await discardAttempt(
+                                    feedback: PunchEvidenceFeedback.message(for: reason)
+                                )
+                                retryInvalidEvidence = true
+                            case .validated:
+                                break
+                            }
+                        }
                     }
 
                     if stepHit { break }
@@ -997,6 +1216,7 @@ final class ReactiveStrikeSession {
 
                 guard !Task.isCancelled, phase == .running else { return }
                 guard stepHit else {
+                    if retryInvalidEvidence { continue evidenceRetryLoop }
                     completedRep = false
                     if capturesCompetitionEvidence {
                         competitionSteps.append(CompetitionStepEvidence(
@@ -1008,31 +1228,21 @@ final class ReactiveStrikeSession {
                             returnedToGuard: false
                         ))
                     }
-                    if capturesCompetitionEvidence { continue }
-                    break
+                    if capturesCompetitionEvidence { break evidenceRetryLoop }
+                    break targetLoop
                 }
 
-                lastFeedback = "Return your \(target.requiredHand.rawValue) hand to guard"
-                let returnedToGuard = await waitForRetraction(
-                    side: target.requiredHand,
-                    guardPosition: guardPosition
-                )
-                guard !Task.isCancelled else { return }
                 if capturesCompetitionEvidence {
                     competitionSteps.append(CompetitionStepEvidence(
                         index: rep * resolvedTargets.count + target.index,
-                        valid: returnedToGuard,
-                        centreErrorMeters: returnedToGuard ? centerError : nil,
-                        reactionTime: returnedToGuard ? reactionTime : nil,
+                        valid: true,
+                        centreErrorMeters: centerError,
+                        reactionTime: reactionTime,
                         requiredHand: target.requiredHand,
-                        returnedToGuard: returnedToGuard
+                        returnedToGuard: true
                     ))
                 }
-                guard returnedToGuard else {
-                    lastFeedback = "Combination reset · return to guard"
-                    completedRep = false
-                    if capturesCompetitionEvidence { continue }
-                    break
+                break evidenceRetryLoop
                 }
             }
 
@@ -1080,8 +1290,11 @@ final class ReactiveStrikeSession {
             guard let guardPosition = guardPositionsBody[adjusted.requiredHand] else { return nil }
             let validator = CombinationPunchValidator(
                 target: adjusted,
+                stance: stance,
                 guardPosition: guardPosition,
-                hitRadius: config.hitRadius
+                hitRadius: config.hitRadius,
+                generation: hands.providerGeneration,
+                continuityEpoch: hands.continuityEpoch
             )
             guard validator.isValidConfiguration else { return nil }
         }
@@ -1089,54 +1302,14 @@ final class ReactiveStrikeSession {
         return resolved
     }
 
-    private func waitForRetraction(
-        side: BodySide,
-        guardPosition: SIMD3<Float>
-    ) async -> Bool {
-        let deadline = Date().addingTimeInterval(1.8)
-        var consecutiveSamples = 0
-        var lastTimestamp: TimeInterval?
-        var trackingLostAt: Date?
-
-        while !Task.isCancelled, Date() < deadline, phase == .running {
-            if let frame = currentBodyFrame(),
-               let observation = hands.freshObservation(for: side),
-               lastTimestamp.map({ observation.timestamp > $0 }) ?? true {
-                trackingLostAt = nil
-                lastTimestamp = observation.timestamp
-                let isRetracted = CombinationPunchValidator.isRetracted(
-                    fist: frame.toBody(observation.fistPosition),
-                    guardPosition: guardPosition,
-                    radius: CombinationPunchValidator.guardRadius
-                )
-                consecutiveSamples = isRetracted ? consecutiveSamples + 1 : 0
-                if consecutiveSamples >= 3 { return true }
-            } else if capturesCompetitionEvidence {
-                let now = Date()
-                trackingLostAt = trackingLostAt ?? now
-                if now.timeIntervalSince(trackingLostAt!)
-                    >= CompetitionTrackingRecoveryGate.lossGraceSeconds {
-                    return await recoverCompetitionTracking()
-                }
-            }
-            try? await Task.sleep(for: .milliseconds(25))
-        }
-
-        return false
-    }
-
     private func beginAttempt(fistAtSpawn: SIMD3<Float>?) {
         activeAttemptID = UUID()
         spawnTime = Date()
         fistPositionAtSpawn = fistAtSpawn
-        if capturesCompetitionEvidence {
-            fistPositionsAtSpawn = Dictionary(uniqueKeysWithValues: [BodySide.left, .right]
-                .compactMap { side in
-                    hands.freshObservation(for: side).map { (side, $0.fistPosition) }
-                })
-        } else {
-            fistPositionsAtSpawn.removeAll(keepingCapacity: true)
-        }
+        fistPositionsAtSpawn = Dictionary(uniqueKeysWithValues: [BodySide.left, .right]
+            .compactMap { side in
+                hands.freshObservation(for: side).map { (side, $0.fistPosition) }
+            })
     }
 
     private func shiftAttemptStart(by pausedDuration: TimeInterval) {
@@ -1149,6 +1322,7 @@ final class ReactiveStrikeSession {
         hitTime: Date?,
         fistAtHit: SIMD3<Float>?,
         targetPosition: SIMD3<Float>,
+        landingError: Float? = nil,
         feedback: String? = nil
     ) async {
         guard let spawnTime else { return }
@@ -1173,7 +1347,7 @@ final class ReactiveStrikeSession {
             spawnTime: spawnTime,
             hitTime: hitTime,
             result: result,
-            distanceAtHit: fistAtHit.map { distance($0, targetPosition) },
+            distanceAtHit: landingError ?? fistAtHit.map { distance($0, targetPosition) },
             fistTravelDistance: travel,
             estimatedSpeedMetersPerSecond: speed
         )
@@ -1194,25 +1368,62 @@ final class ReactiveStrikeSession {
         targets.removeActiveTarget()
     }
 
+    /// Discards a technically invalid evidence chain without creating an ordinary miss, metric,
+    /// ranked step, or satisfying target flash. The caller decides whether to retry or abort.
+    private func discardAttempt(feedback: String) async {
+        lastFeedback = feedback
+        clearAttemptState()
+        try? await Task.sleep(for: .milliseconds(220))
+        targets.removeActiveTarget()
+    }
+
+    private func wallClockDate(
+        forAcquisitionTimestamp timestamp: TimeInterval,
+        fallback: Date
+    ) -> Date {
+        guard timestamp.isFinite else { return fallback }
+        let delta = timestamp - CACurrentMediaTime()
+        guard delta.isFinite, abs(delta) <= 1 else { return fallback }
+        return Date().addingTimeInterval(delta)
+    }
+
     private func currentBodyFrame() -> BodyFrame? {
         guard let transform = hands.deviceTransform else { return nil }
         return poseSolver.bodyFrame(headTransform: transform)
     }
 
-    private func fistPositionForCurrentRun(nearestTo point: SIMD3<Float>) -> SIMD3<Float>? {
-        guard capturesCompetitionEvidence else { return hands.nearestFistPosition(to: point) }
-        let left = hands.freshObservation(for: .left)?.fistPosition
-        let right = hands.freshObservation(for: .right)?.fistPosition
-        switch (left, right) {
-        case let (left?, right?):
-            return distance(left, point) <= distance(right, point) ? left : right
-        case let (left?, nil):
-            return left
-        case let (nil, right?):
-            return right
-        case (nil, nil):
-            return nil
+    private func punchEvidenceFrame(
+        now: TimeInterval,
+        requiredSide: BodySide?
+    ) -> PunchEvidenceValidator.Frame? {
+        let observations = [BodySide.left, .right].compactMap {
+            hands.freshObservation(for: $0)
         }
+        let deviceObservation: HandObservation?
+        if let requiredSide {
+            deviceObservation = observations.first { $0.side == requiredSide }
+        } else {
+            deviceObservation = observations.max {
+                $0.acquisitionTimestamp < $1.acquisitionTimestamp
+            }
+        }
+        guard let deviceObservation else { return nil }
+
+        return PunchEvidenceValidator.Frame(
+            now: now,
+            deviceTimestamp: deviceObservation.deviceTimestamp,
+            generation: hands.providerGeneration,
+            continuityEpoch: hands.continuityEpoch,
+            hands: observations.map {
+                PunchEvidenceValidator.HandSample(
+                    side: $0.side,
+                    fistPosition: $0.fistPosition,
+                    fistState: $0.fistState,
+                    acquisitionTimestamp: $0.acquisitionTimestamp,
+                    quality: .measured
+                )
+            }
+        )
     }
 
     private func waitForBodyFrame(timeout: TimeInterval = 1.5) async -> BodyFrame? {
@@ -1259,30 +1470,6 @@ final class ReactiveStrikeSession {
             )
         }
         return "Done · \(accuracyPercent)% accuracy"
-    }
-
-    private func competitionPunchingSide(to target: SIMD3<Float>) -> BodySide? {
-        let current = Dictionary(uniqueKeysWithValues: [BodySide.left, .right]
-            .compactMap { side in
-                hands.freshObservation(for: side).map { (side, $0.fistPosition) }
-            })
-        return GuardCoach.punchingSide(
-            current: current,
-            starts: fistPositionsAtSpawn,
-            target: target
-        )
-    }
-
-    private func nearestPunchingSide(to point: SIMD3<Float>) -> BodySide? {
-        let left = hands.leftFistPosition
-        let right = hands.rightFistPosition
-        switch (left, right) {
-        case let (left?, right?):
-            return distance(left, point) <= distance(right, point) ? .left : .right
-        case (nil, .some): return .right
-        case (.some, nil): return .left
-        case (nil, nil): return nil
-        }
     }
 
     private func guardStatus(for side: BodySide) -> Bool? {

@@ -76,6 +76,8 @@ final class ReactiveStrikeSession {
     private var trackingResumeRequested = false
     private let coachAudio: CoachAudioPlayer
     let voiceCoach: CoachVoiceCoach
+    let musicPlayer = CoachMusicPlayer()
+    private(set) var isMusicEnabled = true
 
     init() {
         let coachAudio = CoachAudioPlayer()
@@ -105,11 +107,16 @@ final class ReactiveStrikeSession {
     func immersiveSpaceDidOpen() {
         isImmersiveSpaceOpen = true
         auraPunch.prepareCoachAudio()
+        musicPlayer.prepare()
+        if isMusicEnabled {
+            musicPlayer.start()
+        }
     }
 
     func immersiveSpaceDidClose() {
         isImmersiveSpaceOpen = false
         voiceCoach.shutdown()
+        musicPlayer.shutdown()
     }
 
     func configure(
@@ -192,6 +199,16 @@ final class ReactiveStrikeSession {
     func attachSceneRoot(_ root: Entity) {
         targets.attach(to: root)
         auraPunch.attach(to: root)
+    }
+
+    func toggleMusic() {
+        isMusicEnabled.toggle()
+        if isMusicEnabled {
+            musicPlayer.prepare()
+            musicPlayer.start()
+        } else {
+            musicPlayer.stop()
+        }
     }
 
     func startDrill() {

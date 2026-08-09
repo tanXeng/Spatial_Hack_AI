@@ -36,6 +36,21 @@ struct TrainingExperienceView: View {
             VStack(spacing: 16) {
                 TrainingStatusCard(message: reactiveStatusLine)
                 errorCards(engineError: session.errorMessage)
+
+                Button {
+                    session.toggleMusic()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: session.isMusicEnabled ? "music.note" : "music.note.slash")
+                            .imageScale(.medium)
+                        Text(session.isMusicEnabled ? "Music On" : "Music Off")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(session.isMusicEnabled ? .accentColor : .secondary)
+
                 Button(session.phase == .finished ? "Calibrate Again" : "Start Calibration") {
                     onStart()
                 }
@@ -72,6 +87,20 @@ struct TrainingExperienceView: View {
                 }
 
                 errorCards(engineError: session.errorMessage)
+
+                Button {
+                    session.toggleMusic()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: session.isMusicEnabled ? "music.note" : "music.note.slash")
+                            .imageScale(.medium)
+                        Text(session.isMusicEnabled ? "Music On" : "Music Off")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(session.isMusicEnabled ? .accentColor : .secondary)
 
                 Button(session.phase == .finished ? "Try Again" : "Start Drill") {
                     onStart()
@@ -118,6 +147,20 @@ struct TrainingExperienceView: View {
                 }
 
                 errorCards(engineError: aura.errorMessage)
+
+                Button {
+                    session.toggleMusic()
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: session.isMusicEnabled ? "music.note" : "music.note.slash")
+                            .imageScale(.medium)
+                        Text(session.isMusicEnabled ? "Music On" : "Music Off")
+                            .font(.subheadline.weight(.medium))
+                    }
+                    .frame(maxWidth: .infinity)
+                }
+                .buttonStyle(.bordered)
+                .tint(session.isMusicEnabled ? .accentColor : .secondary)
 
                 Button(aura.phase == .results ? "Try Again" : "Start Rep") {
                     onStart()

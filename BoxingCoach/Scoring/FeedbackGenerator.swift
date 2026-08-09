@@ -9,6 +9,7 @@ nonisolated enum CoachingFeedbackSource: String, Sendable, Equatable {
 ///
 /// This is deliberately not part of `CoachRelayResponse`: the relay may change prose only.
 nonisolated enum CoachCorrectiveDrill: String, Sendable, Equatable {
+    case trackingRecovery = "tracking_recovery"
     case correctHand = "correct_hand"
     case fullExtension = "full_extension"
     case straightLine = "straight_line"
@@ -35,6 +36,8 @@ nonisolated struct CoachingFeedback: Sendable, Equatable {
     let primaryFix: String
     /// Something the user did well, so feedback isn't purely negative.
     let encouragement: String
+    /// Trusted local explanation paired with the deterministic correction.
+    let whyItMatters: String
     /// Optional AI context shown only after the trusted local guidance.
     let supplementalExplanation: String?
     /// Optional AI encouragement shown only inside the supplemental section.
@@ -46,6 +49,28 @@ nonisolated struct CoachingFeedback: Sendable, Equatable {
     /// Deterministic local drill; never supplied by the relay.
     let drill: CoachCorrectiveDrill
 
+    nonisolated init(
+        headline: String,
+        primaryFix: String,
+        encouragement: String,
+        whyItMatters: String = "",
+        supplementalExplanation: String?,
+        supplementalEncouragement: String?,
+        source: CoachingFeedbackSource,
+        correctionCode: CoachCorrectionCode,
+        drill: CoachCorrectiveDrill
+    ) {
+        self.headline = headline
+        self.primaryFix = primaryFix
+        self.encouragement = encouragement
+        self.whyItMatters = whyItMatters
+        self.supplementalExplanation = supplementalExplanation
+        self.supplementalEncouragement = supplementalEncouragement
+        self.source = source
+        self.correctionCode = correctionCode
+        self.drill = drill
+    }
+
     var isOffline: Bool { source == .offlineCoach }
 
     func applying(_ phrasing: CoachPhrasing) -> CoachingFeedback {
@@ -53,6 +78,7 @@ nonisolated struct CoachingFeedback: Sendable, Equatable {
             headline: headline,
             primaryFix: primaryFix,
             encouragement: encouragement,
+            whyItMatters: whyItMatters,
             supplementalExplanation: phrasing.explanation,
             supplementalEncouragement: phrasing.encouragement,
             source: .aiPhrasing,
@@ -91,6 +117,7 @@ nonisolated struct DeterministicCorrection: Sendable, Equatable {
     let code: CoachCorrectionCode
     let drill: CoachCorrectiveDrill
     let localCue: String
+    let whyItMatters: String
 }
 
 /// Deterministic, offline coaching built from the sub-metric breakdown.
@@ -101,6 +128,7 @@ nonisolated struct MockFeedbackGenerator: FeedbackGenerating {
             headline: headline(for: score, technique: technique),
             primaryFix: correction.localCue,
             encouragement: encouragement(for: score),
+            whyItMatters: correction.whyItMatters,
             supplementalExplanation: nil,
             supplementalEncouragement: nil,
             source: .offlineCoach,
@@ -117,26 +145,12 @@ nonisolated struct MockFeedbackGenerator: FeedbackGenerating {
         for score: TechniqueScore,
         technique: Technique
     ) -> DeterministicCorrection {
-        if let note = score.wrongHandNote {
-            return DeterministicCorrection(
-                code: .wrongHand,
-                drill: .correctHand,
-                localCue: "\(note) Throw the next one off your \(score.requiredHandName)."
-            )
-        }
-
-        guard let weakest = score.weakest, let value = weakest.score, value < 85 else {
-            return DeterministicCorrection(
-                code: .repeatShape,
-                drill: .repeatShape,
-                localCue: technique.coachingCues.first
-                    ?? "Keep the shape you just threw and repeat it."
-            )
-        }
+        let decision = CorrectionSelector().select(score: score, technique: technique)
         return DeterministicCorrection(
-            code: correctionCode(for: weakest.kind),
-            drill: correctiveDrill(for: weakest.kind),
-            localCue: "Next rep, focus on this: \(weakest.kind.faultDescription). \(cue(for: weakest.kind, technique: technique))"
+            code: decision.code,
+            drill: decision.drill,
+            localCue: decision.localCue,
+            whyItMatters: decision.whyItMatters
         )
     }
 
@@ -153,50 +167,6 @@ nonisolated struct MockFeedbackGenerator: FeedbackGenerating {
         return "Your \(strongest.kind.title.lowercased()) looked good — keep that part."
     }
 
-    private func correctionCode(for kind: SubMetricKind) -> CoachCorrectionCode {
-        switch kind {
-        case .extensionReach: .extensionReach
-        case .path: .path
-        case .elbow: .elbow
-        case .guardHand: .guardHand
-        case .retraction: .retraction
-        }
-    }
-
-    private func correctiveDrill(for kind: SubMetricKind) -> CoachCorrectiveDrill {
-        switch kind {
-        case .extensionReach: .fullExtension
-        case .path: .straightLine
-        case .elbow: .elbowTuck
-        case .guardHand: .guardAnchor
-        case .retraction: .snapBack
-        }
-    }
-
-    private func cue(for kind: SubMetricKind, technique: Technique) -> String {
-        let cues = technique.coachingCues
-        switch kind {
-        case .extensionReach:
-            return cues.first(where: {
-                $0.lowercased().contains("straight") || $0.lowercased().contains("drive")
-            }) ?? "Reach all the way through the target."
-        case .path:
-            return cues.first(where: {
-                $0.lowercased().contains("straight") || $0.lowercased().contains("level")
-            }) ?? "Send the fist on the shortest line to the target."
-        case .elbow:
-            return cues.first(where: { $0.lowercased().contains("elbow") })
-                ?? "Keep the elbow in line with the punch."
-        case .guardHand:
-            return cues.first(where: {
-                $0.lowercased().contains("chin") || $0.lowercased().contains("hand")
-            }) ?? "Keep the spare hand at your chin."
-        case .retraction:
-            return cues.first(where: {
-                $0.lowercased().contains("back") || $0.lowercased().contains("guard")
-            }) ?? "Snap the hand straight back to guard."
-        }
-    }
 }
 
 // MARK: - Relay
@@ -244,6 +214,7 @@ nonisolated struct RelayFeedbackGenerator: FeedbackGenerating {
 
     func phrasing(for score: TechniqueScore, technique: Technique) async -> CoachPhrasing? {
         let correction = offline.correction(for: score, technique: technique)
+        guard correction.code != .trackingRecovery else { return nil }
         let facts = CoachRelayRequestFacts(
             locale: context.locale,
             learnerLevel: context.learnerLevel,

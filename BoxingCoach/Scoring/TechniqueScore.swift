@@ -70,6 +70,9 @@ nonisolated struct SubMetric: Sendable, Identifiable, Codable {
     var measured: Float
     /// Short human-readable measurement, e.g. "82% of full reach".
     var detail: String
+    /// Provenance of the displayed metric. `nil` means the value predates provenance capture;
+    /// callers must label it unknown rather than guessing measured or inferred.
+    var quality: MeasurementQuality? = nil
 
     var id: String { kind.rawValue }
     var isAvailable: Bool { score != nil }
@@ -144,12 +147,17 @@ nonisolated struct TechniqueScore: Sendable {
             guard !available.isEmpty else { continue }
             let meanScore = available.reduce(0, +) / Float(available.count)
             let template = scores.compactMap { $0.metric(kind) }.first
+            let qualities = scores.compactMap { $0.metric(kind)?.quality }
+            let quality: MeasurementQuality? = qualities.contains(.inferred)
+                ? .inferred
+                : (qualities.isEmpty ? nil : .measured)
             averagedMetrics.append(
                 SubMetric(
                     kind: kind,
                     score: meanScore,
                     measured: template?.measured ?? 0,
-                    detail: "Avg of \(scores.count) punches"
+                    detail: "Avg of \(scores.count) punches",
+                    quality: quality
                 )
             )
         }
@@ -289,7 +297,8 @@ struct TechniqueScorer: Sendable {
             kind: .extensionReach,
             score: falloff(shortfall, good: thresholds.extensionGood, bad: thresholds.extensionBad),
             measured: shortfall,
-            detail: "\(min(percent, 120))% of reference reach"
+            detail: "\(min(percent, 120))% of reference reach",
+            quality: .inferred
         )
     }
 
@@ -303,7 +312,8 @@ struct TechniqueScorer: Sendable {
                 bad: thresholds.pathBad
             ),
             measured: alignment.normalizedDistance,
-            detail: String(format: "%.2f avg deviation", alignment.normalizedDistance)
+            detail: String(format: "%.2f avg deviation", alignment.normalizedDistance),
+            quality: .measured
         )
     }
 
@@ -323,7 +333,8 @@ struct TechniqueScorer: Sendable {
             kind: .elbow,
             score: falloff(deviation, good: thresholds.elbowGood, bad: thresholds.elbowBad),
             measured: deviation,
-            detail: String(format: "%.2f avg deviation", deviation)
+            detail: String(format: "%.2f avg deviation", deviation),
+            quality: .inferred
         )
     }
 
@@ -345,7 +356,8 @@ struct TechniqueScorer: Sendable {
                 kind: .guardHand,
                 score: nil,
                 measured: 0,
-                detail: "Guard hand not tracked"
+                detail: "Guard hand not tracked",
+                quality: nil
             )
         }
 
@@ -366,7 +378,8 @@ struct TechniqueScorer: Sendable {
                 kind: .guardHand,
                 score: nil,
                 measured: 0,
-                detail: "Guard hand not tracked"
+                detail: "Guard hand not tracked",
+                quality: nil
             )
         }
 
@@ -375,7 +388,8 @@ struct TechniqueScorer: Sendable {
             kind: .guardHand,
             score: falloff(deviation, good: thresholds.guardGood, bad: thresholds.guardBad),
             measured: deviation,
-            detail: String(format: "%.2f from guard position", deviation)
+            detail: String(format: "%.2f from guard position", deviation),
+            quality: .measured
         )
     }
 
@@ -384,7 +398,13 @@ struct TechniqueScorer: Sendable {
         guard let attemptEnd = attempt.samples.last,
               let referenceEnd = reference.samples.last
         else {
-            return SubMetric(kind: .retraction, score: nil, measured: 0, detail: "No data")
+            return SubMetric(
+                kind: .retraction,
+                score: nil,
+                measured: 0,
+                detail: "No data",
+                quality: nil
+            )
         }
 
         if attempt.endsNearExtension() {
@@ -392,7 +412,8 @@ struct TechniqueScorer: Sendable {
                 kind: .retraction,
                 score: nil,
                 measured: 0,
-                detail: "Retraction not captured"
+                detail: "Retraction not captured",
+                quality: nil
             )
         }
 
@@ -402,7 +423,8 @@ struct TechniqueScorer: Sendable {
             kind: .retraction,
             score: falloff(error, good: thresholds.retractionGood, bad: thresholds.retractionBad),
             measured: error,
-            detail: String(format: "%.2f from guard at finish", error)
+            detail: String(format: "%.2f from guard at finish", error),
+            quality: .measured
         )
     }
 

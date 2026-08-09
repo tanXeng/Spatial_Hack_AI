@@ -12,6 +12,7 @@ nonisolated enum CoachScoreBand: String, Codable, Sendable {
 }
 
 nonisolated enum CoachCorrectionCode: String, Codable, Sendable {
+    case trackingRecovery = "tracking_recovery"
     case wrongHand = "wrong_hand"
     case extensionReach = "extension_reach"
     case path

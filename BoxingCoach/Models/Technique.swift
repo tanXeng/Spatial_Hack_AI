@@ -2,7 +2,7 @@ import Foundation
 
 /// Which hand throws a given punch, expressed relative to stance rather than to a fixed side
 /// so the same technique data works for orthodox and southpaw users.
-enum PunchHand: String, Sendable, Codable {
+nonisolated enum PunchHand: String, Sendable, Codable {
     case lead
     case rear
     /// Thrown correctly from either side — hooks and uppercuts are drilled off both hands, and

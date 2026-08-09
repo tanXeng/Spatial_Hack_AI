@@ -25,6 +25,7 @@ nonisolated enum LearningEvidenceRejectionReason: Error, Hashable, Sendable, Cod
     case techniqueMismatch(expected: String, actual: String)
     case missingMetricQuality(SubMetricKind)
     case attemptIdentityMismatch
+    case proofIncompatible(field: String)
     case incompleteCycle
 }
 
@@ -36,11 +37,84 @@ nonisolated struct MetricMeasurement: Hashable, Sendable, Codable {
 
 /// Stable identity for one version of an admitted technique attempt.
 nonisolated struct TechniqueAttemptIdentity: Hashable, Sendable, Codable {
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case version
+        case techniqueID
+        case stance
+        case side
+        case referenceVersion
+        case scoringVersion
+        case calibrationVersion
+    }
+
     let id: UUID
     let version: UInt64
     let techniqueID: String
     let stance: Stance
     let side: BodySide
+    let referenceVersion: UInt64
+    let scoringVersion: UInt64
+    let calibrationVersion: UInt64
+
+    init(
+        id: UUID,
+        version: UInt64,
+        techniqueID: String,
+        stance: Stance,
+        side: BodySide,
+        referenceVersion: UInt64 = 1,
+        scoringVersion: UInt64 = 1,
+        calibrationVersion: UInt64 = 1
+    ) throws {
+        guard version > 0 else {
+            throw LearningEvidenceRejectionReason.invalidRange(field: "version")
+        }
+        guard !techniqueID.isEmpty else {
+            throw LearningEvidenceRejectionReason.invalidRange(field: "techniqueID")
+        }
+        guard referenceVersion > 0 else {
+            throw LearningEvidenceRejectionReason.invalidRange(field: "referenceVersion")
+        }
+        guard scoringVersion > 0 else {
+            throw LearningEvidenceRejectionReason.invalidRange(field: "scoringVersion")
+        }
+        guard calibrationVersion > 0 else {
+            throw LearningEvidenceRejectionReason.invalidRange(field: "calibrationVersion")
+        }
+
+        self.id = id
+        self.version = version
+        self.techniqueID = techniqueID
+        self.stance = stance
+        self.side = side
+        self.referenceVersion = referenceVersion
+        self.scoringVersion = scoringVersion
+        self.calibrationVersion = calibrationVersion
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            id: values.decode(UUID.self, forKey: .id),
+            version: values.decode(UInt64.self, forKey: .version),
+            techniqueID: values.decode(String.self, forKey: .techniqueID),
+            stance: values.decode(Stance.self, forKey: .stance),
+            side: values.decode(BodySide.self, forKey: .side),
+            referenceVersion: values.decodeIfPresent(
+                UInt64.self,
+                forKey: .referenceVersion
+            ) ?? 1,
+            scoringVersion: values.decodeIfPresent(
+                UInt64.self,
+                forKey: .scoringVersion
+            ) ?? 1,
+            calibrationVersion: values.decodeIfPresent(
+                UInt64.self,
+                forKey: .calibrationVersion
+            ) ?? 1
+        )
+    }
 }
 
 /// An admitted punch paired with its deterministic score and metric provenance.
@@ -62,10 +136,22 @@ nonisolated struct TechniqueAttemptEvidence: Sendable {
         score: TechniqueScore,
         metricQuality: [SubMetricKind: MeasurementQuality],
         attemptID: UUID = UUID(),
-        version: UInt64 = 1
+        version: UInt64 = 1,
+        referenceVersion: UInt64 = 1,
+        scoringVersion: UInt64 = 1,
+        calibrationVersion: UInt64 = 1
     ) throws {
         guard version > 0 else {
             throw LearningEvidenceRejectionReason.invalidRange(field: "version")
+        }
+        guard referenceVersion > 0 else {
+            throw LearningEvidenceRejectionReason.invalidRange(field: "referenceVersion")
+        }
+        guard scoringVersion > 0 else {
+            throw LearningEvidenceRejectionReason.invalidRange(field: "scoringVersion")
+        }
+        guard calibrationVersion > 0 else {
+            throw LearningEvidenceRejectionReason.invalidRange(field: "calibrationVersion")
         }
         guard score.techniqueID == punch.technique.id else {
             throw LearningEvidenceRejectionReason.techniqueMismatch(
@@ -113,12 +199,15 @@ nonisolated struct TechniqueAttemptEvidence: Sendable {
             measurements.append(MetricMeasurement(kind: metric.kind, quality: quality))
         }
 
-        self.identity = TechniqueAttemptIdentity(
+        self.identity = try TechniqueAttemptIdentity(
             id: attemptID,
             version: version,
             techniqueID: punch.technique.id,
             stance: punch.stance,
-            side: punch.side
+            side: punch.side,
+            referenceVersion: referenceVersion,
+            scoringVersion: scoringVersion,
+            calibrationVersion: calibrationVersion
         )
         self.punch = punch
         self.score = score
@@ -217,6 +306,27 @@ nonisolated struct ProofComparison: Sendable {
               baseline.stance == retest.stance,
               baseline.side == retest.side
         else { throw LearningEvidenceRejectionReason.attemptIdentityMismatch }
+        guard baseline.identity.referenceVersion == retest.identity.referenceVersion else {
+            throw LearningEvidenceRejectionReason.proofIncompatible(field: "reference")
+        }
+        guard baseline.identity.scoringVersion == retest.identity.scoringVersion else {
+            throw LearningEvidenceRejectionReason.proofIncompatible(field: "scoring")
+        }
+        guard baseline.identity.calibrationVersion == retest.identity.calibrationVersion else {
+            throw LearningEvidenceRejectionReason.proofIncompatible(field: "calibration")
+        }
+
+        let baselineAvailability = Set(baseline.score.metrics.compactMap { metric in
+            metric.score == nil ? nil : metric.kind
+        })
+        let retestAvailability = Set(retest.score.metrics.compactMap { metric in
+            metric.score == nil ? nil : metric.kind
+        })
+        guard baselineAvailability == retestAvailability else {
+            throw LearningEvidenceRejectionReason.proofIncompatible(
+                field: "metricAvailability"
+            )
+        }
 
         let overallDelta = retest.score.overall - baseline.score.overall
         try LearningEvidenceValidation.requireFinite(overallDelta, field: "overallDelta")

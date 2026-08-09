@@ -22,6 +22,51 @@ struct RecordedAttempt: Sendable {
     var peakReach: Float {
         samples.map(\.reachFraction).max() ?? 0
     }
+
+    /// Technique-aware magnitude used by the Extension score and to decide which arm threw.
+    /// Uppercuts are defined by the ordered rise from their low load to their later landing; their
+    /// hip load can be radially farther from the shoulder than the fist is at the chin. Every
+    /// other punch keeps the established shoulder-to-fist peak-reach measure.
+    func extensionMagnitude(for techniqueID: String) -> Float {
+        PunchExtensionSemantics.magnitude(samples: samples, techniqueID: techniqueID)
+    }
+}
+
+/// Pure punch-extension rules shared by recorded attempts and authored references.
+enum PunchExtensionSemantics {
+    static func magnitude(samples: [MotionSample], techniqueID: String) -> Float {
+        if techniqueID == Technique.uppercut.id {
+            return orderedVerticalRise(in: samples)
+        }
+
+        return samples.lazy
+            .map(\.reachFraction)
+            .filter(\.isFinite)
+            .max() ?? 0
+    }
+
+    /// Largest upward displacement whose low sample occurs before its high sample.
+    ///
+    /// Order matters: `maxY - minY` would credit a hand that starts high and only drops to the hip,
+    /// even though it never performs the upward half of an uppercut.
+    static func orderedVerticalRise(in samples: [MotionSample]) -> Float {
+        var lowestEarlierY: Float?
+        var largestRise: Float = 0
+
+        for sample in samples {
+            let y = sample.fist.y
+            guard y.isFinite else { continue }
+
+            if let priorLowestY = lowestEarlierY {
+                largestRise = max(largestRise, y - priorLowestY)
+                lowestEarlierY = min(priorLowestY, y)
+            } else {
+                lowestEarlierY = y
+            }
+        }
+
+        return largestRise
+    }
 }
 
 /// Captures the user's attempt as a normalized time series.

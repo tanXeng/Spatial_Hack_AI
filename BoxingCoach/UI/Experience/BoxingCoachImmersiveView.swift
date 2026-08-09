@@ -81,7 +81,7 @@ struct BoxingCoachImmersiveView: View {
         }
         .onChange(of: session.lastFeedback) { _, message in
             guard case .experience(.reactive) = flow.route,
-                  session.phase == .running else { return }
+                  session.phase == .running || session.phase == .calibrating else { return }
             announce(message)
         }
         .onChange(of: session.auraPunch.statusMessage) { _, message in
@@ -137,6 +137,13 @@ struct BoxingCoachImmersiveView: View {
             let action = technique.name.lowercased()
             switch session.auraPunch.phase {
             case .idle:
+                if session.auraPunch.statusMessage == "Stopped" {
+                    return ImmersiveInstruction(
+                        stage: "TRAINING STOPPED",
+                        message: "Your training was stopped",
+                        symbol: "stop.circle.fill"
+                    )
+                }
                 return ImmersiveInstruction(
                     stage: "GET READY",
                     message: "Raise your guard to begin the \(action) training",
@@ -180,25 +187,42 @@ struct BoxingCoachImmersiveView: View {
                 )
             }
 
-        case .experience(.reactive):
+        case .experience(.reactive(_, let combination, _)):
             switch session.phase {
             case .idle:
+                if session.lastFeedback == "Drill stopped" {
+                    return ImmersiveInstruction(
+                        stage: "TRAINING STOPPED",
+                        message: "Your training was stopped",
+                        symbol: "stop.circle.fill"
+                    )
+                }
                 return ImmersiveInstruction(
                     stage: "GET READY",
                     message: "Raise your guard and watch for the target",
                     symbol: "scope"
                 )
+            case .calibrating:
+                return ImmersiveInstruction(
+                    stage: "CALIBRATING",
+                    message: session.lastFeedback,
+                    symbol: "ruler"
+                )
             case .running:
                 return ImmersiveInstruction(
                     stage: session.progressLabel.uppercased(),
                     message: session.lastFeedback,
-                    symbol: "bolt.fill"
+                    symbol: combination == nil ? "bolt.fill" : "list.number"
                 )
             case .finished:
                 return ImmersiveInstruction(
-                    stage: "ROUND COMPLETE",
+                    stage: session.lastFeedback == "Drill stopped"
+                        ? "TRAINING STOPPED"
+                        : "ROUND COMPLETE",
                     message: session.lastFeedback,
-                    symbol: "checkmark.circle.fill"
+                    symbol: session.lastFeedback == "Drill stopped"
+                        ? "stop.circle.fill"
+                        : "checkmark.circle.fill"
                 )
             }
 

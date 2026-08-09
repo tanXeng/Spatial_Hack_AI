@@ -77,7 +77,7 @@ struct ReactiveSetupView: View {
         TrainingDetailScaffold(
             backLabel: "Features",
             title: "Reactive Strike",
-            subtitle: "Choose Air Mode or Bag Mode",
+            subtitle: "Choose a target drill or a coached combination",
             controlsDisabled: controlsDisabled,
             onBack: onBack
         ) {
@@ -93,6 +93,68 @@ struct ReactiveSetupView: View {
                     .accessibilityElement(children: .ignore)
                     .accessibilityLabel("\(mode.title), \(mode.subtitle)")
                     .accessibilityHint("Opens the training experience")
+                }
+            }
+        }
+    }
+}
+
+struct CombinationSetupView: View {
+    let stance: Stance
+    let controlsDisabled: Bool
+    let onStanceChange: (Stance) -> Void
+    let onSelect: (Combination) -> Void
+    let onBack: () -> Void
+
+    var body: some View {
+        TrainingDetailScaffold(
+            backLabel: "Modes",
+            title: "Combination Mode",
+            subtitle: "Choose your stance and combination",
+            controlsDisabled: controlsDisabled,
+            onBack: onBack
+        ) {
+            VStack(spacing: 20) {
+                VStack(alignment: .leading, spacing: 10) {
+                    Text("Stance")
+                        .font(.headline)
+
+                    Picker(
+                        "Stance",
+                        selection: Binding(
+                            get: { stance },
+                            set: { onStanceChange($0) }
+                        )
+                    ) {
+                        ForEach(Stance.allCases) { stance in
+                            Text(stance.title).tag(stance)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .disabled(controlsDisabled)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding(18)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+
+                VStack(spacing: 12) {
+                    ForEach(Combination.all) { combination in
+                        Button {
+                            onSelect(combination)
+                        } label: {
+                            selectionRow(
+                                title: "\(combination.numberNotation) · \(combination.name)",
+                                subtitle: combination.summary
+                            )
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(controlsDisabled)
+                        .accessibilityElement(children: .ignore)
+                        .accessibilityLabel(
+                            "\(combination.numberNotation), \(combination.name), \(combination.summary)"
+                        )
+                        .accessibilityHint("Opens the combination training experience")
+                    }
                 }
             }
         }

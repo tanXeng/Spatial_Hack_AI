@@ -29,7 +29,7 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 }
 
 enum TrainingSelection: Hashable, Sendable {
-    case reactive(mode: ReactiveStrikeMode)
+    case reactive(mode: ReactiveStrikeMode, combination: Combination?, stance: Stance)
     case aura(technique: Technique, stance: Stance)
 
     var feature: TrainingFeature {
@@ -43,6 +43,7 @@ enum TrainingSelection: Hashable, Sendable {
 enum TrainingFlowRoute: Hashable, Sendable {
     case features
     case reactiveSetup
+    case combinationSetup
     case auraSetup
     case unavailableFeature(TrainingFeature)
     case experience(TrainingSelection)
@@ -81,7 +82,9 @@ final class TrainingFlowCoordinator {
     private(set) var draftStance: Stance = .orthodox
 
     private var immersiveState: ImmersiveSceneState = .closed
+    private var isControlWindowVisible = false
     private let readinessTimeout: Duration = .seconds(5)
+    private let controlWindowReadinessTimeout: Duration = .seconds(2)
 
     var controlsDisabled: Bool {
         transition != .idle
@@ -106,10 +109,30 @@ final class TrainingFlowCoordinator {
         draftStance = stance
     }
 
+    func controlWindowDidAppear() {
+        isControlWindowVisible = true
+    }
+
+    func controlWindowDidDisappear() {
+        isControlWindowVisible = false
+    }
+
     func chooseReactiveMode(_ mode: ReactiveStrikeMode) {
         guard transition == .idle else { return }
         presentationError = nil
-        route = .experience(.reactive(mode: mode))
+        if mode == .combination {
+            route = .combinationSetup
+        } else {
+            route = .experience(.reactive(mode: mode, combination: nil, stance: draftStance))
+        }
+    }
+
+    func chooseCombination(_ combination: Combination) {
+        guard transition == .idle else { return }
+        presentationError = nil
+        route = .experience(
+            .reactive(mode: .combination, combination: combination, stance: draftStance)
+        )
     }
 
     func chooseAuraTechnique(_ technique: Technique) {
@@ -121,7 +144,11 @@ final class TrainingFlowCoordinator {
     func backFromSetup() {
         guard transition == .idle else { return }
         presentationError = nil
-        route = .features
+        if route == .combinationSetup {
+            route = .reactiveSetup
+        } else {
+            route = .features
+        }
     }
 
     func startExperience(
@@ -175,8 +202,8 @@ final class TrainingFlowCoordinator {
         // Apply the committed selection only after the scene is usable. A failed retry therefore
         // leaves the previous score/results intact instead of erasing useful feedback.
         switch selection {
-        case .reactive(let mode):
-            session.selectMode(mode)
+        case .reactive(let mode, let combination, let stance):
+            session.configure(mode: mode, combination: combination, stance: stance)
             if session.phase == .finished {
                 session.resetForNewRound()
             }
@@ -191,6 +218,9 @@ final class TrainingFlowCoordinator {
 
         transition = .idle
         hideControlWindow()
+        // The SwiftUI disappearance callback can arrive on a later update. Mark the requested
+        // state immediately so the eventual restore waits for a fresh appearance event.
+        isControlWindowVisible = false
     }
 
     func endExperience(
@@ -199,11 +229,20 @@ final class TrainingFlowCoordinator {
         dismissImmersive: () async -> Void
     ) async {
         guard transition == .idle else { return }
+        presentationError = nil
         transition = .closingImmersion
 
         if hasActiveImmersiveScene(session: session) {
+            // Cancellation takes effect when the user taps, not after window restoration. Leaving
+            // an engine alive during that wait can record another hit/miss or finish scoring after
+            // the user explicitly ended training.
+            session.stopDrill()
             showControlWindow()
-            try? await Task.sleep(for: .milliseconds(100))
+            guard await waitForControlWindowReadiness() else {
+                presentationError = "Could not restore the results window. Try End Training again."
+                transition = .idle
+                return
+            }
             immersiveState = .closing
             await dismissImmersive()
             finalizeImmersiveClosure(session: session)
@@ -222,9 +261,14 @@ final class TrainingFlowCoordinator {
         guard transition == .idle,
               hasActiveImmersiveScene(session: session) else { return }
 
+        presentationError = nil
         transition = .closingImmersion
         showControlWindow()
-        try? await Task.sleep(for: .milliseconds(100))
+        guard await waitForControlWindowReadiness() else {
+            presentationError = "Could not restore the results window. Use End Training to try again."
+            transition = .idle
+            return
+        }
         immersiveState = .closing
         await dismissImmersive()
         finalizeImmersiveClosure(session: session)
@@ -249,9 +293,10 @@ final class TrainingFlowCoordinator {
         }
 
         switch selection {
-        case .reactive:
+        case .reactive(let mode, _, let stance):
+            draftStance = stance
             session.resetForNewRound()
-            route = .reactiveSetup
+            route = mode == .combination ? .combinationSetup : .reactiveSetup
         case .aura(_, let stance):
             draftStance = stance
             session.auraPunch.reset()
@@ -285,6 +330,21 @@ final class TrainingFlowCoordinator {
         }
 
         return immersiveState == .ready
+    }
+
+    /// Waits for the restored window's real `onAppear` instead of guessing that a fixed sleep is
+    /// long enough. On a loaded device, dismissing immersion before this event can discard the
+    /// final result because no scene is yet available to own it.
+    private func waitForControlWindowReadiness() async -> Bool {
+        let clock = ContinuousClock()
+        let deadline = clock.now.advanced(by: controlWindowReadinessTimeout)
+
+        while clock.now < deadline {
+            if isControlWindowVisible { return true }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        return isControlWindowVisible
     }
 
     private func hasActiveImmersiveScene(session: ReactiveStrikeSession) -> Bool {

@@ -197,7 +197,7 @@ final class AuraPunchSession {
         guard !Task.isCancelled else { return }
 
         // Reference/side are resolved per rep inside the guided loop rather than once here, so
-        // an `.either`-hand technique like the hook can alternate which arm it demonstrates.
+        // an `.either`-hand technique like the hook or uppercut can alternate its demo arm.
         await runGuidedFollowAlong(solver: solver)
         guard !Task.isCancelled else { return }
 
@@ -276,7 +276,7 @@ final class AuraPunchSession {
     /// Which arm rep `rep` of the guided follow-along should demonstrate.
     ///
     /// Techniques thrown with a specific hand (`.lead`/`.rear`) always demonstrate on that side.
-    /// `.either`-hand techniques — currently just the hook — alternate sides rep to rep, so the
+    /// `.either`-hand techniques — the hook and uppercut — alternate sides rep to rep, so the
     /// tutorial actually trains both arms instead of only ever showing the lead side (which is
     /// what a single fixed `PunchHand.side(for:)` lookup would otherwise do for every rep).
     private func demoSide(forRep rep: Int, technique: Technique, stance: Stance) -> BodySide {
@@ -456,10 +456,9 @@ final class AuraPunchSession {
             fist: solver.denormalize(sample.fist, side: side, frame: frame)
         )
 
-        // Flash near peak extension so the user's eye lands on the moment that matters. Measured
-        // against this punch's own peak, since a hook never approaches a straight punch's reach.
-        let emphasisThreshold = max(reference.peakReach, 0.001) * 0.85
-        demoArm?.setTint(sample.reachFraction >= emphasisThreshold ? .emphasis : .demo)
+        // Flash near the punch's semantic landing. Most punches use radial reach; uppercuts use
+        // spatial proximity to the chin landing so the radially longer hip load does not flash.
+        demoArm?.setTint(reference.shouldEmphasize(sample) ? .emphasis : .demo)
     }
 
     /// Current normalized fist position of one arm — shoulder-relative, arm-reach units, same
@@ -500,7 +499,8 @@ final class AuraPunchSession {
     /// Both hands are recorded because the app cannot assume the user threw with the hand it asked
     /// for — recording only the expected arm would turn a cross thrown off the lead hand into a
     /// capture of a stationary guard, which scores as a failed punch instead of the hand mistake
-    /// it actually was. The arm that reached furthest is taken as the one that threw.
+    /// it actually was. The arm with the strongest technique-specific extension is taken as the
+    /// one that threw: radial reach for most punches, ordered low-to-high rise for an uppercut.
     ///
     /// Returns `nil` when neither arm produced a gradeable punch.
     private func recordAttempt(
@@ -573,8 +573,11 @@ final class AuraPunchSession {
         mirrorArm?.isVisible = false
 
         let captured = recorders.mapValues { $0.finish() }
-        guard let thrown = captured.max(by: { $0.value.peakReach < $1.value.peakReach }),
-              thrown.value.peakReach > 0 else {
+        guard let thrown = captured.max(by: {
+            $0.value.extensionMagnitude(for: technique.id)
+                < $1.value.extensionMagnitude(for: technique.id)
+        }),
+              thrown.value.extensionMagnitude(for: technique.id) > 0 else {
             return nil
         }
         return (thrown.key, thrown.value)

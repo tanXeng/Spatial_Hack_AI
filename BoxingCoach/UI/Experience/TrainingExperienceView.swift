@@ -10,18 +10,29 @@ struct TrainingExperienceView: View {
 
     var body: some View {
         switch selection {
-        case .reactive(let mode):
-            reactiveExperience(mode: mode)
+        case .reactive(let mode, let combination, let stance):
+            reactiveExperience(mode: mode, combination: combination, stance: stance)
         case .aura(let technique, let stance):
             auraExperience(technique: technique, stance: stance)
         }
     }
 
-    private func reactiveExperience(mode: ReactiveStrikeMode) -> some View {
-        TrainingDetailScaffold(
-            backLabel: "Change Mode",
+    private func reactiveExperience(
+        mode: ReactiveStrikeMode,
+        combination: Combination?,
+        stance: Stance
+    ) -> some View {
+        let subtitle: String
+        if let combination {
+            subtitle = "\(stance.title) · \(combination.numberNotation) · \(combination.name)"
+        } else {
+            subtitle = mode.title
+        }
+
+        return TrainingDetailScaffold(
+            backLabel: combination == nil ? "Change Mode" : "Change Combination",
             title: "Reactive Strike",
-            subtitle: mode.title,
+            subtitle: subtitle,
             controlsDisabled: controlsDisabled,
             onBack: onChangeSelection
         ) {
@@ -37,7 +48,9 @@ struct TrainingExperienceView: View {
                 Button(session.phase == .finished ? "Try Again" : "Start Drill") {
                     onStart()
                 }
-                .disabled(session.phase == .running || controlsDisabled)
+                .disabled(
+                    session.phase == .running || session.phase == .calibrating || controlsDisabled
+                )
                 .buttonStyle(.borderedProminent)
             }
         }
@@ -98,11 +111,19 @@ struct TrainingExperienceView: View {
     }
 
     private var reactiveStatusLine: String {
+        if session.phase == .calibrating {
+            return session.lastFeedback
+        }
         if session.phase == .running {
             return "\(session.progressLabel) · \(session.lastFeedback)"
         }
         if session.phase == .finished {
-            return "Round complete"
+            return session.lastFeedback == "Drill stopped"
+                ? "Training stopped · Partial results"
+                : "Round complete"
+        }
+        if session.lastFeedback == "Drill stopped" {
+            return "Training stopped · Start again when you're ready"
         }
         return "Tap Start Drill to begin"
     }
@@ -110,6 +131,9 @@ struct TrainingExperienceView: View {
     private var auraStatusLine: String {
         let aura = session.auraPunch
         if aura.phase == .idle, aura.errorMessage == nil {
+            if aura.statusMessage == "Stopped" {
+                return "Training stopped · Start again when you're ready"
+            }
             return "Stand facing forward with both hands up, then tap Start Rep"
         }
         return aura.statusMessage
@@ -122,6 +146,12 @@ struct TrainingExperienceView: View {
 
             LabeledMetricRow(title: "Hits", value: "\(session.metrics.hitCount)")
             LabeledMetricRow(title: "Misses", value: "\(session.metrics.missCount)")
+            if session.mode == .combination {
+                LabeledMetricRow(
+                    title: "Combinations completed",
+                    value: "\(session.comboRepsCompleted) / \(session.comboRepeatCount)"
+                )
+            }
             LabeledMetricRow(
                 title: "Accuracy",
                 value: String(format: "%.0f%%", session.metrics.accuracy * 100)

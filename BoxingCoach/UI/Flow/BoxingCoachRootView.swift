@@ -27,6 +27,15 @@ struct BoxingCoachRootView: View {
                     onBack: flow.backFromSetup
                 )
 
+            case .combinationSetup:
+                CombinationSetupView(
+                    stance: flow.draftStance,
+                    controlsDisabled: flow.controlsDisabled,
+                    onStanceChange: flow.setDraftStance,
+                    onSelect: flow.chooseCombination,
+                    onBack: flow.backFromSetup
+                )
+
             case .auraSetup:
                 AuraSetupView(
                     stance: flow.draftStance,
@@ -66,6 +75,12 @@ struct BoxingCoachRootView: View {
         }
         .onChange(of: flow.route) {
             AccessibilityNotification.ScreenChanged().post()
+        }
+        .onAppear {
+            flow.controlWindowDidAppear()
+        }
+        .onDisappear {
+            flow.controlWindowDidDisappear()
         }
     }
 

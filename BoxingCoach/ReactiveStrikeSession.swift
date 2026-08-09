@@ -197,13 +197,17 @@ final class ReactiveStrikeSession {
     private let coachAudio: CoachAudioPlayer
     let voiceCoach: CoachVoiceCoach
 
-    init(feedbackGenerator: some FeedbackGenerating = MockFeedbackGenerator()) {
+    init(
+        feedbackGenerator: some FeedbackGenerating = MockFeedbackGenerator(),
+        audienceTrack: CoachLearnerLevel = .beginner
+    ) {
         let coachAudio = CoachAudioPlayer()
         self.coachAudio = coachAudio
         voiceCoach = CoachVoiceCoach(audioPlayer: coachAudio)
         auraPunch = AuraPunchSession(
             hands: hands,
             feedbackGenerator: feedbackGenerator,
+            audienceTrack: audienceTrack,
             coachAudio: coachAudio
         )
     }

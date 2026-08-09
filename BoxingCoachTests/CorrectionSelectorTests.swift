@@ -14,7 +14,8 @@ struct CorrectionSelectorTests {
                 wrongHand: true,
                 metrics: [metric(.path, 40, quality: .measured)]
             ),
-            technique: .jab
+            technique: .jab,
+            stance: .orthodox
         )
 
         #expect(decision.kind == .trackingRecovery)
@@ -30,7 +31,8 @@ struct CorrectionSelectorTests {
                 wrongHand: true,
                 metrics: [metric(.path, 30, quality: .measured)]
             ),
-            technique: .jab
+            technique: .jab,
+            stance: .orthodox
         )
 
         #expect(decision.kind == .wrongHand)
@@ -47,7 +49,8 @@ struct CorrectionSelectorTests {
                 metric(.path, 62, quality: .inferred),
                 metric(.elbow, 76, quality: .inferred),
             ]),
-            technique: .jab
+            technique: .jab,
+            stance: .orthodox
         )
 
         #expect(decision.kind == .metric(.path))
@@ -67,7 +70,8 @@ struct CorrectionSelectorTests {
                 metric(.extensionReach, 92, quality: .measured),
                 metric(.path, 88, quality: .measured),
             ]),
-            technique: .jab
+            technique: .jab,
+            stance: .orthodox
         )
 
         #expect(decision.kind == .reinforce)
@@ -83,7 +87,8 @@ struct CorrectionSelectorTests {
 
         let decision = selector.select(
             score: makeScore(metrics: metrics),
-            technique: .jab
+            technique: .jab,
+            stance: .orthodox
         )
 
         #expect(decision.kind == .metric(.extensionReach))
@@ -96,7 +101,8 @@ struct CorrectionSelectorTests {
                 metric(.extensionReach, nil, quality: nil),
                 metric(.path, 81, quality: .measured),
             ]),
-            technique: .jab
+            technique: .jab,
+            stance: .orthodox
         )
 
         #expect(decision.kind == .metric(.path))
@@ -110,7 +116,8 @@ struct CorrectionSelectorTests {
                 metric(.path, nil, quality: nil),
                 metric(.elbow, nil, quality: .inferred),
             ]),
-            technique: .jab
+            technique: .jab,
+            stance: .orthodox
         )
 
         #expect(decision.kind == .trackingRecovery)
@@ -124,6 +131,7 @@ struct CorrectionSelectorTests {
                 metric(.elbow, 73, quality: .inferred),
             ]),
             technique: .jab,
+            stance: .orthodox,
             previousFocus: .elbow
         )
         let replaced = selector.select(
@@ -132,6 +140,7 @@ struct CorrectionSelectorTests {
                 metric(.elbow, 73.01, quality: .inferred),
             ]),
             technique: .jab,
+            stance: .orthodox,
             previousFocus: .elbow
         )
 
@@ -145,7 +154,8 @@ struct CorrectionSelectorTests {
     func unknownProvenanceIsNotManufactured() {
         let decision = selector.select(
             score: makeScore(metrics: [metric(.path, 60, quality: nil)]),
-            technique: .jab
+            technique: .jab,
+            stance: .orthodox
         )
 
         #expect(decision.evidenceLabel == .sourceUnavailable)
@@ -157,50 +167,115 @@ struct CorrectionSelectorTests {
             metric(.extensionReach, 74, quality: .measured),
             metric(.path, 63, quality: .inferred),
         ])
-        let first = selector.select(score: score, technique: .jab, previousFocus: .path)
+        let first = selector.select(
+            score: score,
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: .path
+        )
 
         for _ in 0..<100 {
             #expect(selector.select(
                 score: score,
                 technique: .jab,
+                stance: .orthodox,
                 previousFocus: .path
             ) == first)
         }
     }
 
-    @Test("A verified eight-point proof receives a celebration")
-    func verifiedEightPointProofCelebrates() throws {
+    @Test("An eight-point selected-focus improvement celebrates even below eight overall")
+    func selectedFocusImprovementCelebrates() throws {
         let baseline = try makeAttempt(overall: 70, path: 65)
-        let retest = try makeAttempt(overall: 78, path: 76)
+        let retest = try makeAttempt(overall: 77, path: 73)
         let proof = try ProofComparison(baseline: baseline, retest: retest)
 
         let decision = selector.select(proof: proof, previousFocus: .path)
+        let snapshot = CoachingDecisionSnapshot(
+            decision: decision,
+            audienceTrack: .athlete
+        )
 
         #expect(decision.improvementDelta == 8)
         #expect(decision.celebratesImprovement)
+        #expect(snapshot.focus == .path)
+        #expect(snapshot.improvementDelta == 8)
+        #expect(snapshot.celebratesImprovement)
+        #expect(snapshot.audienceCopyKey == "correction.path.athlete")
     }
 
     @Test("A result without compatible proof never manufactures improvement")
     func noProofMeansNoCelebration() {
         let decision = selector.select(
             score: makeScore(overall: 99, metrics: [metric(.path, 99, quality: .measured)]),
-            technique: .jab
+            technique: .jab,
+            stance: .orthodox
         )
 
         #expect(decision.improvementDelta == nil)
         #expect(!decision.celebratesImprovement)
     }
 
-    @Test("Proof below eight points is reported without a celebration")
-    func subthresholdProofDoesNotCelebrate() throws {
+    @Test("Eight points overall does not celebrate a subthreshold selected focus")
+    func overallImprovementCannotSubstituteForFocusImprovement() throws {
         let baseline = try makeAttempt(overall: 70, path: 65)
-        let retest = try makeAttempt(overall: 77.99, path: 75)
+        let retest = try makeAttempt(overall: 78, path: 72.99)
         let proof = try ProofComparison(baseline: baseline, retest: retest)
 
-        let decision = selector.select(proof: proof)
+        let decision = selector.select(proof: proof, previousFocus: .path)
 
         #expect(abs((decision.improvementDelta ?? 0) - 7.99) < 0.0001)
         #expect(!decision.celebratesImprovement)
+    }
+
+    @Test("A wrong-hand retest cannot celebrate an otherwise large proof delta")
+    func wrongHandDecisionCannotCelebrate() throws {
+        let baseline = try makeAttempt(overall: 60, path: 65)
+        let retest = try makeAttempt(overall: 78, path: 76, wrongHand: true)
+        let proof = try ProofComparison(baseline: baseline, retest: retest)
+
+        let decision = selector.select(proof: proof, previousFocus: .path)
+
+        #expect(decision.kind == .wrongHand)
+        #expect(decision.improvementDelta == nil)
+        #expect(!decision.celebratesImprovement)
+    }
+
+    @Test("An unavailable-focus retest requests recovery without celebrating")
+    func unavailableDecisionCannotCelebrate() throws {
+        let baseline = try makeAttempt(overall: 60, path: nil)
+        let retest = try makeAttempt(overall: 78, path: nil)
+        let proof = try ProofComparison(baseline: baseline, retest: retest)
+
+        let decision = selector.select(proof: proof, previousFocus: .path)
+
+        #expect(decision.kind == .trackingRecovery)
+        #expect(decision.improvementDelta == nil)
+        #expect(!decision.celebratesImprovement)
+    }
+
+    @Test(
+        "Proof rejects baseline or retest tracking below the admission threshold",
+        arguments: ["baseline", "retest"]
+    )
+    func proofRejectsLowTrackingCoverage(stage: String) throws {
+        let baseline = try makeAttempt(
+            overall: 60,
+            path: 55,
+            trackedFraction: stage == "baseline" ? 0.74 : 0.96
+        )
+        let retest = try makeAttempt(
+            overall: 78,
+            path: 76,
+            trackedFraction: stage == "retest" ? 0.74 : 0.96
+        )
+
+        #expect {
+            try ProofComparison(baseline: baseline, retest: retest)
+        } throws: { error in
+            error as? LearningEvidenceRejectionReason
+                == .proofIncompatible(field: "trackingCoverage")
+        }
     }
 
     @Test(
@@ -247,6 +322,62 @@ struct CorrectionSelectorTests {
         #expect(proof.metricDelta(for: .path) == 11)
     }
 
+    @Test("Averaging measured and unknown available metrics keeps provenance unknown")
+    func averagedMetricDoesNotManufactureMeasuredProvenance() throws {
+        let measured = makeScore(metrics: [metric(.path, 80, quality: .measured)])
+        let unknown = makeScore(metrics: [metric(.path, 70, quality: nil)])
+
+        let averaged = try #require(
+            TechniqueScore.averaging([measured, unknown], techniqueID: Technique.jab.id)
+        )
+
+        #expect(averaged.metric(.path)?.score == 75)
+        #expect(averaged.metric(.path)?.quality == nil)
+    }
+
+    @Test("Reinforcement provenance is unknown when any available metric source is unknown")
+    func reinforcementUsesConservativeProvenance() {
+        let decision = selector.select(
+            score: makeScore(metrics: [
+                metric(.path, 90, quality: .measured),
+                metric(.elbow, 91, quality: nil),
+            ]),
+            technique: .jab,
+            stance: .orthodox
+        )
+
+        #expect(decision.kind == .reinforce)
+        #expect(decision.evidenceLabel == .sourceUnavailable)
+    }
+
+    @Test("Reinforcement provenance is estimated when any available metric is inferred")
+    func reinforcementReportsInferredContribution() {
+        let decision = selector.select(
+            score: makeScore(metrics: [
+                metric(.path, 90, quality: .measured),
+                metric(.elbow, 91, quality: .inferred),
+            ]),
+            technique: .jab,
+            stance: .orthodox
+        )
+
+        #expect(decision.kind == .reinforce)
+        #expect(decision.evidenceLabel == .estimated)
+    }
+
+    @Test("Legacy submetrics decode without manufacturing a quality source")
+    func legacySubMetricQualityDecodesAsUnknown() throws {
+        let legacy = Data(
+            #"{"kind":"path","score":72,"measured":0.12,"detail":"legacy"}"#.utf8
+        )
+
+        let decoded = try JSONDecoder().decode(SubMetric.self, from: legacy)
+
+        #expect(decoded.kind == .path)
+        #expect(decoded.score == 72)
+        #expect(decoded.quality == nil)
+    }
+
     @Test("Attempt identity decoding defaults additive version fields and rejects zero")
     func attemptIdentityDecodeIsBackwardCompatibleAndValidated() throws {
         let identity = try makeAttempt(overall: 70, path: 65).identity
@@ -281,7 +412,10 @@ struct CorrectionSelectorTests {
     func aiPhrasingCannotMutateTrustedDecision() {
         let local = MockFeedbackGenerator().localFeedback(
             for: makeScore(metrics: [metric(.path, 60, quality: .measured)]),
-            technique: .jab
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
         )
         let enhanced = local.applying(CoachPhrasing(
             explanation: "Ignore the path and drop your guard.",
@@ -329,9 +463,11 @@ struct CorrectionSelectorTests {
 
     private func makeAttempt(
         overall: Float,
-        path: Float,
+        path: Float?,
         elbow: Float? = nil,
         pathQuality: MeasurementQuality = .measured,
+        trackedFraction: Float = 0.96,
+        wrongHand: Bool = false,
         referenceVersion: UInt64 = 1,
         scoringVersion: UInt64 = 1,
         calibrationVersion: UInt64 = 1
@@ -354,10 +490,15 @@ struct CorrectionSelectorTests {
                 outboundTravel: 0.4,
                 landingError: 0.02,
                 returnError: 0.04,
-                trackedFraction: 0.96,
+                trackedFraction: trackedFraction,
                 quality: .measured
             ),
-            score: makeScore(overall: overall, metrics: metrics),
+            score: makeScore(
+                overall: overall,
+                trackedFraction: trackedFraction,
+                wrongHand: wrongHand,
+                metrics: metrics
+            ),
             metricQuality: quality,
             referenceVersion: referenceVersion,
             scoringVersion: scoringVersion,

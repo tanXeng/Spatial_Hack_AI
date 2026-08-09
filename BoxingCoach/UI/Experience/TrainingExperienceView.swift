@@ -218,7 +218,7 @@ struct TrainingExperienceView: View {
 
             LabeledMetricRow(
                 title: "Overall",
-                value: "\(Int(score.overall.rounded())) · \(score.grade)"
+                value: auraOverallDisplay(score)
             )
 
             if score.wrongHand {
@@ -232,7 +232,7 @@ struct TrainingExperienceView: View {
             ForEach(score.metrics) { metric in
                 LabeledMetricRow(
                     title: metric.kind.title,
-                    value: metric.score.map { "\(Int($0.rounded()))" } ?? "Not tracked"
+                    value: auraMetricDisplay(metric.score)
                 )
             }
         }
@@ -263,6 +263,15 @@ struct TrainingExperienceView: View {
                 .font(.footnote)
                 .foregroundStyle(.secondary)
 
+            Text("Why it matters")
+                .font(.caption.weight(.semibold))
+            Text(feedback.whyItMatters)
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Text("Evidence: \(feedback.decision.evidenceLabel.rawValue)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+
             if let explanation = feedback.supplementalExplanation,
                let supplementalEncouragement = feedback.supplementalEncouragement {
                 Divider()
@@ -279,5 +288,19 @@ struct TrainingExperienceView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func auraOverallDisplay(_ score: TechniqueScore) -> String {
+        guard score.overall.isFinite, (0...100).contains(score.overall) else {
+            return "Not scored"
+        }
+        return "\(Int(score.overall.rounded())) · \(score.grade)"
+    }
+
+    private func auraMetricDisplay(_ value: Float?) -> String {
+        guard let value, value.isFinite, (0...100).contains(value) else {
+            return "Not tracked"
+        }
+        return "\(Int(value.rounded()))"
     }
 }

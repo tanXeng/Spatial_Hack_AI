@@ -1,7 +1,8 @@
 import Foundation
 
-nonisolated enum CoachLearnerLevel: String, Codable, Sendable {
+nonisolated enum CoachLearnerLevel: String, Codable, Sendable, Equatable {
     case beginner
+    case athlete
 }
 
 nonisolated enum CoachScoreBand: String, Codable, Sendable {

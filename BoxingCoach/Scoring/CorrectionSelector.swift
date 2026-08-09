@@ -9,7 +9,7 @@ nonisolated enum CorrectionSelectionKind: Sendable, Equatable {
 }
 
 /// Honest source copy shown beside the selected correction.
-nonisolated enum CorrectionEvidenceLabel: String, Sendable, Equatable {
+nonisolated enum CorrectionEvidenceLabel: String, Sendable, Equatable, Codable {
     case measured = "Measured"
     case estimated = "Estimated"
     case sourceUnavailable = "Source unavailable"
@@ -26,6 +26,7 @@ nonisolated struct CorrectionDecision: Sendable, Equatable {
     let evidenceLabel: CorrectionEvidenceLabel
     let beginnerPhrasingKey: String
     let athletePhrasingKey: String
+    let focus: SubMetricKind?
     let retainedPreviousFocus: Bool
     let improvementDelta: Float?
     let celebratesImprovement: Bool
@@ -47,14 +48,16 @@ nonisolated struct CorrectionSelector: Sendable {
     nonisolated func select(
         score: TechniqueScore,
         technique: Technique,
+        stance: Stance,
         previousFocus: SubMetricKind? = nil
     ) -> CorrectionDecision {
         select(
             score: score,
             technique: technique,
+            stance: stance,
             qualityOverrides: [:],
             previousFocus: previousFocus,
-            improvementDelta: nil
+            proof: nil
         )
     }
 
@@ -69,18 +72,20 @@ nonisolated struct CorrectionSelector: Sendable {
         return select(
             score: proof.retest.score,
             technique: proof.retest.technique,
+            stance: proof.retest.stance,
             qualityOverrides: quality,
             previousFocus: previousFocus,
-            improvementDelta: proof.overallDelta
+            proof: proof
         )
     }
 
     nonisolated private func select(
         score: TechniqueScore,
         technique: Technique,
+        stance: Stance,
         qualityOverrides: [SubMetricKind: MeasurementQuality],
         previousFocus: SubMetricKind?,
-        improvementDelta: Float?
+        proof: ProofComparison?
     ) -> CorrectionDecision {
         let available = score.metrics.filter { metric in
             guard let value = metric.score else { return false }
@@ -103,10 +108,11 @@ nonisolated struct CorrectionSelector: Sendable {
                 for: .trackingRecovery,
                 score: score,
                 technique: technique,
+                stance: stance,
                 metric: nil,
                 quality: nil,
                 retainedPreviousFocus: false,
-                improvementDelta: improvementDelta
+                improvementDelta: nil
             )
         }
 
@@ -115,10 +121,11 @@ nonisolated struct CorrectionSelector: Sendable {
                 for: .wrongHand,
                 score: score,
                 technique: technique,
+                stance: stance,
                 metric: nil,
                 quality: .measured,
                 retainedPreviousFocus: false,
-                improvementDelta: improvementDelta
+                improvementDelta: nil
             )
         }
 
@@ -133,10 +140,11 @@ nonisolated struct CorrectionSelector: Sendable {
                 for: .trackingRecovery,
                 score: score,
                 technique: technique,
+                stance: stance,
                 metric: nil,
                 quality: nil,
                 retainedPreviousFocus: false,
-                improvementDelta: improvementDelta
+                improvementDelta: nil
             )
         }
 
@@ -158,10 +166,13 @@ nonisolated struct CorrectionSelector: Sendable {
                 for: .reinforce,
                 score: score,
                 technique: technique,
+                stance: stance,
                 metric: nil,
-                quality: nil,
+                quality: MeasurementQuality.conservativeAggregation(
+                    available.map { qualityOverrides[$0.kind] ?? $0.quality }
+                ),
                 retainedPreviousFocus: false,
-                improvementDelta: improvementDelta
+                improvementDelta: nil
             )
         }
 
@@ -169,10 +180,11 @@ nonisolated struct CorrectionSelector: Sendable {
             for: .metric(selected.kind),
             score: score,
             technique: technique,
+            stance: stance,
             metric: selected.kind,
             quality: qualityOverrides[selected.kind] ?? selected.quality,
             retainedPreviousFocus: retainedMetric != nil,
-            improvementDelta: improvementDelta
+            improvementDelta: proof?.metricDelta(for: selected.kind)
         )
     }
 
@@ -180,6 +192,7 @@ nonisolated struct CorrectionSelector: Sendable {
         for kind: CorrectionSelectionKind,
         score: TechniqueScore,
         technique: Technique,
+        stance: Stance,
         metric: SubMetricKind?,
         quality: MeasurementQuality?,
         retainedPreviousFocus: Bool,
@@ -189,7 +202,7 @@ nonisolated struct CorrectionSelector: Sendable {
             for: kind,
             score: score,
             technique: technique,
-            metric: metric
+            stance: stance
         )
         let evidenceLabel: CorrectionEvidenceLabel
         switch kind {
@@ -204,9 +217,19 @@ nonisolated struct CorrectionSelector: Sendable {
             case nil: evidenceLabel = .sourceUnavailable
             }
         case .reinforce:
-            evidenceLabel = .measured
+            switch quality {
+            case .measured: evidenceLabel = .measured
+            case .inferred: evidenceLabel = .estimated
+            case nil: evidenceLabel = .sourceUnavailable
+            }
         }
-        let celebrates = improvementDelta.map {
+        let validImprovementDelta: Float?
+        if case .metric = kind, improvementDelta?.isFinite == true {
+            validImprovementDelta = improvementDelta
+        } else {
+            validImprovementDelta = nil
+        }
+        let celebrates = validImprovementDelta.map {
             $0.isFinite && $0 >= Self.celebrationThreshold
         } ?? false
 
@@ -219,8 +242,9 @@ nonisolated struct CorrectionSelector: Sendable {
             evidenceLabel: evidenceLabel,
             beginnerPhrasingKey: catalog.beginnerKey,
             athletePhrasingKey: catalog.athleteKey,
+            focus: metric,
             retainedPreviousFocus: retainedPreviousFocus,
-            improvementDelta: improvementDelta,
+            improvementDelta: validImprovementDelta,
             celebratesImprovement: celebrates
         )
     }
@@ -229,7 +253,7 @@ nonisolated struct CorrectionSelector: Sendable {
         for kind: CorrectionSelectionKind,
         score: TechniqueScore,
         technique: Technique,
-        metric: SubMetricKind?
+        stance: Stance
     ) -> CatalogEntry {
         switch kind {
         case .trackingRecovery:
@@ -243,7 +267,7 @@ nonisolated struct CorrectionSelector: Sendable {
             )
         case .wrongHand:
             let requirement = score.requiredHandName.isEmpty
-                ? technique.hand.requirementDescription(for: .orthodox)
+                ? technique.hand.requirementDescription(for: stance)
                 : score.requiredHandName
             return CatalogEntry(
                 code: .wrongHand,

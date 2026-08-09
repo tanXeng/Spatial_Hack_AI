@@ -132,6 +132,7 @@ final class AuraPunchSession {
     ]
     private let scorer = TechniqueScorer()
     private let feedbackGenerator: FeedbackGenerating
+    private let audienceTrack: CoachLearnerLevel
     private let coachAudio: any CoachAudioPlaying
     private let targets = TargetController()
 
@@ -144,6 +145,8 @@ final class AuraPunchSession {
     private var phrasingTask: Task<Void, Never>?
     /// Monotonic local token. It never crosses the relay boundary.
     private var feedbackGeneration: UInt64 = 0
+    /// The last actionable metric focus in this training session.
+    private var previousCorrectionFocus: SubMetricKind?
 
     /// Reused briefly when head tracking flickers mid-attempt so hand samples are not discarded.
     private var cachedBodyFrame: BodyFrame?
@@ -157,10 +160,12 @@ final class AuraPunchSession {
     init(
         hands: HandTrackingService,
         feedbackGenerator: FeedbackGenerating = MockFeedbackGenerator(),
+        audienceTrack: CoachLearnerLevel,
         coachAudio: (any CoachAudioPlaying)? = nil
     ) {
         self.hands = hands
         self.feedbackGenerator = feedbackGenerator
+        self.audienceTrack = audienceTrack
         self.coachAudio = coachAudio ?? CoachAudioPlayer()
     }
 
@@ -252,6 +257,7 @@ final class AuraPunchSession {
         phase = .idle
         score = nil
         feedback = nil
+        previousCorrectionFocus = nil
         errorMessage = nil
         statusMessage = "Ready"
     }
@@ -974,25 +980,42 @@ final class AuraPunchSession {
         statusMessage = "Scoring…"
 
         let resultTechnique = technique
+        let resultStance = stance
         let localFeedback = feedbackGenerator.localFeedback(
             for: aggregated,
-            technique: resultTechnique
+            technique: resultTechnique,
+            stance: resultStance,
+            previousFocus: previousCorrectionFocus,
+            audienceTrack: audienceTrack
         )
         score = aggregated
         feedback = localFeedback
 
-        coachAudio.play(id: aggregated.overall >= 74 ? .resultsGood : .resultsNeedsWork)
+        if let focus = localFeedback.decision.focus {
+            previousCorrectionFocus = focus
+        } else if localFeedback.correctionCode == .repeatShape {
+            previousCorrectionFocus = nil
+        }
+
+        if localFeedback.correctionCode != .trackingRecovery {
+            coachAudio.play(id: aggregated.overall >= 74 ? .resultsGood : .resultsNeedsWork)
+        }
         phase = .results
         statusMessage = aggregated.wrongHand
             ? "Round complete — that was your \(aggregated.thrownHandName) hand"
             : "Round complete"
+
+        guard localFeedback.correctionCode != .trackingRecovery else {
+            return Task {}
+        }
 
         let generation = feedbackGeneration
         let generator = feedbackGenerator
         let task = Task { [weak self, generator, resultTechnique, aggregated, localFeedback] in
             let phrasing = await generator.phrasing(
                 for: aggregated,
-                technique: resultTechnique
+                technique: resultTechnique,
+                decision: localFeedback.decision
             )
 
             guard let self else { return }

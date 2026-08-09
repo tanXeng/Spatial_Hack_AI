@@ -78,6 +78,18 @@ nonisolated struct SubMetric: Sendable, Identifiable, Codable {
     var isAvailable: Bool { score != nil }
 }
 
+nonisolated extension MeasurementQuality {
+    /// Aggregates provenance without upgrading any contributing available metric.
+    static func conservativeAggregation(
+        _ qualities: [MeasurementQuality?]
+    ) -> MeasurementQuality? {
+        guard !qualities.isEmpty, !qualities.contains(where: { $0 == nil }) else {
+            return nil
+        }
+        return qualities.contains(.inferred) ? .inferred : .measured
+    }
+}
+
 /// The complete, deterministic grade for one attempt.
 ///
 /// Everything here is computed from geometry. The LLM never touches these numbers — it only
@@ -143,14 +155,17 @@ nonisolated struct TechniqueScore: Sendable {
 
         var averagedMetrics: [SubMetric] = []
         for kind in SubMetricKind.allCases where kind != .guardHand {
-            let available = scores.compactMap { $0.metric(kind)?.score }
-            guard !available.isEmpty else { continue }
+            let contributors = scores.compactMap { score -> SubMetric? in
+                guard let metric = score.metric(kind), metric.score != nil else { return nil }
+                return metric
+            }
+            guard !contributors.isEmpty else { continue }
+            let available = contributors.compactMap(\.score)
             let meanScore = available.reduce(0, +) / Float(available.count)
-            let template = scores.compactMap { $0.metric(kind) }.first
-            let qualities = scores.compactMap { $0.metric(kind)?.quality }
-            let quality: MeasurementQuality? = qualities.contains(.inferred)
-                ? .inferred
-                : (qualities.isEmpty ? nil : .measured)
+            let template = contributors.first
+            let quality = MeasurementQuality.conservativeAggregation(
+                contributors.map(\.quality)
+            )
             averagedMetrics.append(
                 SubMetric(
                     kind: kind,

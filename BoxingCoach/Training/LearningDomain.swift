@@ -302,6 +302,16 @@ nonisolated struct ProofComparison: Sendable {
         baseline: TechniqueAttemptEvidence,
         retest: TechniqueAttemptEvidence
     ) throws {
+        let minimumTrackedFraction = CorrectionSelector.minimumTrackedFraction
+        guard baseline.punch.trackedFraction >= minimumTrackedFraction,
+              baseline.score.trackedFraction >= minimumTrackedFraction,
+              retest.punch.trackedFraction >= minimumTrackedFraction,
+              retest.score.trackedFraction >= minimumTrackedFraction
+        else {
+            throw LearningEvidenceRejectionReason.proofIncompatible(
+                field: "trackingCoverage"
+            )
+        }
         guard baseline.technique == retest.technique,
               baseline.stance == retest.stance,
               baseline.side == retest.side

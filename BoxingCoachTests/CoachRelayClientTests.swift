@@ -25,8 +25,20 @@ struct CoachRelayClientTests {
             requiredHandName: "left hand"
         )
 
-        let first = await generator.feedback(for: score, technique: .jab)
-        let second = await generator.feedback(for: score, technique: .jab)
+        let first = await generator.feedback(
+            for: score,
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
+        let second = await generator.feedback(
+            for: score,
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
 
         #expect(first.isOffline)
         #expect(first == second)
@@ -60,8 +72,20 @@ struct CoachRelayClientTests {
             requiredHandName: "left hand"
         )
 
-        let local = generator.localFeedback(for: score, technique: .jab)
-        let feedback = await generator.feedback(for: score, technique: .jab)
+        let local = generator.localFeedback(
+            for: score,
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
+        let feedback = await generator.feedback(
+            for: score,
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
 
         #expect(feedback.isOffline == false)
         #expect(feedback.headline == local.headline)

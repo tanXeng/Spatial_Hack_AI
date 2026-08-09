@@ -49,32 +49,12 @@ flipping. Reflection is a negative X scale on the container, never on the loaded
 `CoachCharacterEntity` **fails soft everywhere**. Missing asset, missing clip, or no body frame all
 skip the demo and fall through to the ghost unchanged. A missing model must never cost a demo.
 
-#### Asset pipeline — read before regenerating
+#### Asset pipeline
 
-Sources live in `Art/` as Tripo FBX exports: one file per animation, with the skinned mesh embedded
-**only** in `Left_hand_jab.fbx`. All five share an identical 65-bone Mixamo skeleton rooted at a
-single `mixamorig10:Hips`, which is why the actions are interchangeable. `Art/build_coach.py` is the
-Blender script that converts them:
-
-```sh
-/Applications/Blender.app/Contents/MacOS/Blender --background --factory-startup \
-  --python Art/build_coach.py
-```
-
-Three things it works around, each of which cost a debugging cycle:
-
-- **Every clip file must carry the skinned mesh.** RealityKit only surfaces `availableAnimations`
-  for a skeleton that actually drives geometry. A skeleton-plus-`SkelAnimation` file loads with no
-  error and exposes *nothing*. Materials are dropped from the clip files instead, so they cost
-  ~3 MB each rather than 17 MB — they exist only to hand their animation to the base model and are
-  never rendered.
-- **Blender emits `SkelBindingAPI` under a plain `Xform`**, which `usdchecker` rejects and which can
-  make skeletal animation silently not bind. Only files that contain a mesh get a proper `SkelRoot`.
-- **Textures are capped at 2048** via `usdz_downscale_size`. Tripo shipped seven 4096×4096 maps;
-  uncompressed that is roughly half a gigabyte of VRAM.
-
-Run `usdchecker` on the output — filtering the `RegisterBehaviorForPrimTypeId` noise, which is
-plugin chatter, not an asset problem — and expect `Success!` on all five.
+Sources are Tripo FBX exports in `Art/` (gitignored); `Art/build_coach.py` converts them to the
+USDZ in `Resources/Coach/`. **Invoke the `coach-assets` skill before regenerating them** — the
+conversion works around three non-obvious RealityKit/Blender constraints that are easy to undo
+by accident.
 
 `CoachCharacterEntityTests` loads every asset through RealityKit in the simulator and asserts the
 clips bind. That test is the only thing that catches a rig which imports cleanly and refuses to
@@ -146,13 +126,10 @@ Still unbuilt: **home** and **settings**.
 
 ## Tech Stack
 
-- **UI:** SwiftUI for 2D windows.
-- **Spatial content:** RealityKit + Reality Composer Pro for the arm silhouette entity.
-- **Session:** visionOS `ImmersiveSpace` in **mixed immersion** — the user must see their real room and their real arms for the overlay to make sense. Do not use full immersion for Aura Punch.
-- **Tracking:** ARKit `HandTrackingProvider` for hand/wrist joints, plus `WorldTrackingProvider` for the device (head) anchor used as torso reference.
-- **AI/scoring:** motion comparison against a reference trajectory (see below), with an LLM used to turn numeric scoring output into natural-language coaching feedback.
+Constraints the imports don't tell you:
 
-`Info.plist` **must** carry `NSHandsTrackingUsageDescription`. Without it `session.requestAuthorization(for: [.handTracking])` never returns `.allowed` and every drill dies at "Hand tracking permission denied" — with no build error to warn you.
+- **Mixed immersion only.** The user must see their real room and their real arms for the overlay to make sense. Do not use full immersion for Aura Punch.
+- `Info.plist` **must** carry `NSHandsTrackingUsageDescription`. Without it `session.requestAuthorization(for: [.handTracking])` never returns `.allowed` and every drill dies at "Hand tracking permission denied" — with no build error to warn you.
 
 ## ⚠️ Key Technical Constraint — read before designing the silhouette
 
@@ -214,52 +191,6 @@ Most punches peak at maximum radial shoulder-to-fist distance. An uppercut does 
 
 The same asymmetry drives `ReferencePunch.peakSample` / `peakTime` / `shouldEmphasize(_:)`. Treating radial distance as the uppercut's peak made the guide hold at the hip and play the actual strike during "bring it back."
 
-## Project Structure (as built)
-
-```
-BoxingCoach/
-  BoxingCoachApp.swift             # BoxingCoachSceneID; single-instance Window + ImmersiveSpace
-  AuraPunchSession.swift           # Guided follow-along → attempt → score → feedback
-  ReactiveStrikeSession.swift      # Target drills; owns HandTrackingService + AuraPunchSession
-  HandTrackingService.swift        # ARKit wrapper; fresh session/providers per start
-  Combination.swift                # PunchType (1–6), Combination catalogue, CombinationTarget
-  CombinationPunchValidator.swift  # Pure per-target punch validation state machine
-  TargetController.swift  ReachProfile.swift  DrillMetrics.swift
-  Models/
-    Technique.swift                # Data-driven technique list + PunchHand
-    BodyMeasurements.swift         # Proportions + Stance, BodySide
-    BodyCalibration.swift          # One measured body per launch, shared by every feature
-  Spatial/
-    ArmSilhouetteEntity.swift      # RealityKit ghost arms
-    ArmPoseSolver.swift            # head + wrist + measurements -> shoulder/elbow/fist
-    CoachCharacterEntity.swift     # Rigged coach; named clips, mirroring, fails soft
-  Resources/Coach/                 # coach.usdz (mesh + idle) + 4 clip assets, ~30 MB
-  Scoring/
-    MotionRecorder.swift           # RecordedAttempt + PunchExtensionSemantics
-    DTWComparator.swift  TechniqueScore.swift  FeedbackGenerator.swift
-    GuardCoach.swift               # Live guard coaching (not scored)
-  Resources/
-    ReferencePunchLibrary.swift    # Hand-authored trajectories + JSON drop-in seam
-  UI/
-    Flow/
-      BoxingCoachRootView.swift    # Window composition root; routes -> views
-      TrainingFlowCoordinator.swift # Routes + serialized immersive transitions
-    Selection/
-      TrainingSelectionViews.swift # Feature, Reactive, Combination, Aura, Unavailable
-    Experience/
-      TrainingExperienceView.swift    # Ready / running / results
-      BoxingCoachImmersiveView.swift  # RealityView root; reports readiness to the coordinator
-      ImmersiveInstructionBanner.swift
-    Shared/
-      TrainingComponents.swift     # TrainingDetailScaffold, status/error cards, meters
-
-BoxingCoachTests/
-  BoxingCoachBaselineTests.swift  CombinationPunchValidatorTests.swift
-  ReachProfileTests.swift  TrainingFlowCoordinatorTests.swift
-```
-
-There is no `Feature.swift` — the feature list is the `TrainingFeature` enum in `TrainingFlowCoordinator.swift`.
-
 ## Building
 
 `xcode-select` points at CommandLineTools, so a bare `xcodebuild` fails. Override `DEVELOPER_DIR`:
@@ -289,7 +220,7 @@ Both targets use `PBXFileSystemSynchronizedRootGroup`, so **new files under `Box
 - Swift + SwiftUI + RealityKit idioms.
 - `@Observable` throughout, not legacy `ObservableObject`.
 - The project sets `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. Pure data/math types that must be readable from off-main code need an explicit `nonisolated` — see `PunchType`, `Stance`, `BodySide`, `Technique`, `CombinationPunchValidator`.
-- **Features and techniques are data, not screens.** Adding a technique or a combination should be a data change, not a new view.
+- **Features and techniques are data, not screens.** Adding a technique or a combination should be a data change, not a new view. There is no `Feature.swift` — the feature list is the `TrainingFeature` enum in `TrainingFlowCoordinator.swift`.
 - **Anthropometry is a stub.** `BodyMeasurements` has default values and the flow routes through `UnavailableFeatureView` — no measurement capture logic.
 - Anything network/LLM-backed sits behind `FeedbackGenerating` with a mock implementation, so UI work isn't blocked and the demo has a fallback if conference wifi fails.
 - Comment the IK and coordinate-space math heavily. Coordinate frames (world vs. head-relative vs. body-relative) are where this project is most likely to break, and teammates read this code cold.

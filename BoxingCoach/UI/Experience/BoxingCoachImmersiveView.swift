@@ -2,6 +2,16 @@ import Accessibility
 import RealityKit
 import SwiftUI
 
+nonisolated struct ImmersiveAudioControlVisibility: Equatable, Sendable {
+    let showsPushToTalk: Bool
+    let showsRecoveryAction: Bool
+
+    init(allowsVoiceCoaching: Bool, requiresExplicitRecovery: Bool) {
+        showsPushToTalk = allowsVoiceCoaching && !requiresExplicitRecovery
+        showsRecoveryAction = requiresExplicitRecovery
+    }
+}
+
 /// Mixed immersive scene hosting spatial targets and Aura Punch silhouettes.
 /// It owns the in-training stop control and restores the window before immersion closes.
 struct BoxingCoachImmersiveView: View {
@@ -60,18 +70,26 @@ struct BoxingCoachImmersiveView: View {
             }
 
             Attachment(id: voiceCoachAttachmentID) {
-                if showsVoiceCoach {
+                if audioControlVisibility.showsPushToTalk
+                    || audioControlVisibility.showsRecoveryAction {
                     VStack(spacing: 8) {
-                        CoachPushToTalkButton(
-                            isListening: session.voiceCoach.isListening,
-                            isCaptureReady: session.voiceCoach.isCaptureReady,
-                            isRouting: session.voiceCoach.isRouting,
-                            isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
-                            isDisabled: flow.controlsDisabled,
-                            style: .compactSpatial,
-                            onPress: { session.voiceCoach.beginPushToTalk() },
-                            onRelease: { session.voiceCoach.endPushToTalk() }
-                        )
+                        if audioControlVisibility.showsPushToTalk {
+                            CoachPushToTalkButton(
+                                isListening: session.voiceCoach.isListening,
+                                isCaptureReady: session.voiceCoach.isCaptureReady,
+                                isRouting: session.voiceCoach.isRouting,
+                                isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
+                                isDisabled: flow.controlsDisabled,
+                                style: .compactSpatial,
+                                onPress: { session.voiceCoach.beginPushToTalk() },
+                                onRelease: { session.voiceCoach.endPushToTalk() }
+                            )
+                        }
+                        if audioControlVisibility.showsRecoveryAction {
+                            TrainingAudioRecoveryButton {
+                                session.resumeAudio()
+                            }
+                        }
                         if let caption = session.audioCoordinator.presentation.caption {
                             Text(caption)
                                 .font(.caption)
@@ -164,6 +182,13 @@ struct BoxingCoachImmersiveView: View {
         default:
             return false
         }
+    }
+
+    private var audioControlVisibility: ImmersiveAudioControlVisibility {
+        ImmersiveAudioControlVisibility(
+            allowsVoiceCoaching: showsVoiceCoach,
+            requiresExplicitRecovery: session.audioCoordinator.presentation.requiresExplicitRecovery
+        )
     }
 
     private func refreshVoiceCoachContext() {

@@ -17,7 +17,7 @@ struct TrainingAudioCoordinatorTests {
         ])
         let coordinator = makeCoordinator(backend: backend, resources: resources)
 
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         await coordinator.handle(.experienceDidEnter(.learn))
         #expect(await coordinator.handle(.coachCue(.init(
             kind: .result,
@@ -71,7 +71,7 @@ struct TrainingAudioCoordinatorTests {
             backend: backend,
             resources: StubTrainingAudioResources()
         )
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         await coordinator.handle(.experienceDidEnter(testCase.stage))
 
@@ -90,7 +90,7 @@ struct TrainingAudioCoordinatorTests {
             waiter: ImmediateTrainingAudioWaiter(journal: journal)
         )
 
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         await coordinator.handle(.experienceDidEnter(.compete))
         await coordinator.handle(.trackingDidPause(.handsUnavailable))
         await coordinator.handle(.trackingDidResume)
@@ -118,7 +118,7 @@ struct TrainingAudioCoordinatorTests {
             resources: resources,
             waiter: ImmediateTrainingAudioWaiter(journal: journal)
         )
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         await coordinator.handle(.coachCue(.init(
             kind: .phaseInstruction,
             clip: .guardUp,
@@ -165,7 +165,7 @@ struct TrainingAudioCoordinatorTests {
         let backend = RecordingTrainingAudioBackend()
         let resources = StubTrainingAudioResources(available: [.coach(.qaWhatFix)])
         let coordinator = makeCoordinator(backend: backend, resources: resources)
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         #expect(await coordinator.handle(.voiceCaptureDidBegin) == .captureReady)
         #expect(await coordinator.handle(.coachCue(.init(
             kind: .voiceResponse,
@@ -197,7 +197,7 @@ struct TrainingAudioCoordinatorTests {
             resources: resources,
             waiter: waiter
         )
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         let captureTask = Task { @MainActor in
             await coordinator.handle(.voiceCaptureDidBegin)
@@ -230,7 +230,7 @@ struct TrainingAudioCoordinatorTests {
             resources: StubTrainingAudioResources(),
             waiter: waiter
         )
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         let first = Task { @MainActor in
             await coordinator.handle(.voiceCaptureDidBegin)
@@ -263,7 +263,7 @@ struct TrainingAudioCoordinatorTests {
             resources: StubTrainingAudioResources(),
             waiter: waiter
         )
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         let preparation = Task { @MainActor in
             await coordinator.handle(.voiceCaptureDidBegin)
@@ -288,7 +288,7 @@ struct TrainingAudioCoordinatorTests {
             resources: resources,
             waiter: waiter
         )
-        await preparingCoordinator.handle(.sceneDidAttach)
+        await preparingCoordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         let preparation = Task { @MainActor in
             await preparingCoordinator.handle(.voiceCaptureDidBegin)
@@ -313,7 +313,7 @@ struct TrainingAudioCoordinatorTests {
             backend: capturingBackend,
             resources: resources
         )
-        await capturingCoordinator.handle(.sceneDidAttach)
+        await capturingCoordinator.handle(.sceneDidAttach(.immersiveSpace))
         #expect(await capturingCoordinator.handle(.voiceCaptureDidBegin) == .captureReady)
 
         let capturingSafety = await capturingCoordinator.handle(.coachCue(.init(
@@ -339,7 +339,7 @@ struct TrainingAudioCoordinatorTests {
             .trackingLost
         ])
         let coordinator = makeCoordinator(backend: backend, resources: resources)
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         await coordinator.handle(.trackingDidPause(.handsUnavailable))
         let trackingCaption = coordinator.presentation.caption
 
@@ -388,7 +388,7 @@ struct TrainingAudioCoordinatorTests {
             .coach(.guardUp)
         ])
         let coordinator = makeCoordinator(backend: backend, resources: resources)
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         await coordinator.handle(.trackingDidPause(.handsUnavailable))
         await coordinator.handle(.trackingDidResume)
         let safetyCaption = coordinator.presentation.caption
@@ -429,7 +429,7 @@ struct TrainingAudioCoordinatorTests {
             .cleanImpact1
         ])
         let coordinator = makeCoordinator(backend: backend, resources: resources)
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         await coordinator.handle(.experienceDidEnter(.compete))
         await coordinator.handle(.validatedImpact(position: .init(0.1, 1.2, -0.6), quality: .clean))
 
@@ -454,7 +454,7 @@ struct TrainingAudioCoordinatorTests {
         let backend = RecordingTrainingAudioBackend()
         let resources = StubTrainingAudioResources(available: [.gymAmbience, .competitionCrowd])
         let coordinator = makeCoordinator(backend: backend, resources: resources)
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         await coordinator.handle(.experienceDidEnter(.compete))
         let playsBeforeInterruption = backend.playedResources.count
 
@@ -481,7 +481,7 @@ struct TrainingAudioCoordinatorTests {
             backend: backend,
             resources: StubTrainingAudioResources(available: [.gymAmbience])
         )
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         let initialGeneration = coordinator.generation
 
         await coordinator.handle(.audioSystemEvent(.routeChanged))
@@ -501,12 +501,38 @@ struct TrainingAudioCoordinatorTests {
         #expect(backend.commands.contains(.mediaServicesWereReset))
     }
 
+    @Test("Explicit recovery remains available when competition hides voice coaching")
+    func competitionKeepsAudioRecoveryDiscoverableWithoutRankedCoaching() {
+        let backend = RecordingTrainingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: StubTrainingAudioResources()
+        )
+        let session = ReactiveStrikeSession(
+            feedbackGenerator: MockFeedbackGenerator(),
+            audioCoordinator: coordinator
+        )
+        session.controlWindowDidOpen()
+        coordinator.handleImmediately(.audioSystemEvent(.routeChanged))
+
+        let visibility = ImmersiveAudioControlVisibility(
+            allowsVoiceCoaching: false,
+            requiresExplicitRecovery: coordinator.presentation.requiresExplicitRecovery
+        )
+
+        #expect(visibility.showsRecoveryAction)
+        #expect(visibility.showsPushToTalk == false)
+        #expect(session.resumeAudio() == .handled)
+        #expect(coordinator.presentation.requiresExplicitRecovery == false)
+        #expect(backend.commands.contains(.recoverPlaybackSession))
+    }
+
     @Test("Missing resources preserve captions and state before lookup")
     func missingResourcesKeepVisibleEquivalent() async {
         let backend = RecordingTrainingAudioBackend()
         let resources = StubTrainingAudioResources()
         let coordinator = makeCoordinator(backend: backend, resources: resources)
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         resources.onResolve = { _ in
             #expect(coordinator.presentation.caption == "Visual coaching remains available.")
         }
@@ -538,14 +564,54 @@ struct TrainingAudioCoordinatorTests {
         let backend = RecordingTrainingAudioBackend()
         let coordinator = makeCoordinator(backend: backend, resources: StubTrainingAudioResources())
 
-        await coordinator.handle(.sceneDidAttach)
-        await coordinator.handle(.sceneDidAttach)
-        await coordinator.handle(.sceneDidDetach)
-        await coordinator.handle(.sceneDidDetach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
+        await coordinator.handle(.sceneDidDetach(.immersiveSpace))
+        await coordinator.handle(.sceneDidDetach(.immersiveSpace))
 
         #expect(backend.commands.filter { $0 == .attachScene }.count == 1)
         #expect(backend.commands.filter { $0 == .detachScene }.count == 1)
         #expect(coordinator.presentation.status == .detached)
+    }
+
+    @Test("Window voice remains available while audio ownership hands off to immersion")
+    func windowAndImmersiveScenesHoldIndependentAudioLeases() async {
+        let backend = RecordingTrainingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: StubTrainingAudioResources()
+        )
+        let speechClient = RecordingSpeechRecognitionClient()
+        let session = ReactiveStrikeSession(
+            feedbackGenerator: MockFeedbackGenerator(),
+            audioCoordinator: coordinator,
+            speechClient: speechClient
+        )
+
+        session.controlWindowDidOpen()
+        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .captureReady)
+        #expect(await coordinator.handle(.voiceCaptureDidEnd) == .handled)
+
+        session.immersiveSpaceDidOpen()
+        session.controlWindowDidClose()
+        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .captureReady)
+        #expect(await coordinator.handle(.voiceCaptureDidEnd) == .handled)
+
+        session.controlWindowDidOpen()
+        session.voiceCoach.beginPushToTalk()
+        await speechClient.waitForStartCount(1)
+        session.immersiveSpaceDidClose()
+
+        #expect(session.voiceCoach.isListening)
+        #expect(session.voiceCoach.isCaptureReady)
+        #expect(speechClient.isRecording)
+        session.controlWindowDidClose()
+
+        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .ignoredWhileDetached)
+        #expect(session.voiceCoach.isListening == false)
+        #expect(speechClient.isRecording == false)
+        #expect(backend.commands.filter { $0 == .attachScene }.count == 1)
+        #expect(backend.commands.filter { $0 == .detachScene }.count == 1)
     }
 
     @Test("Impact playback is capped at four simultaneous voices")
@@ -555,7 +621,7 @@ struct TrainingAudioCoordinatorTests {
             .cleanImpact1, .cleanImpact2, .cleanImpact3
         ])
         let coordinator = makeCoordinator(backend: backend, resources: resources)
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         for index in 0..<5 {
             await coordinator.handle(.validatedImpact(
@@ -578,7 +644,7 @@ struct TrainingAudioCoordinatorTests {
             .gymAmbience, .competitionCrowd
         ])
         let coordinator = makeCoordinator(backend: backend, resources: resources)
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         await coordinator.handle(.experienceDidEnter(.compete))
         let stopCountBeforeStageChange = backend.stoppedHandles.count
 
@@ -588,7 +654,7 @@ struct TrainingAudioCoordinatorTests {
         #expect(backend.stoppedHandles.count == stopCountBeforeStageChange)
         #expect(coordinator.presentation.mix.crowd == .muted)
 
-        await coordinator.handle(.sceneDidDetach)
+        await coordinator.handle(.sceneDidDetach(.immersiveSpace))
         #expect(backend.commands.contains(.stopAll))
     }
 
@@ -601,13 +667,13 @@ struct TrainingAudioCoordinatorTests {
             resources: StubTrainingAudioResources(),
             waiter: waiter
         )
-        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         let captureTask = Task { @MainActor in
             await coordinator.handle(.voiceCaptureDidBegin)
         }
         await waiter.waitUntilSuspended()
-        await coordinator.handle(.sceneDidDetach)
+        await coordinator.handle(.sceneDidDetach(.immersiveSpace))
         waiter.resume()
         let outcome = await captureTask.value
 
@@ -647,6 +713,70 @@ struct TrainingAudioCoordinatorTests {
         #expect(message.reason == .categoryChange)
         #expect(TrainingAudioRouteChangeEventMapper.event(for: message.reason) == nil)
         #expect(TrainingAudioRouteChangeEventMapper.event(for: .oldDeviceUnavailable) == .routeChanged)
+    }
+
+    @Test("System, safety, and training-stop preemption synchronously revoke local speech")
+    func capturePreemptionRevokesLocalSpeechAndPreservesReuse() async throws {
+        let backend = RecordingTrainingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: StubTrainingAudioResources(available: [.coach(.pauseAck)])
+        )
+        let speechClient = RecordingSpeechRecognitionClient()
+        let session = ReactiveStrikeSession(
+            feedbackGenerator: MockFeedbackGenerator(),
+            audioCoordinator: coordinator,
+            speechClient: speechClient
+        )
+        session.controlWindowDidOpen()
+
+        session.voiceCoach.beginPushToTalk()
+        await speechClient.waitForStartCount(1)
+        #expect(session.voiceCoach.isListening)
+        #expect(session.voiceCoach.isCaptureReady)
+        #expect(speechClient.isRecording)
+
+        #expect(coordinator.handleImmediately(.audioSystemEvent(.routeChanged)) == .handled)
+        #expect(session.voiceCoach.isListening == false)
+        #expect(session.voiceCoach.isCaptureReady == false)
+        #expect(speechClient.isRecording == false)
+
+        #expect(session.resumeAudio() == .handled)
+        session.voiceCoach.beginPushToTalk()
+        await speechClient.waitForStartCount(2)
+        #expect(session.voiceCoach.isCaptureReady)
+
+        let safetyOutcome = coordinator.handleImmediately(.coachCue(.init(
+            kind: .safety,
+            clip: .pauseAck,
+            caption: "Stop now."
+        )))
+        #expect(safetyOutcome == .handled)
+        #expect(session.voiceCoach.isListening == false)
+        #expect(session.voiceCoach.isCaptureReady == false)
+        #expect(speechClient.isRecording == false)
+
+        let safetyHandles: [TrainingAudioPlaybackHandle] = backend.commands.compactMap { command in
+            guard case let .play(handle, resource) = command,
+                  resource == .coach(.pauseAck) else { return nil }
+            return handle
+        }
+        let safetyHandle = try #require(safetyHandles.last)
+        backend.playbackDidFinish?(safetyHandle)
+
+        session.voiceCoach.beginPushToTalk()
+        await speechClient.waitForStartCount(3)
+        #expect(session.voiceCoach.isCaptureReady)
+
+        session.stopDrill()
+
+        #expect(session.voiceCoach.isListening == false)
+        #expect(session.voiceCoach.isCaptureReady == false)
+        #expect(session.voiceCoach.isRouting == false)
+        #expect(session.voiceCoach.isGeneratingResponse == false)
+        #expect(speechClient.isRecording == false)
+        #expect(speechClient.cancelCount == 3)
+        #expect(backend.commands.filter { $0 == .endCapture }.count == 3)
     }
 
     @Test("Reactive, Aura, voice, and scene lifecycle share one semantic audio owner")
@@ -905,6 +1035,51 @@ private final class ControlledTrainingAudioWaiter: TrainingAudioDecayWaiting {
         releaseContinuations.removeAll()
         for continuation in continuations {
             continuation.resume()
+        }
+    }
+}
+
+@MainActor
+private final class RecordingSpeechRecognitionClient: SpeechRecognizing {
+    private struct StartWaiter {
+        let count: Int
+        let continuation: CheckedContinuation<Void, Never>
+    }
+
+    private var startWaiters: [StartWaiter] = []
+    private(set) var startCount = 0
+    private(set) var cancelCount = 0
+    private(set) var isRecording = false
+
+    func requestPermissions() async -> Bool {
+        true
+    }
+
+    func start() throws {
+        startCount += 1
+        isRecording = true
+
+        let ready = startWaiters.filter { startCount >= $0.count }
+        startWaiters.removeAll { startCount >= $0.count }
+        for waiter in ready {
+            waiter.continuation.resume()
+        }
+    }
+
+    func stop() async -> SpeechRecognitionResult {
+        isRecording = false
+        return SpeechRecognitionResult(transcript: "", duration: 0)
+    }
+
+    func cancel() {
+        cancelCount += 1
+        isRecording = false
+    }
+
+    func waitForStartCount(_ count: Int) async {
+        guard startCount < count else { return }
+        await withCheckedContinuation { continuation in
+            startWaiters.append(StartWaiter(count: count, continuation: continuation))
         }
     }
 }

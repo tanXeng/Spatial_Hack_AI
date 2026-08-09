@@ -88,6 +88,7 @@ struct BoxingCoachRootView: View {
         }
         .onAppear {
             flow.controlWindowDidAppear()
+            session.controlWindowDidOpen()
             session.voiceCoach.prepare()
             refreshWindowVoiceContext()
         }
@@ -103,6 +104,7 @@ struct BoxingCoachRootView: View {
         }
         .onDisappear {
             flow.controlWindowDidDisappear()
+            session.controlWindowDidClose()
         }
         .sheet(item: Binding(
             get: { competitionStore.sheetRoute },

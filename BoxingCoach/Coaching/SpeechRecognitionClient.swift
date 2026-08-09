@@ -7,9 +7,17 @@ nonisolated struct SpeechRecognitionResult: Sendable, Equatable {
     var duration: TimeInterval
 }
 
+@MainActor
+protocol SpeechRecognizing: AnyObject {
+    func requestPermissions() async -> Bool
+    func start() throws
+    func stop() async -> SpeechRecognitionResult
+    func cancel()
+}
+
 /// On-device speech-to-text for push-to-talk voice commands.
 @MainActor
-final class SpeechRecognitionClient {
+final class SpeechRecognitionClient: SpeechRecognizing {
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private let audioEngine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
@@ -17,6 +25,7 @@ final class SpeechRecognitionClient {
     private var startedAt: Date?
     private var latestTranscript = ""
     private var receivedFinal = false
+    private var hasInstalledTap = false
     private(set) var isRecording = false
 
     func requestPermissions() async -> Bool {
@@ -51,7 +60,7 @@ final class SpeechRecognitionClient {
 
         let inputNode = audioEngine.inputNode
         let recordingFormat = Self.recordingFormat(for: inputNode)
-        inputNode.removeTap(onBus: 0)
+        removeInputTapIfNeeded()
         try inputNode.installAudioTap(
             onBus: 0,
             bufferSize: 1024,
@@ -61,9 +70,16 @@ final class SpeechRecognitionClient {
                 request.append(writable)
             }
         )
+        hasInstalledTap = true
 
         audioEngine.prepare()
-        try audioEngine.start()
+        do {
+            try audioEngine.start()
+        } catch {
+            removeInputTapIfNeeded()
+            finishRecognitionTask()
+            throw error
+        }
         isRecording = true
 
         recognitionTask = speechRecognizer?.recognitionTask(with: request) { [weak self] result, error in
@@ -121,12 +137,17 @@ final class SpeechRecognitionClient {
         request?.endAudio()
         if audioEngine.isRunning {
             audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
         }
+        removeInputTapIfNeeded()
 
         let deadline = ContinuousClock.now + .milliseconds(1_000)
         while !receivedFinal, ContinuousClock.now < deadline {
-            try? await Task.sleep(for: .milliseconds(50))
+            do {
+                try await Task.sleep(for: .milliseconds(50))
+            } catch {
+                cancel()
+                return SpeechRecognitionResult(transcript: "", duration: duration)
+            }
         }
 
         let transcript = latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -141,8 +162,8 @@ final class SpeechRecognitionClient {
         finishRecognitionTask()
         if audioEngine.isRunning {
             audioEngine.stop()
-            audioEngine.inputNode.removeTap(onBus: 0)
         }
+        removeInputTapIfNeeded()
         latestTranscript = ""
         receivedFinal = false
         startedAt = nil
@@ -152,6 +173,12 @@ final class SpeechRecognitionClient {
         recognitionTask?.cancel()
         recognitionTask = nil
         request = nil
+    }
+
+    private func removeInputTapIfNeeded() {
+        guard hasInstalledTap else { return }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        hasInstalledTap = false
     }
 
     private static func recordingFormat(for inputNode: AVAudioInputNode) -> AVAudioFormat {

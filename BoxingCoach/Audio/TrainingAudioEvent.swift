@@ -91,6 +91,11 @@ nonisolated enum TrainingAudioSessionDeactivation: Equatable, Sendable {
     case systemInterruption
 }
 
+nonisolated enum TrainingAudioSceneOwner: Hashable, Sendable {
+    case controlWindow
+    case immersiveSpace
+}
+
 nonisolated enum TrainingAudioSystemEventMapper {
     static func event(
         for deactivation: TrainingAudioSessionDeactivation
@@ -105,7 +110,7 @@ nonisolated enum TrainingAudioSystemEventMapper {
 }
 
 nonisolated enum TrainingAudioEvent: Equatable, Sendable {
-    case sceneDidAttach
+    case sceneDidAttach(TrainingAudioSceneOwner)
     case experienceDidEnter(TrainingAudioStage)
     case targetDidAppear(position: SIMD3<Float>)
     case validatedImpact(position: SIMD3<Float>, quality: TrainingImpactQuality)
@@ -117,7 +122,7 @@ nonisolated enum TrainingAudioEvent: Equatable, Sendable {
     case audioSystemEvent(TrainingAudioSystemEvent)
     case audioRecoveryConfirmed
     case trainingDidStop
-    case sceneDidDetach
+    case sceneDidDetach(TrainingAudioSceneOwner)
 }
 
 nonisolated enum TrainingAudioChannel: String, CaseIterable, Hashable, Sendable {

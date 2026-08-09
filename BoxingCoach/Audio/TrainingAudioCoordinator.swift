@@ -78,7 +78,7 @@ final class TrainingAudioCoordinator {
     private let fadeDuration: Duration
     private let captureDecay: Duration
 
-    private var sceneAttached = false
+    private var attachedScenes: Set<TrainingAudioSceneOwner> = []
     private var backendReady = false
     private var trackingPaused = false
     private var foreground: ActivePlayback?
@@ -90,6 +90,9 @@ final class TrainingAudioCoordinator {
     private var nextImpactVariant = 0
     private var nextCapturePreparationID: UInt64 = 0
     private var capturePreparation: CapturePreparation?
+    private var captureRevocationHandler: (@MainActor () -> Void)?
+
+    private var sceneAttached: Bool { !attachedScenes.isEmpty }
 
     private var highestActivePriority: TrainingCoachCueKind? {
         [foreground?.priority, status?.priority].compactMap { $0 }.max()
@@ -124,6 +127,10 @@ final class TrainingAudioCoordinator {
         }
     }
 
+    func setCaptureRevocationHandler(_ handler: @escaping @MainActor () -> Void) {
+        captureRevocationHandler = handler
+    }
+
     @discardableResult
     func handle(_ event: TrainingAudioEvent) async -> TrainingAudioEventOutcome {
         if case .voiceCaptureDidBegin = event {
@@ -137,8 +144,8 @@ final class TrainingAudioCoordinator {
     @discardableResult
     func handleImmediately(_ event: TrainingAudioEvent) -> TrainingAudioEventOutcome {
         switch event {
-        case .sceneDidAttach:
-            return attachScene()
+        case let .sceneDidAttach(owner):
+            return attachScene(owner)
         case let .experienceDidEnter(stage):
             return enter(stage)
         case let .targetDidAppear(position):
@@ -162,16 +169,16 @@ final class TrainingAudioCoordinator {
             return recoverAfterExplicitConfirmation()
         case .trainingDidStop:
             return stopTrainingAudio()
-        case .sceneDidDetach:
-            return detachScene()
+        case let .sceneDidDetach(owner):
+            return detachScene(owner)
         }
     }
 
-    private func attachScene() -> TrainingAudioEventOutcome {
-        guard !sceneAttached else { return .handled }
+    private func attachScene(_ owner: TrainingAudioSceneOwner) -> TrainingAudioEventOutcome {
+        guard attachedScenes.insert(owner).inserted else { return .handled }
+        guard attachedScenes.count == 1 else { return .handled }
 
         generation &+= 1
-        sceneAttached = true
         trackingPaused = false
         presentation.status = .ready
         presentation.caption = "Training audio ready."
@@ -278,6 +285,7 @@ final class TrainingAudioCoordinator {
 
         if cue.kind == .safety {
             presentation.caption = cue.caption
+            captureRevocationHandler?()
         }
 
         if cue.kind == .safety,
@@ -378,6 +386,7 @@ final class TrainingAudioCoordinator {
     }
 
     private func pauseForTracking(_ reason: TrainingTrackingPauseReason) -> TrainingAudioEventOutcome {
+        captureRevocationHandler?()
         guard sceneAttached else { return .ignoredWhileDetached }
         generation &+= 1
         invalidateCapturePreparation()
@@ -561,11 +570,12 @@ final class TrainingAudioCoordinator {
         return playPendingVoiceResponseIfCurrentGeneration()
     }
 
-    private func detachScene() -> TrainingAudioEventOutcome {
-        guard sceneAttached else { return .handled }
+    private func detachScene(_ owner: TrainingAudioSceneOwner) -> TrainingAudioEventOutcome {
+        guard attachedScenes.remove(owner) != nil else { return .handled }
+        guard attachedScenes.isEmpty else { return .handled }
+        captureRevocationHandler?()
         generation &+= 1
         invalidateCapturePreparation()
-        sceneAttached = false
         backendReady = false
         trackingPaused = false
         pendingVoiceResponse = nil
@@ -578,6 +588,7 @@ final class TrainingAudioCoordinator {
     }
 
     private func stopTrainingAudio() -> TrainingAudioEventOutcome {
+        captureRevocationHandler?()
         guard sceneAttached else { return .ignoredWhileDetached }
         generation &+= 1
         let wasCapturing = presentation.isCapturing
@@ -615,6 +626,7 @@ final class TrainingAudioCoordinator {
         caption: String,
         hardStopEnvironment: Bool = false
     ) {
+        captureRevocationHandler?()
         guard sceneAttached else { return }
         generation &+= 1
         invalidateCapturePreparation()

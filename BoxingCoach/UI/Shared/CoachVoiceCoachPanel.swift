@@ -7,16 +7,24 @@ struct CoachVoiceCoachPanel: View {
     let isDisabled: Bool
 
     var body: some View {
+        let requiresRecovery = session.audioCoordinator.presentation.requiresExplicitRecovery
+
         VStack(alignment: .leading, spacing: 8) {
             CoachPushToTalkButton(
                 isListening: session.voiceCoach.isListening,
                 isCaptureReady: session.voiceCoach.isCaptureReady,
                 isRouting: session.voiceCoach.isRouting,
                 isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
-                isDisabled: isDisabled,
+                isDisabled: isDisabled || requiresRecovery,
                 onPress: { session.voiceCoach.beginPushToTalk() },
                 onRelease: { session.voiceCoach.endPushToTalk() }
             )
+
+            if requiresRecovery {
+                TrainingAudioRecoveryButton {
+                    session.resumeAudio()
+                }
+            }
 
             Text("Hold to ask · Try \"help\" or \"what should I fix?\"")
                 .font(.caption)
@@ -33,5 +41,18 @@ struct CoachVoiceCoachPanel: View {
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+    }
+}
+
+struct TrainingAudioRecoveryButton: View {
+    let action: () -> Void
+
+    var body: some View {
+        Button("Resume Audio", systemImage: "speaker.wave.2.fill", action: action)
+            .buttonStyle(.borderedProminent)
+            .accessibilityLabel("Resume Audio")
+            .accessibilityHint(
+                "Restores training audio after an interruption or audio route change"
+            )
     }
 }

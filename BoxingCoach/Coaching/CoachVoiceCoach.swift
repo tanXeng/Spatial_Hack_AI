@@ -13,7 +13,7 @@ final class CoachVoiceCoach {
     private(set) var lastError: String?
 
     let audioCoordinator: TrainingAudioCoordinator
-    private let speechClient = SpeechRecognitionClient()
+    private let speechClient: any SpeechRecognizing
     private var router = CoachClipRouter()
     private var context = CoachVoiceContext.idle
     private var lastRoutedAt: Date?
@@ -23,8 +23,15 @@ final class CoachVoiceCoach {
     private var permissionsGranted = false
     private var interactionGeneration: UInt64 = 0
 
-    init(audioCoordinator: TrainingAudioCoordinator) {
+    init(
+        audioCoordinator: TrainingAudioCoordinator,
+        speechClient: (any SpeechRecognizing)? = nil
+    ) {
         self.audioCoordinator = audioCoordinator
+        self.speechClient = speechClient ?? SpeechRecognitionClient()
+        audioCoordinator.setCaptureRevocationHandler { [weak self] in
+            self?.revokeCaptureLocally()
+        }
     }
 
     func updateContext(_ context: CoachVoiceContext) {
@@ -71,7 +78,7 @@ final class CoachVoiceCoach {
                 guard !Task.isCancelled,
                       generation == interactionGeneration,
                       isListening else {
-                    audioCoordinator.handleImmediately(.voiceCaptureDidEnd)
+                    endCoordinatorCaptureIfNeeded()
                     return
                 }
                 try speechClient.start()
@@ -117,7 +124,6 @@ final class CoachVoiceCoach {
             let result = await speechClient.stop()
             guard !Task.isCancelled, generation == interactionGeneration else {
                 isRouting = false
-                audioCoordinator.handleImmediately(.voiceCaptureDidEnd)
                 return
             }
 
@@ -138,7 +144,6 @@ final class CoachVoiceCoach {
 
             let clipID = await router.resolve(transcript: transcript, context: context)
             guard !Task.isCancelled, generation == interactionGeneration else {
-                audioCoordinator.handleImmediately(.voiceCaptureDidEnd)
                 return
             }
             lastRoutedClip = clipID
@@ -148,9 +153,14 @@ final class CoachVoiceCoach {
     }
 
     func shutdown() {
-        interactionGeneration &+= 1
         prepareTask?.cancel()
         prepareTask = nil
+        revokeCaptureLocally()
+        endCoordinatorCaptureIfNeeded()
+    }
+
+    private func revokeCaptureLocally() {
+        interactionGeneration &+= 1
         setupTask?.cancel()
         setupTask = nil
         processingTask?.cancel()
@@ -160,6 +170,9 @@ final class CoachVoiceCoach {
         isRouting = false
         isGeneratingResponse = false
         isCaptureReady = false
+    }
+
+    private func endCoordinatorCaptureIfNeeded() {
         if audioCoordinator.presentation.status == .capturing
             || audioCoordinator.presentation.status == .capturePreparing {
             audioCoordinator.handleImmediately(.voiceCaptureDidEnd)

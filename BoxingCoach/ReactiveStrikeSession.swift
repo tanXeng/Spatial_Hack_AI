@@ -80,11 +80,15 @@ final class ReactiveStrikeSession {
 
     init(
         feedbackGenerator: some FeedbackGenerating = MockFeedbackGenerator(),
-        audioCoordinator: TrainingAudioCoordinator? = nil
+        audioCoordinator: TrainingAudioCoordinator? = nil,
+        speechClient: (any SpeechRecognizing)? = nil
     ) {
         let audioCoordinator = audioCoordinator ?? TrainingAudioCoordinator()
         self.audioCoordinator = audioCoordinator
-        voiceCoach = CoachVoiceCoach(audioCoordinator: audioCoordinator)
+        voiceCoach = CoachVoiceCoach(
+            audioCoordinator: audioCoordinator,
+            speechClient: speechClient
+        )
         auraPunch = AuraPunchSession(
             hands: hands,
             feedbackGenerator: feedbackGenerator,
@@ -117,13 +121,25 @@ final class ReactiveStrikeSession {
 
     func immersiveSpaceDidOpen() {
         isImmersiveSpaceOpen = true
-        audioCoordinator.handleImmediately(.sceneDidAttach)
+        audioCoordinator.handleImmediately(.sceneDidAttach(.immersiveSpace))
     }
 
     func immersiveSpaceDidClose() {
         isImmersiveSpaceOpen = false
-        voiceCoach.shutdown()
-        audioCoordinator.handleImmediately(.sceneDidDetach)
+        audioCoordinator.handleImmediately(.sceneDidDetach(.immersiveSpace))
+    }
+
+    func controlWindowDidOpen() {
+        audioCoordinator.handleImmediately(.sceneDidAttach(.controlWindow))
+    }
+
+    func controlWindowDidClose() {
+        audioCoordinator.handleImmediately(.sceneDidDetach(.controlWindow))
+    }
+
+    @discardableResult
+    func resumeAudio() -> TrainingAudioEventOutcome {
+        audioCoordinator.handleImmediately(.audioRecoveryConfirmed)
     }
 
     func configure(

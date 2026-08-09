@@ -317,6 +317,97 @@ struct CompetitionSwiftDataV2PersistenceTests {
             ).isEmpty)
         }
     }
+
+    @Test("The live repository rejects participant UUID moves and public identity changes")
+    func liveRepositoryPreservesParticipantOwnership() async throws {
+        try await FileBackedCompetitionFixture.use { storeURL in
+            let container = try CompetitionModelContainer.make(storeURL: storeURL)
+            let repository = CompetitionLiveRepositoryFactory.makeLiveRepository(
+                container: container
+            )
+            let original = makeLiveParticipant()
+            try await repository.save(player: original)
+
+            let otherEventID = UUID(uuidString: "00000000-0000-0000-0000-000000000221")!
+            let moved = replacing(
+                original,
+                publicHandle: makeLiveHandle(
+                    eventID: otherEventID,
+                    displayName: "Other Alex",
+                    displayCode: "0043"
+                )
+            )
+            await #expect(throws: AthleteMemoryRepositoryError.participantEventMismatch) {
+                try await repository.save(player: moved)
+            }
+
+            let changedHandle = replacing(
+                original,
+                publicHandle: makeLiveHandle(
+                    eventID: try #require(original.eventID),
+                    displayName: "Other Alex",
+                    displayCode: "0043"
+                )
+            )
+            await #expect(throws: AthleteMemoryRepositoryError.participantEventMismatch) {
+                try await repository.save(player: changedHandle)
+            }
+
+            #expect(try await repository.player(id: original.id) == original)
+        }
+    }
+
+    @Test("The live repository atomically refreshes experience-dependent memory")
+    func liveRepositoryRefreshesMemoryAndRollsBackFailedProfileUpdate() async throws {
+        try await FileBackedCompetitionFixture.use { storeURL in
+            let participant = makeLiveParticipant()
+            let event = makeLiveEvent(id: try #require(participant.eventID))
+            let attempt = makeLiveAttempt(participant: participant, event: event)
+            let key = try #require(attempt.memoryKey)
+
+            do {
+                let container = try CompetitionModelContainer.make(storeURL: storeURL)
+                let memoryRepository = SwiftDataAthleteMemoryRepository(container: container)
+                _ = try memoryRepository.createEvent(event)
+                _ = try memoryRepository.saveParticipant(participant)
+                _ = try memoryRepository.insertAttempt(attempt)
+                #expect(try memoryRepository.memory(for: key)?.experienceLevel == .beginner)
+            }
+
+            let update = replacing(participant, experienceLevel: .intermediate)
+            do {
+                let container = try CompetitionModelContainer.make(
+                    storeURL: storeURL,
+                    allowsSave: false
+                )
+                let repository = CompetitionLiveRepositoryFactory.makeLiveRepository(
+                    container: container
+                )
+                await #expect(throws: CompetitionRepositoryError.self) {
+                    try await repository.save(player: update)
+                }
+                #expect(try await repository.player(id: participant.id) == participant)
+            }
+
+            do {
+                let container = try CompetitionModelContainer.make(storeURL: storeURL)
+                let memoryRepository = SwiftDataAthleteMemoryRepository(container: container)
+                #expect(try memoryRepository.participant(
+                    eventID: event.id,
+                    displayCode: "0042"
+                ) == participant)
+                #expect(try memoryRepository.memory(for: key)?.experienceLevel == .beginner)
+
+                let repository = CompetitionLiveRepositoryFactory.makeLiveRepository(
+                    container: container
+                )
+                try await repository.save(player: update)
+                let observer = SwiftDataAthleteMemoryRepository(container: container)
+                #expect(try observer.memory(for: key)?.experienceLevel == .intermediate)
+                #expect(try observer.memory(for: key)?.attempts == [attempt])
+            }
+        }
+    }
 }
 
 @MainActor
@@ -389,6 +480,108 @@ private func makePersistentSubmission(player: CompetitionPlayer) -> CompetitionS
         calibrationVersion: player.calibrationVersion,
         publicHandleSnapshot: player.publicHandle
     )
+}
+
+@MainActor
+private func makeLiveParticipant() -> CompetitionPlayer {
+    CompetitionPlayer(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000220")!,
+        name: "Alex",
+        normalizedName: "alex",
+        rememberedStance: .southpaw,
+        reach: BilateralReach(left: 0.64, right: 0.69),
+        calibrationVersion: CompetitionPlayer.calibrationVersion,
+        calibratedAt: Date(timeIntervalSince1970: 5),
+        createdAt: Date(timeIntervalSince1970: 1),
+        lastSeenAt: Date(timeIntervalSince1970: 5),
+        experienceLevel: .beginner,
+        publicHandle: makeLiveHandle(
+            eventID: UUID(uuidString: "00000000-0000-0000-0000-000000000219")!,
+            displayName: "Alex",
+            displayCode: "0042"
+        )
+    )
+}
+
+@MainActor
+private func makeLiveHandle(
+    eventID: UUID,
+    displayName: String,
+    displayCode: String
+) -> ParticipantPublicHandle {
+    ParticipantPublicHandle.reserving(
+        eventID: eventID,
+        displayName: displayName,
+        displayCode: displayCode,
+        against: []
+    )!
+}
+
+@MainActor
+private func replacing(
+    _ participant: CompetitionPlayer,
+    experienceLevel: ExperienceLevel? = nil,
+    publicHandle: ParticipantPublicHandle? = nil
+) -> CompetitionPlayer {
+    CompetitionPlayer(
+        id: participant.id,
+        name: participant.name,
+        normalizedName: participant.normalizedName,
+        rememberedStance: participant.rememberedStance,
+        reach: participant.reach,
+        calibrationVersion: participant.calibrationVersion,
+        calibratedAt: participant.calibratedAt,
+        createdAt: Date(timeIntervalSince1970: 999),
+        lastSeenAt: Date(timeIntervalSince1970: 40),
+        experienceLevel: experienceLevel ?? participant.experienceLevel,
+        publicHandle: publicHandle ?? participant.publicHandle
+    )
+}
+
+@MainActor
+private func makeLiveEvent(id: UUID) -> EventEdition {
+    EventEdition(
+        id: id,
+        title: "Live Contract",
+        status: .open,
+        openedAt: Date(timeIntervalSince1970: 1),
+        closedAt: nil,
+        scoringVersion: 2,
+        calibrationVersion: CompetitionPlayer.calibrationVersion
+    )!
+}
+
+@MainActor
+private func makeLiveAttempt(
+    participant: CompetitionPlayer,
+    event: EventEdition
+) -> TechniqueAttemptSnapshot {
+    TechniqueAttemptSnapshot(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000222")!,
+        athleteID: participant.id,
+        eventID: event.id,
+        coachingCycleID: UUID(uuidString: "00000000-0000-0000-0000-000000000223")!,
+        stage: .baseline,
+        techniqueID: Technique.jab.id,
+        stance: .southpaw,
+        score: 84,
+        metrics: [
+            TechniqueMetricSnapshot(kind: "path", score: 84, provenance: .measured)!
+        ],
+        trackedFraction: 0.95,
+        duration: 0.5,
+        isValid: true,
+        wrongHand: false,
+        scoringVersion: event.scoringVersion,
+        referenceVersion: 3,
+        calibrationVersion: participant.calibrationVersion,
+        correctionCode: "straight-path",
+        baselineAttemptID: nil,
+        startedAt: Date(timeIntervalSince1970: 10),
+        completedAt: Date(timeIntervalSince1970: 11),
+        pastSelfTrace: nil,
+        publicHandleSnapshot: participant.publicHandle
+    )!
 }
 
 @MainActor

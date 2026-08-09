@@ -49,13 +49,14 @@ protocol AthleteMemoryRepository: AnyObject {
     func awards(eventID: UUID) throws -> [EventAward]
 }
 
-nonisolated private enum ParticipantMergePolicy {
+nonisolated enum ParticipantMergePolicy {
     static func merge(
         existing: CompetitionPlayer,
         proposed: CompetitionPlayer
     ) throws -> CompetitionPlayer {
         guard existing.id == proposed.id,
-              existing.eventID == proposed.eventID
+              existing.eventID == proposed.eventID,
+              existing.publicHandle == proposed.publicHandle
         else { throw AthleteMemoryRepositoryError.participantEventMismatch }
 
         return CompetitionPlayer(
@@ -71,6 +72,92 @@ nonisolated private enum ParticipantMergePolicy {
             experienceLevel: proposed.experienceLevel,
             publicHandle: proposed.publicHandle
         )
+    }
+}
+
+@MainActor
+enum SwiftDataParticipantPersistence {
+    static func upsert(
+        _ participant: CompetitionPlayer,
+        in context: ModelContext
+    ) throws -> CompetitionPlayer {
+        let records = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>()
+        )
+        if let handle = participant.publicHandle,
+           records.contains(where: {
+               $0.id != participant.id
+                   && $0.eventID == handle.eventID
+                   && $0.publicDisplayCode == handle.displayCode
+           }) {
+            throw AthleteMemoryRepositoryError.duplicateDisplayCode
+        }
+
+        let matchingRecords = records.filter { $0.id == participant.id }
+        guard matchingRecords.count <= 1 else {
+            throw AthleteMemoryRepositoryError.corruptData
+        }
+        guard let existing = matchingRecords.first else {
+            context.insert(CompetitionSchemaV3.CompetitionPlayerRecord(participant))
+            return participant
+        }
+
+        let merged = try ParticipantMergePolicy.merge(
+            existing: existing.snapshot,
+            proposed: participant
+        )
+        existing.apply(merged)
+        try refreshMemoryCaches(for: merged, in: context)
+        return merged
+    }
+
+    private static func refreshMemoryCaches(
+        for participant: CompetitionPlayer,
+        in context: ModelContext
+    ) throws {
+        let participantAttempts = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.TechniqueAttemptRecord>()
+        )
+            .filter { $0.athleteID == participant.id }
+            .map { record in
+                guard let snapshot = record.snapshot else {
+                    throw AthleteMemoryRepositoryError.corruptData
+                }
+                return snapshot
+            }
+        let keys = Set(participantAttempts.compactMap(\.memoryKey))
+        let allCaches = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
+        )
+        var cachesByID: [String: CompetitionSchemaV3.AthleteSkillMemoryRecord] = [:]
+        for cache in allCaches {
+            guard cachesByID.updateValue(cache, forKey: cache.id) == nil else {
+                throw AthleteMemoryRepositoryError.corruptData
+            }
+        }
+        var staleCaches = Dictionary(uniqueKeysWithValues: allCaches.lazy
+            .filter { $0.athleteID == participant.id }
+            .map { ($0.id, $0) })
+
+        for key in keys {
+            guard let memory = AthleteSkillMemory.rebuilding(
+                key: key,
+                experienceLevel: participant.experienceLevel,
+                from: participantAttempts
+            ) else {
+                if let stale = cachesByID[key.storageKey] {
+                    staleCaches[stale.id] = stale
+                }
+                continue
+            }
+            if let existing = cachesByID[key.storageKey] {
+                try existing.apply(memory)
+                staleCaches.removeValue(forKey: existing.id)
+            } else {
+                context.insert(try CompetitionSchemaV3.AthleteSkillMemoryRecord(memory))
+            }
+        }
+        staleCaches.values.forEach(context.delete)
     }
 }
 
@@ -474,36 +561,19 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
         else { throw AthleteMemoryRepositoryError.participantEventMismatch }
         guard event.isOpen else { throw AthleteMemoryRepositoryError.eventClosed }
 
-        let records = try participantRecords()
-        if records.contains(where: {
-            $0.id != participant.id
-                && $0.eventID == eventID
-                && $0.publicDisplayCode == participant.publicHandle?.displayCode
-        }) {
-            throw AthleteMemoryRepositoryError.duplicateDisplayCode
-        }
-        if let existing = records.first(where: { $0.id == participant.id }) {
-            let merged = try ParticipantMergePolicy.merge(
-                existing: existing.snapshot,
-                proposed: participant
-            )
-            do {
-                existing.apply(merged)
-                try refreshMemoryCaches(for: merged)
-                try saveContext()
-                return merged
-            } catch {
+        do {
+            let saved = try SwiftDataParticipantPersistence.upsert(participant, in: context)
+            try saveContext()
+            return saved
+        } catch let error as AthleteMemoryRepositoryError {
+            if error != .saveFailed {
                 rollbackContext()
-                if let repositoryError = error as? AthleteMemoryRepositoryError {
-                    throw repositoryError
-                }
-                throw AthleteMemoryRepositoryError.corruptData
             }
-        } else {
-            context.insert(CompetitionSchemaV3.CompetitionPlayerRecord(participant))
+            throw error
+        } catch {
+            rollbackContext()
+            throw AthleteMemoryRepositoryError.corruptData
         }
-        try saveContext()
-        return participant
     }
 
     func participant(eventID: UUID, displayCode: String) throws -> CompetitionPlayer? {
@@ -758,48 +828,6 @@ final class SwiftDataAthleteMemoryRepository: AthleteMemoryRepository {
         } else if let existing = try memoryRecord(key: key) {
             context.delete(existing)
         }
-    }
-
-    private func refreshMemoryCaches(for participant: CompetitionPlayer) throws {
-        let participantAttempts = try attemptRecords()
-            .filter { $0.athleteID == participant.id }
-            .map { record in
-                guard let snapshot = record.snapshot else {
-                    throw AthleteMemoryRepositoryError.corruptData
-                }
-                return snapshot
-            }
-        let keys = Set(participantAttempts.compactMap(\.memoryKey))
-        let allCaches = try memoryRecords()
-        var cachesByID: [String: CompetitionSchemaV3.AthleteSkillMemoryRecord] = [:]
-        for cache in allCaches {
-            guard cachesByID.updateValue(cache, forKey: cache.id) == nil else {
-                throw AthleteMemoryRepositoryError.corruptData
-            }
-        }
-        var staleCaches = Dictionary(uniqueKeysWithValues: allCaches.lazy
-            .filter { $0.athleteID == participant.id }
-            .map { ($0.id, $0) })
-
-        for key in keys {
-            guard let memory = AthleteSkillMemory.rebuilding(
-                key: key,
-                experienceLevel: participant.experienceLevel,
-                from: participantAttempts
-            ) else {
-                if let stale = cachesByID[key.storageKey] {
-                    staleCaches[stale.id] = stale
-                }
-                continue
-            }
-            if let existing = cachesByID[key.storageKey] {
-                try existing.apply(memory)
-                staleCaches.removeValue(forKey: existing.id)
-            } else {
-                context.insert(try CompetitionSchemaV3.AthleteSkillMemoryRecord(memory))
-            }
-        }
-        staleCaches.values.forEach(context.delete)
     }
 
     private func participantForAttempt(

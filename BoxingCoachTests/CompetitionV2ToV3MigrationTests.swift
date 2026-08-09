@@ -201,7 +201,8 @@ struct CompetitionV2ToV3MigrationTests {
             #expect(secondMigrated == secondAttempt)
             let migratedTrace = try #require(firstMigrated.pastSelfTrace)
             #expect(migratedTrace == priorTrace)
-            #expect(try JSONEncoder().encode(migratedTrace) == priorTraceData)
+            let migratedTraceData = try JSONEncoder().encode(migratedTrace)
+            #expect(try canonicalJSON(migratedTraceData) == canonicalJSON(priorTraceData))
             #expect(try context.fetchCount(
                 FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
             ) == 0)
@@ -463,6 +464,11 @@ struct CompetitionV2ToV3MigrationTests {
             ) == 1)
         }
     }
+}
+
+private func canonicalJSON(_ data: Data) throws -> Data {
+    let object = try JSONSerialization.jsonObject(with: data)
+    return try JSONSerialization.data(withJSONObject: object, options: [.sortedKeys])
 }
 
 private enum V2TraceCorruption {

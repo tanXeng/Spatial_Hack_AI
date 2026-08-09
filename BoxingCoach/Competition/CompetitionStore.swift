@@ -78,7 +78,9 @@ final class CompetitionStore {
     static func live() -> CompetitionStore {
         do {
             let container = try CompetitionModelContainer.make(inMemory: false)
-            return CompetitionStore(repository: SwiftDataCompetitionRepository(container: container))
+            return CompetitionStore(repository: CompetitionLiveRepositoryFactory.makeLiveRepository(
+                container: container
+            ))
         } catch {
             return CompetitionStore(
                 repository: InMemoryCompetitionRepository(),

@@ -284,12 +284,13 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
     }
 
     func save(player: CompetitionPlayer) async throws {
-        if let existing = try playerRecord(id: player.id) {
-            existing.apply(player)
-        } else {
-            context.insert(CompetitionSchemaV3.CompetitionPlayerRecord(player))
+        do {
+            _ = try SwiftDataParticipantPersistence.upsert(player, in: context)
+            try saveContext()
+        } catch let error as AthleteMemoryRepositoryError {
+            rollbackContext()
+            throw error
         }
-        try saveContext()
     }
 
     func submit(_ submission: CompetitionSubmission) async throws -> CompetitionSubmission {
@@ -328,16 +329,29 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
         do {
             try context.save()
         } catch {
-            context.rollback()
-            context = Self.makeContext(container: container)
+            rollbackContext()
             throw CompetitionRepositoryError.saveFailed("Competition data could not be saved. Nothing was changed.")
         }
+    }
+
+    private func rollbackContext() {
+        context.rollback()
+        context = Self.makeContext(container: container)
     }
 
     private static func makeContext(container: ModelContainer) -> ModelContext {
         let context = ModelContext(container)
         context.autosaveEnabled = false
         return context
+    }
+}
+
+@MainActor
+enum CompetitionLiveRepositoryFactory {
+    static func makeLiveRepository(
+        container: ModelContainer
+    ) -> any CompetitionRepository {
+        SwiftDataCompetitionRepository(container: container)
     }
 }
 

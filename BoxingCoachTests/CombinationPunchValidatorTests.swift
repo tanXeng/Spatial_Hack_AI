@@ -216,6 +216,15 @@ final class CombinationPunchValidatorTests: XCTestCase {
             ),
             .init(
                 requiredHandAvailable: true,
+                otherHandAvailable: false,
+                devicePoseAvailable: true,
+                expectedGeneration: 4,
+                currentGeneration: 4,
+                expectedContinuityEpoch: 9,
+                currentContinuityEpoch: 9
+            ),
+            .init(
+                requiredHandAvailable: true,
                 otherHandAvailable: true,
                 devicePoseAvailable: false,
                 expectedGeneration: 4,
@@ -276,6 +285,70 @@ final class CombinationPunchValidatorTests: XCTestCase {
         )
     }
 
+    func testNormalCombinationRecoveryReleasesOnExactlyTheThirdFreshGuardPair() {
+        XCTAssertEqual(NormalCombinationGuardRecoveryGate.requiredStableSamples, 3)
+        XCTAssertEqual(CompetitionTrackingRecoveryGate.requiredStableSamples, 4)
+
+        var gate = NormalCombinationGuardRecoveryGate()
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.00)))
+        XCTAssertFalse(gate.observe(sample(timestamp: 1.01)))
+        XCTAssertTrue(gate.observe(sample(timestamp: 1.02)))
+    }
+
+    func testNormalCombinationRecoveryResetsOnOpenMissingAndStalePairs() {
+        for reset in [
+            sample(timestamp: 1.02, freshClosedAndGuarded: false),
+            sample(timestamp: nil),
+            sample(timestamp: 1.02, observationsFresh: false)
+        ] {
+            var gate = NormalCombinationGuardRecoveryGate()
+            XCTAssertFalse(gate.observe(sample(timestamp: 1.00)))
+            XCTAssertFalse(gate.observe(sample(timestamp: 1.01)))
+            XCTAssertFalse(gate.observe(reset))
+            XCTAssertFalse(gate.observe(sample(timestamp: 1.03)))
+            XCTAssertFalse(gate.observe(sample(timestamp: 1.04)))
+            XCTAssertTrue(gate.observe(sample(timestamp: 1.05)))
+        }
+    }
+
+    func testNormalCombinationRecoveryResetsAcrossGenerationAndEpochChanges() {
+        for changedIdentity in [
+            (generation: UInt64(5), epoch: UInt64(9)),
+            (generation: UInt64(4), epoch: UInt64(10))
+        ] {
+            var gate = NormalCombinationGuardRecoveryGate()
+            XCTAssertFalse(gate.observe(sample(timestamp: 1.00)))
+            XCTAssertFalse(gate.observe(sample(timestamp: 1.01)))
+            XCTAssertFalse(
+                gate.observe(
+                    sample(
+                        timestamp: 1.02,
+                        generation: changedIdentity.generation,
+                        continuityEpoch: changedIdentity.epoch
+                    )
+                )
+            )
+            XCTAssertFalse(
+                gate.observe(
+                    sample(
+                        timestamp: 1.03,
+                        generation: changedIdentity.generation,
+                        continuityEpoch: changedIdentity.epoch
+                    )
+                )
+            )
+            XCTAssertTrue(
+                gate.observe(
+                    sample(
+                        timestamp: 1.04,
+                        generation: changedIdentity.generation,
+                        continuityEpoch: changedIdentity.epoch
+                    )
+                )
+            )
+        }
+    }
+
     private func makeTarget(
         punch: PunchType,
         requiredHand: BodySide
@@ -286,6 +359,22 @@ final class CombinationPunchValidatorTests: XCTestCase {
             punch: punch,
             requiredHand: requiredHand,
             position: targetPosition
+        )
+    }
+
+    private func sample(
+        timestamp: TimeInterval?,
+        generation: UInt64 = 4,
+        continuityEpoch: UInt64 = 9,
+        observationsFresh: Bool = true,
+        freshClosedAndGuarded: Bool = true
+    ) -> NormalCombinationGuardRecoveryGate.Sample {
+        NormalCombinationGuardRecoveryGate.Sample(
+            providerGeneration: generation,
+            continuityEpoch: continuityEpoch,
+            pairTimestamp: timestamp,
+            observationsFresh: observationsFresh,
+            freshClosedAndGuarded: freshClosedAndGuarded
         )
     }
 

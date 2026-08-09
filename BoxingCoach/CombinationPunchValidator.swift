@@ -1,6 +1,79 @@
 import Foundation
 import simd
 
+/// Normal-round recovery gate for one current tracking identity.
+///
+/// Competition deliberately uses its separate four-sample gate. This gate releases normal
+/// combinations on exactly the third consecutive fresh, closed bilateral guard pair.
+nonisolated struct NormalCombinationGuardRecoveryGate: Sendable {
+    nonisolated struct Sample: Sendable, Equatable {
+        let providerGeneration: UInt64
+        let continuityEpoch: UInt64
+        let pairTimestamp: TimeInterval?
+        let observationsFresh: Bool
+        let freshClosedAndGuarded: Bool
+
+        nonisolated init(
+            providerGeneration: UInt64,
+            continuityEpoch: UInt64,
+            pairTimestamp: TimeInterval?,
+            observationsFresh: Bool,
+            freshClosedAndGuarded: Bool
+        ) {
+            self.providerGeneration = providerGeneration
+            self.continuityEpoch = continuityEpoch
+            self.pairTimestamp = pairTimestamp
+            self.observationsFresh = observationsFresh
+            self.freshClosedAndGuarded = freshClosedAndGuarded
+        }
+    }
+
+    static let requiredStableSamples = 3
+
+    private var providerGeneration: UInt64?
+    private var continuityEpoch: UInt64?
+    private var lastPairTimestamp: TimeInterval?
+    private(set) var consecutiveStableSamples = 0
+
+    nonisolated mutating func observe(_ sample: Sample) -> Bool {
+        let identityChanged = providerGeneration != sample.providerGeneration
+            || continuityEpoch != sample.continuityEpoch
+        if identityChanged {
+            providerGeneration = sample.providerGeneration
+            continuityEpoch = sample.continuityEpoch
+            lastPairTimestamp = nil
+            consecutiveStableSamples = 0
+        }
+
+        guard sample.observationsFresh,
+              let pairTimestamp = sample.pairTimestamp,
+              pairTimestamp.isFinite,
+              pairTimestamp >= 0
+        else {
+            consecutiveStableSamples = 0
+            return false
+        }
+
+        if let lastPairTimestamp {
+            guard pairTimestamp >= lastPairTimestamp else {
+                consecutiveStableSamples = 0
+                return false
+            }
+            // Polling the same still-fresh anchors is not a new pair and cannot advance or break
+            // the streak. Once those observations age out, `observationsFresh` resets it above.
+            guard pairTimestamp > lastPairTimestamp else { return false }
+        }
+        lastPairTimestamp = pairTimestamp
+
+        guard sample.freshClosedAndGuarded else {
+            consecutiveStableSamples = 0
+            return false
+        }
+        consecutiveStableSamples += 1
+        return consecutiveStableSamples >= Self.requiredStableSamples
+    }
+}
+
 /// Routes tracking interruptions before a combination frame can reach punch admission.
 ///
 /// This policy never scores. Ranked sessions retain their recovery presentation, while normal

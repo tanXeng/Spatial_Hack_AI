@@ -988,38 +988,29 @@ final class ReactiveStrikeSession {
     private func waitForNormalCombinationGuardRecovery() async -> Bool {
         lastFeedback = "Tracking paused · hold both fists in guard"
 
-        var gate = CompetitionTrackingRecoveryGate()
-        var lastPairTimestamp: TimeInterval?
-        var recoveryGeneration = hands.providerGeneration
-        var recoveryEpoch = hands.continuityEpoch
+        var gate = NormalCombinationGuardRecoveryGate()
 
         while !Task.isCancelled, phase == .running {
-            if hands.providerGeneration != recoveryGeneration
-                || hands.continuityEpoch != recoveryEpoch {
-                recoveryGeneration = hands.providerGeneration
-                recoveryEpoch = hands.continuityEpoch
-                lastPairTimestamp = nil
-                gate = CompetitionTrackingRecoveryGate()
-            }
-
             guard let frame = currentBodyFrame(),
                   let left = hands.freshObservation(for: .left),
                   let right = hands.freshObservation(for: .right),
                   let leftGuard = guardPositionsBody[.left],
                   let rightGuard = guardPositionsBody[.right]
             else {
-                _ = gate.observe(freshAndGuarded: false)
+                _ = gate.observe(
+                    .init(
+                        providerGeneration: hands.providerGeneration,
+                        continuityEpoch: hands.continuityEpoch,
+                        pairTimestamp: nil,
+                        observationsFresh: false,
+                        freshClosedAndGuarded: false
+                    )
+                )
                 try? await Task.sleep(for: .milliseconds(25))
                 continue
             }
 
             let pairTimestamp = min(left.acquisitionTimestamp, right.acquisitionTimestamp)
-            guard lastPairTimestamp.map({ pairTimestamp > $0 }) ?? true else {
-                try? await Task.sleep(for: .milliseconds(25))
-                continue
-            }
-            lastPairTimestamp = pairTimestamp
-
             let isFreshGuard = left.fistState == .closed
                 && right.fistState == .closed
                 && CombinationPunchValidator.isRetracted(
@@ -1032,7 +1023,15 @@ final class ReactiveStrikeSession {
                     guardPosition: rightGuard,
                     radius: CombinationPunchValidator.guardRadius
                 )
-            if gate.observe(freshAndGuarded: isFreshGuard) {
+            if gate.observe(
+                .init(
+                    providerGeneration: hands.providerGeneration,
+                    continuityEpoch: hands.continuityEpoch,
+                    pairTimestamp: pairTimestamp,
+                    observationsFresh: true,
+                    freshClosedAndGuarded: isFreshGuard
+                )
+            ) {
                 lastFeedback = "Tracking restored · retrying punch"
                 return true
             }

@@ -195,29 +195,273 @@ nonisolated struct ParticipantPublicHandle: Codable, Hashable, Sendable {
     }
 }
 
+nonisolated enum TechniqueAttemptStage: String, Codable, Hashable, Sendable {
+    case practice
+    case baseline
+    case retest
+}
+
+nonisolated enum TechniqueMetricProvenance: String, Codable, Hashable, Sendable {
+    case measured
+    case inferred
+    case unavailable
+}
+
+nonisolated struct TechniqueMetricSnapshot: Codable, Hashable, Sendable {
+    let kind: String
+    let score: Float?
+    let provenance: TechniqueMetricProvenance
+
+    private enum CodingKeys: String, CodingKey {
+        case kind
+        case score
+        case provenance
+    }
+
+    init?(kind: String, score: Float?, provenance: TechniqueMetricProvenance) {
+        let kind = kind.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !kind.isEmpty, kind.utf8.count <= 64 else { return nil }
+        switch (provenance, score) {
+        case (.unavailable, nil):
+            break
+        case (.measured, let score?), (.inferred, let score?):
+            guard score.isFinite, (0...100).contains(score) else { return nil }
+        default:
+            return nil
+        }
+        self.kind = kind
+        self.score = score
+        self.provenance = provenance
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard let validated = TechniqueMetricSnapshot(
+            kind: try values.decode(String.self, forKey: .kind),
+            score: try values.decodeIfPresent(Float.self, forKey: .score),
+            provenance: try values.decode(TechniqueMetricProvenance.self, forKey: .provenance)
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .score,
+                in: values,
+                debugDescription: "Available metrics require a finite score; unavailable metrics cannot carry one."
+            )
+        }
+        self = validated
+    }
+}
+
+nonisolated struct AthleteSkillMemoryKey: Codable, Hashable, Sendable {
+    let eventID: UUID?
+    let athleteID: UUID
+    let techniqueID: String
+    let stance: Stance
+    let referenceVersion: Int
+    let scoringVersion: Int
+    let calibrationVersion: Int?
+
+    private enum CodingKeys: String, CodingKey {
+        case eventID
+        case athleteID
+        case techniqueID
+        case stance
+        case referenceVersion
+        case scoringVersion
+        case calibrationVersion
+    }
+
+    init?(
+        eventID: UUID?,
+        athleteID: UUID,
+        techniqueID: String,
+        stance: Stance,
+        referenceVersion: Int,
+        scoringVersion: Int,
+        calibrationVersion: Int?
+    ) {
+        let techniqueID = techniqueID.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !techniqueID.isEmpty,
+              referenceVersion > 0,
+              scoringVersion > 0,
+              calibrationVersion.map({ $0 > 0 }) ?? true
+        else { return nil }
+        self.eventID = eventID
+        self.athleteID = athleteID
+        self.techniqueID = techniqueID
+        self.stance = stance
+        self.referenceVersion = referenceVersion
+        self.scoringVersion = scoringVersion
+        self.calibrationVersion = calibrationVersion
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard let validated = AthleteSkillMemoryKey(
+            eventID: try values.decodeIfPresent(UUID.self, forKey: .eventID),
+            athleteID: try values.decode(UUID.self, forKey: .athleteID),
+            techniqueID: try values.decode(String.self, forKey: .techniqueID),
+            stance: try values.decode(Stance.self, forKey: .stance),
+            referenceVersion: try values.decode(Int.self, forKey: .referenceVersion),
+            scoringVersion: try values.decode(Int.self, forKey: .scoringVersion),
+            calibrationVersion: try values.decodeIfPresent(Int.self, forKey: .calibrationVersion)
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .referenceVersion,
+                in: values,
+                debugDescription: "Skill-memory keys require a technique and positive evidence versions."
+            )
+        }
+        self = validated
+    }
+
+    var storageKey: String {
+        let event = eventID?.uuidString.lowercased() ?? "none"
+        let calibration = calibrationVersion.map(String.init) ?? "none"
+        return [
+            event,
+            athleteID.uuidString.lowercased(),
+            "\(techniqueID.utf8.count):\(techniqueID)",
+            stance.rawValue,
+            String(referenceVersion),
+            String(scoringVersion),
+            calibration
+        ].joined(separator: "|")
+    }
+}
+
 nonisolated struct TechniqueAttemptSnapshot: Identifiable, Codable, Hashable, Sendable {
     let id: UUID
     let athleteID: UUID
     let eventID: UUID?
+    let coachingCycleID: UUID?
+    let stage: TechniqueAttemptStage
     let techniqueID: String
+    let stance: Stance
     let score: Float
+    let metrics: [TechniqueMetricSnapshot]
+    let trackedFraction: Float
+    let duration: TimeInterval
+    let isValid: Bool
+    let wrongHand: Bool
     let scoringVersion: Int
+    let referenceVersion: Int
     let calibrationVersion: Int?
+    let correctionCode: String?
+    let baselineAttemptID: UUID?
     let startedAt: Date
     let completedAt: Date
+    let pastSelfTrace: PastSelfTrace?
     let publicHandleSnapshot: ParticipantPublicHandle?
 
     private enum CodingKeys: String, CodingKey {
         case id
         case athleteID
         case eventID
+        case coachingCycleID
+        case stage
         case techniqueID
+        case stance
         case score
+        case metrics
+        case trackedFraction
+        case duration
+        case isValid
+        case wrongHand
         case scoringVersion
+        case referenceVersion
         case calibrationVersion
+        case correctionCode
+        case baselineAttemptID
         case startedAt
         case completedAt
+        case pastSelfTrace
         case publicHandleSnapshot
+    }
+
+    init?(
+        id: UUID,
+        athleteID: UUID,
+        eventID: UUID?,
+        coachingCycleID: UUID?,
+        stage: TechniqueAttemptStage,
+        techniqueID: String,
+        stance: Stance,
+        score: Float,
+        metrics: [TechniqueMetricSnapshot],
+        trackedFraction: Float,
+        duration: TimeInterval,
+        isValid: Bool,
+        wrongHand: Bool,
+        scoringVersion: Int,
+        referenceVersion: Int,
+        calibrationVersion: Int?,
+        correctionCode: String?,
+        baselineAttemptID: UUID?,
+        startedAt: Date,
+        completedAt: Date,
+        pastSelfTrace: PastSelfTrace?,
+        publicHandleSnapshot: ParticipantPublicHandle?
+    ) {
+        let techniqueID = techniqueID.trimmingCharacters(in: .whitespacesAndNewlines)
+        let normalizedCorrection = correctionCode?.trimmingCharacters(in: .whitespacesAndNewlines)
+        let interval = completedAt.timeIntervalSince(startedAt)
+        let metricKinds = metrics.map(\.kind)
+        guard !techniqueID.isEmpty,
+              score.isFinite,
+              (0...100).contains(score),
+              trackedFraction.isFinite,
+              (0...1).contains(trackedFraction),
+              duration.isFinite,
+              duration >= 0,
+              interval.isFinite,
+              interval >= 0,
+              duration <= interval,
+              !isValid || !wrongHand,
+              Set(metricKinds).count == metricKinds.count,
+              scoringVersion > 0,
+              referenceVersion > 0,
+              calibrationVersion.map({ $0 > 0 }) ?? true,
+              startedAt.timeIntervalSinceReferenceDate.isFinite,
+              completedAt.timeIntervalSinceReferenceDate.isFinite,
+              normalizedCorrection.map({ !$0.isEmpty && $0.utf8.count <= 64 }) ?? true,
+              pastSelfTrace.map({ $0.attemptID == id }) ?? true,
+              publicHandleSnapshot.map({ $0.eventID == eventID }) ?? true
+        else { return nil }
+
+        switch stage {
+        case .practice:
+            guard baselineAttemptID == nil else { return nil }
+        case .baseline:
+            guard coachingCycleID != nil, baselineAttemptID == nil else { return nil }
+        case .retest:
+            guard coachingCycleID != nil,
+                  let baselineAttemptID,
+                  baselineAttemptID != id
+            else { return nil }
+        }
+
+        self.id = id
+        self.athleteID = athleteID
+        self.eventID = eventID
+        self.coachingCycleID = coachingCycleID
+        self.stage = stage
+        self.techniqueID = techniqueID
+        self.stance = stance
+        self.score = score
+        self.metrics = metrics.sorted { $0.kind < $1.kind }
+        self.trackedFraction = trackedFraction
+        self.duration = duration
+        self.isValid = isValid
+        self.wrongHand = wrongHand
+        self.scoringVersion = scoringVersion
+        self.referenceVersion = referenceVersion
+        self.calibrationVersion = calibrationVersion
+        self.correctionCode = normalizedCorrection
+        self.baselineAttemptID = baselineAttemptID
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.pastSelfTrace = pastSelfTrace
+        self.publicHandleSnapshot = publicHandleSnapshot
     }
 
     init?(
@@ -232,64 +476,95 @@ nonisolated struct TechniqueAttemptSnapshot: Identifiable, Codable, Hashable, Se
         completedAt: Date,
         publicHandleSnapshot: ParticipantPublicHandle?
     ) {
-        guard !techniqueID.isEmpty,
-              score.isFinite,
-              (0...100).contains(score),
-              scoringVersion > 0,
-              calibrationVersion.map({ $0 > 0 }) ?? true,
-              startedAt.timeIntervalSinceReferenceDate.isFinite,
-              completedAt.timeIntervalSinceReferenceDate.isFinite,
-              completedAt >= startedAt,
-              publicHandleSnapshot.map({ $0.eventID == eventID }) ?? true
-        else { return nil }
-
-        self.id = id
-        self.athleteID = athleteID
-        self.eventID = eventID
-        self.techniqueID = techniqueID
-        self.score = score
-        self.scoringVersion = scoringVersion
-        self.calibrationVersion = calibrationVersion
-        self.startedAt = startedAt
-        self.completedAt = completedAt
-        self.publicHandleSnapshot = publicHandleSnapshot
-    }
-
-    init(from decoder: Decoder) throws {
-        let container = try decoder.container(keyedBy: CodingKeys.self)
-        let id = try container.decode(UUID.self, forKey: .id)
-        let athleteID = try container.decode(UUID.self, forKey: .athleteID)
-        let eventID = try container.decodeIfPresent(UUID.self, forKey: .eventID)
-        let techniqueID = try container.decode(String.self, forKey: .techniqueID)
-        let score = try container.decode(Float.self, forKey: .score)
-        let scoringVersion = try container.decode(Int.self, forKey: .scoringVersion)
-        let calibrationVersion = try container.decodeIfPresent(Int.self, forKey: .calibrationVersion)
-        let startedAt = try container.decode(Date.self, forKey: .startedAt)
-        let completedAt = try container.decode(Date.self, forKey: .completedAt)
-        let publicHandleSnapshot = try container.decodeIfPresent(
-            ParticipantPublicHandle.self,
-            forKey: .publicHandleSnapshot
-        )
-
-        guard let validated = TechniqueAttemptSnapshot(
+        self.init(
             id: id,
             athleteID: athleteID,
             eventID: eventID,
+            coachingCycleID: nil,
+            stage: .practice,
             techniqueID: techniqueID,
+            stance: .orthodox,
             score: score,
+            metrics: [],
+            trackedFraction: 1,
+            duration: completedAt.timeIntervalSince(startedAt),
+            isValid: true,
+            wrongHand: false,
             scoringVersion: scoringVersion,
+            referenceVersion: 1,
             calibrationVersion: calibrationVersion,
+            correctionCode: nil,
+            baselineAttemptID: nil,
             startedAt: startedAt,
             completedAt: completedAt,
+            pastSelfTrace: nil,
             publicHandleSnapshot: publicHandleSnapshot
+        )
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let startedAt = try values.decode(Date.self, forKey: .startedAt)
+        let completedAt = try values.decode(Date.self, forKey: .completedAt)
+        guard let validated = TechniqueAttemptSnapshot(
+            id: try values.decode(UUID.self, forKey: .id),
+            athleteID: try values.decode(UUID.self, forKey: .athleteID),
+            eventID: try values.decodeIfPresent(UUID.self, forKey: .eventID),
+            coachingCycleID: try values.decodeIfPresent(UUID.self, forKey: .coachingCycleID),
+            stage: try values.decodeIfPresent(TechniqueAttemptStage.self, forKey: .stage) ?? .practice,
+            techniqueID: try values.decode(String.self, forKey: .techniqueID),
+            stance: try values.decodeIfPresent(Stance.self, forKey: .stance) ?? .orthodox,
+            score: try values.decode(Float.self, forKey: .score),
+            metrics: try values.decodeIfPresent([TechniqueMetricSnapshot].self, forKey: .metrics) ?? [],
+            trackedFraction: try values.decodeIfPresent(Float.self, forKey: .trackedFraction) ?? 1,
+            duration: try values.decodeIfPresent(TimeInterval.self, forKey: .duration)
+                ?? completedAt.timeIntervalSince(startedAt),
+            isValid: try values.decodeIfPresent(Bool.self, forKey: .isValid) ?? true,
+            wrongHand: try values.decodeIfPresent(Bool.self, forKey: .wrongHand) ?? false,
+            scoringVersion: try values.decode(Int.self, forKey: .scoringVersion),
+            referenceVersion: try values.decodeIfPresent(Int.self, forKey: .referenceVersion) ?? 1,
+            calibrationVersion: try values.decodeIfPresent(Int.self, forKey: .calibrationVersion),
+            correctionCode: try values.decodeIfPresent(String.self, forKey: .correctionCode),
+            baselineAttemptID: try values.decodeIfPresent(UUID.self, forKey: .baselineAttemptID),
+            startedAt: startedAt,
+            completedAt: completedAt,
+            pastSelfTrace: try values.decodeIfPresent(PastSelfTrace.self, forKey: .pastSelfTrace),
+            publicHandleSnapshot: try values.decodeIfPresent(
+                ParticipantPublicHandle.self,
+                forKey: .publicHandleSnapshot
+            )
         ) else {
             throw DecodingError.dataCorruptedError(
                 forKey: .score,
-                in: container,
-                debugDescription: "Technique attempt fields violate score, version, time, or event provenance invariants."
+                in: values,
+                debugDescription: "Technique attempt fields violate evidence, version, time, proof, or provenance invariants."
             )
         }
         self = validated
+    }
+
+    var memoryKey: AthleteSkillMemoryKey? {
+        AthleteSkillMemoryKey(
+            eventID: eventID,
+            athleteID: athleteID,
+            techniqueID: techniqueID,
+            stance: stance,
+            referenceVersion: referenceVersion,
+            scoringVersion: scoringVersion,
+            calibrationVersion: calibrationVersion
+        )
+    }
+
+    func hasCompatibleMetricAvailability(
+        with other: TechniqueAttemptSnapshot
+    ) -> Bool {
+        availableMetricKinds == other.availableMetricKinds
+    }
+
+    private var availableMetricKinds: Set<String> {
+        Set(metrics.lazy.compactMap { metric in
+            metric.provenance == .unavailable ? nil : metric.kind
+        })
     }
 }
 
@@ -373,7 +648,17 @@ nonisolated struct PastSelfTrace: Codable, Hashable, Sendable {
     }
 }
 
+nonisolated struct TechniqueProofDelta: Codable, Hashable, Sendable {
+    let baselineAttemptID: UUID
+    let retestAttemptID: UUID
+    let coachingCycleID: UUID
+    let scoreDelta: Float
+    let correctionCode: String?
+    let completedAt: Date
+}
+
 nonisolated struct AthleteSkillMemory: Codable, Hashable, Sendable {
+    let key: AthleteSkillMemoryKey
     let athleteID: UUID
     let techniqueID: String
     let experienceLevel: ExperienceLevel
@@ -398,20 +683,26 @@ nonisolated struct AthleteSkillMemory: Codable, Hashable, Sendable {
         pastSelfTrace: PastSelfTrace?,
         updatedAt: Date
     ) {
-        guard !techniqueID.isEmpty,
+        let orderedAttempts = attempts.sorted(by: Self.attemptOrder)
+        guard let first = orderedAttempts.first,
+              let key = first.memoryKey,
+              !techniqueID.isEmpty,
               updatedAt.timeIntervalSinceReferenceDate.isFinite,
-              attempts.allSatisfy({
+              orderedAttempts.allSatisfy({
                   $0.athleteID == athleteID
                       && $0.techniqueID == techniqueID
+                      && $0.memoryKey == key
+                      && $0.isValid
                       && $0.completedAt <= updatedAt
               }),
-              pastSelfTrace.map({ trace in attempts.contains { $0.id == trace.attemptID } }) ?? true
+              pastSelfTrace.map({ trace in orderedAttempts.contains { $0.id == trace.attemptID } }) ?? true
         else { return nil }
 
+        self.key = key
         self.athleteID = athleteID
         self.techniqueID = techniqueID
         self.experienceLevel = experienceLevel
-        self.attempts = attempts
+        self.attempts = orderedAttempts
         self.pastSelfTrace = pastSelfTrace
         self.updatedAt = updatedAt
     }
@@ -445,8 +736,91 @@ nonisolated struct AthleteSkillMemory: Codable, Hashable, Sendable {
     var bestAttempt: TechniqueAttemptSnapshot? {
         attempts.max {
             if $0.score != $1.score { return $0.score < $1.score }
-            return $0.completedAt > $1.completedAt
+            if $0.completedAt != $1.completedAt { return $0.completedAt < $1.completedAt }
+            return $0.id.uuidString > $1.id.uuidString
         }
+    }
+
+    var attemptCount: Int { attempts.count }
+
+    var latestAttempt: TechniqueAttemptSnapshot? { attempts.last }
+
+    var rollingLastThreeScore: Float? {
+        let values = attempts.suffix(3).map(\.score)
+        guard !values.isEmpty else { return nil }
+        return values.reduce(0, +) / Float(values.count)
+    }
+
+    var correctionFocus: String? { latestAttempt?.correctionCode }
+
+    var correctionFocusStreak: Int {
+        guard let focus = correctionFocus else { return 0 }
+        return attempts.reversed().prefix { $0.correctionCode == focus }.count
+    }
+
+    var lastProofDelta: TechniqueProofDelta? {
+        for retest in attempts.reversed() where retest.stage == .retest {
+            guard let baselineID = retest.baselineAttemptID,
+                  let cycleID = retest.coachingCycleID,
+                  let baseline = attempts.first(where: { $0.id == baselineID }),
+                  baseline.stage == .baseline,
+                  baseline.coachingCycleID == cycleID,
+                  baseline.memoryKey == retest.memoryKey,
+                  baseline.hasCompatibleMetricAvailability(with: retest),
+                  baseline.correctionCode == retest.correctionCode,
+                  baseline.completedAt <= retest.completedAt
+            else { continue }
+            return TechniqueProofDelta(
+                baselineAttemptID: baseline.id,
+                retestAttemptID: retest.id,
+                coachingCycleID: cycleID,
+                scoreDelta: retest.score - baseline.score,
+                correctionCode: retest.correctionCode,
+                completedAt: retest.completedAt
+            )
+        }
+        return nil
+    }
+
+    func latestMetric(kind: String) -> TechniqueMetricSnapshot? {
+        attempts.reversed().lazy.compactMap { attempt in
+            attempt.metrics.first { $0.kind == kind && $0.provenance != .unavailable }
+        }.first
+    }
+
+    func bestMetric(kind: String) -> TechniqueMetricSnapshot? {
+        attempts.flatMap(\.metrics).filter {
+            $0.kind == kind && $0.provenance != .unavailable
+        }.max {
+            ($0.score ?? -.infinity) < ($1.score ?? -.infinity)
+        }
+    }
+
+    static func rebuilding(
+        key: AthleteSkillMemoryKey,
+        experienceLevel: ExperienceLevel,
+        from attempts: [TechniqueAttemptSnapshot]
+    ) -> AthleteSkillMemory? {
+        let compatible = attempts.filter { $0.isValid && $0.memoryKey == key }
+            .sorted(by: attemptOrder)
+        guard let latest = compatible.last else { return nil }
+        let trace = compatible.reversed().compactMap(\.pastSelfTrace).first
+        return AthleteSkillMemory(
+            athleteID: key.athleteID,
+            techniqueID: key.techniqueID,
+            experienceLevel: experienceLevel,
+            attempts: compatible,
+            pastSelfTrace: trace,
+            updatedAt: latest.completedAt
+        )
+    }
+
+    private static func attemptOrder(
+        _ lhs: TechniqueAttemptSnapshot,
+        _ rhs: TechniqueAttemptSnapshot
+    ) -> Bool {
+        if lhs.completedAt != rhs.completedAt { return lhs.completedAt < rhs.completedAt }
+        return lhs.id.uuidString < rhs.id.uuidString
     }
 }
 
@@ -766,6 +1140,202 @@ nonisolated struct CancelledTrainingRun: Identifiable, Codable, Hashable, Sendab
             )
         }
         self = validated
+    }
+}
+
+nonisolated enum TrainingRunStatus: String, Codable, Hashable, Sendable {
+    case reserved
+    case active
+    case completedAwaitingCommit
+    case committed
+    case aborted
+}
+
+nonisolated struct TrainingRunSnapshot: Identifiable, Codable, Hashable, Sendable {
+    let id: UUID
+    let athleteID: UUID
+    let eventID: UUID?
+    let techniqueID: String
+    let status: TrainingRunStatus
+    let requestedAt: Date
+    let startedAt: Date?
+    let completedAt: Date?
+    let attemptID: UUID?
+    let updatedAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case athleteID
+        case eventID
+        case techniqueID
+        case status
+        case requestedAt
+        case startedAt
+        case completedAt
+        case attemptID
+        case updatedAt
+    }
+
+    init?(_ pending: PendingTrainingRun) {
+        self.init(
+            id: pending.id,
+            athleteID: pending.athleteID,
+            eventID: pending.eventID,
+            techniqueID: pending.techniqueID,
+            status: .reserved,
+            requestedAt: pending.requestedAt,
+            startedAt: nil,
+            completedAt: nil,
+            attemptID: nil,
+            updatedAt: pending.requestedAt
+        )
+    }
+
+    private init?(
+        id: UUID,
+        athleteID: UUID,
+        eventID: UUID?,
+        techniqueID: String,
+        status: TrainingRunStatus,
+        requestedAt: Date,
+        startedAt: Date?,
+        completedAt: Date?,
+        attemptID: UUID?,
+        updatedAt: Date
+    ) {
+        guard !techniqueID.isEmpty,
+              requestedAt.timeIntervalSinceReferenceDate.isFinite,
+              startedAt?.timeIntervalSinceReferenceDate.isFinite ?? true,
+              completedAt?.timeIntervalSinceReferenceDate.isFinite ?? true,
+              updatedAt.timeIntervalSinceReferenceDate.isFinite,
+              updatedAt >= requestedAt,
+              startedAt.map({ $0 >= requestedAt && $0 <= updatedAt }) ?? true,
+              completedAt.map({ completed in
+                  completed >= (startedAt ?? requestedAt) && completed <= updatedAt
+              }) ?? true
+        else { return nil }
+
+        switch status {
+        case .reserved:
+            guard startedAt == nil, completedAt == nil, attemptID == nil,
+                  updatedAt == requestedAt else { return nil }
+        case .active:
+            guard startedAt != nil, completedAt == nil, attemptID == nil else { return nil }
+        case .completedAwaitingCommit, .committed:
+            guard startedAt != nil, completedAt != nil, attemptID == id else { return nil }
+        case .aborted:
+            guard completedAt != nil, attemptID == nil else { return nil }
+        }
+
+        self.id = id
+        self.athleteID = athleteID
+        self.eventID = eventID
+        self.techniqueID = techniqueID
+        self.status = status
+        self.requestedAt = requestedAt
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.attemptID = attemptID
+        self.updatedAt = updatedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        guard let validated = TrainingRunSnapshot(
+            id: try values.decode(UUID.self, forKey: .id),
+            athleteID: try values.decode(UUID.self, forKey: .athleteID),
+            eventID: try values.decodeIfPresent(UUID.self, forKey: .eventID),
+            techniqueID: try values.decode(String.self, forKey: .techniqueID),
+            status: try values.decode(TrainingRunStatus.self, forKey: .status),
+            requestedAt: try values.decode(Date.self, forKey: .requestedAt),
+            startedAt: try values.decodeIfPresent(Date.self, forKey: .startedAt),
+            completedAt: try values.decodeIfPresent(Date.self, forKey: .completedAt),
+            attemptID: try values.decodeIfPresent(UUID.self, forKey: .attemptID),
+            updatedAt: try values.decode(Date.self, forKey: .updatedAt)
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .status,
+                in: values,
+                debugDescription: "Training run timestamps and evidence do not match its state."
+            )
+        }
+        self = validated
+    }
+
+    func starting(at date: Date) -> TrainingRunSnapshot? {
+        guard status == .reserved else { return nil }
+        return TrainingRunSnapshot(
+            id: id,
+            athleteID: athleteID,
+            eventID: eventID,
+            techniqueID: techniqueID,
+            status: .active,
+            requestedAt: requestedAt,
+            startedAt: date,
+            completedAt: nil,
+            attemptID: nil,
+            updatedAt: date
+        )
+    }
+
+    func completing(with attempt: TechniqueAttemptSnapshot) -> TrainingRunSnapshot? {
+        guard status == .active,
+              attempt.id == id,
+              attempt.athleteID == athleteID,
+              attempt.eventID == eventID,
+              attempt.techniqueID == techniqueID,
+              attempt.isValid,
+              let startedAt,
+              attempt.startedAt >= startedAt
+        else { return nil }
+        return TrainingRunSnapshot(
+            id: id,
+            athleteID: athleteID,
+            eventID: eventID,
+            techniqueID: techniqueID,
+            status: .completedAwaitingCommit,
+            requestedAt: requestedAt,
+            startedAt: startedAt,
+            completedAt: attempt.completedAt,
+            attemptID: attempt.id,
+            updatedAt: attempt.completedAt
+        )
+    }
+
+    func committing(at date: Date) -> TrainingRunSnapshot? {
+        guard status == .completedAwaitingCommit,
+              let startedAt,
+              let completedAt,
+              let attemptID
+        else { return nil }
+        return TrainingRunSnapshot(
+            id: id,
+            athleteID: athleteID,
+            eventID: eventID,
+            techniqueID: techniqueID,
+            status: .committed,
+            requestedAt: requestedAt,
+            startedAt: startedAt,
+            completedAt: completedAt,
+            attemptID: attemptID,
+            updatedAt: date
+        )
+    }
+
+    func aborting(at date: Date) -> TrainingRunSnapshot? {
+        guard status == .reserved || status == .active else { return nil }
+        return TrainingRunSnapshot(
+            id: id,
+            athleteID: athleteID,
+            eventID: eventID,
+            techniqueID: techniqueID,
+            status: .aborted,
+            requestedAt: requestedAt,
+            startedAt: startedAt,
+            completedAt: date,
+            attemptID: nil,
+            updatedAt: date
+        )
     }
 }
 

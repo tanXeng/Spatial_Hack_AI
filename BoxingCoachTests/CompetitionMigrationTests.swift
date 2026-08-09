@@ -8,9 +8,7 @@ import Testing
 struct CompetitionMigrationTests {
     @Test("V1 players and submissions migrate losslessly into one closed legacy event")
     func legacyFixtureMigratesLosslessly() throws {
-        let fixture = try MigrationFixture.make()
-        defer { fixture.remove() }
-        try fixture.writeV1Store()
+        try MigrationFixture.use { fixture in
 
         let before = fixture.expectedStandings
         let container = try CompetitionModelContainer.make(storeURL: fixture.storeURL)
@@ -74,13 +72,12 @@ struct CompetitionMigrationTests {
         let after = CompetitionLeaderboard.standings(mode: .reactiveStrike, submissions: migrated)
         #expect(after.map(\.rank) == before.map(\.rank))
         #expect(after.map(\.submission.id) == before.map(\.submission.id))
+        }
     }
 
     @Test("Reopening a V2 store does not rerun migration or duplicate the legacy event")
     func currentSchemaReopensWithoutDuplicateArchive() throws {
-        let fixture = try MigrationFixture.make()
-        defer { fixture.remove() }
-        try fixture.writeV1Store()
+        try MigrationFixture.use { fixture in
 
         do {
             let first = try CompetitionModelContainer.make(storeURL: fixture.storeURL)
@@ -101,13 +98,12 @@ struct CompetitionMigrationTests {
         #expect(try context.fetchCount(
             FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>()
         ) == fixture.submissions.count)
+        }
     }
 
     @Test("A failed V1 migration save leaves the original store intact and retryable")
     func failedMigrationSavePreservesV1Store() throws {
-        let fixture = try MigrationFixture.make()
-        defer { fixture.remove() }
-        try fixture.writeV1Store()
+        try MigrationFixture.use { fixture in
 
         let schema = Schema(versionedSchema: CompetitionSchemaV2.self)
         let configuration = ModelConfiguration(
@@ -142,6 +138,7 @@ struct CompetitionMigrationTests {
         #expect(try retryContext.fetchCount(
             FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>()
         ) == fixture.submissions.count)
+        }
     }
 }
 
@@ -243,6 +240,20 @@ private struct MigrationFixture {
         )
     }
 
+    static func use(_ body: (MigrationFixture) throws -> Void) throws {
+        let fixture = try make()
+        do {
+            try autoreleasepool {
+                try fixture.writeV1Store()
+                try body(fixture)
+            }
+            try FileManager.default.removeItem(at: fixture.directoryURL)
+        } catch {
+            try? FileManager.default.removeItem(at: fixture.directoryURL)
+            throw error
+        }
+    }
+
     func writeV1Store() throws {
         let schema = Schema(versionedSchema: CompetitionSchemaV1.self)
         let configuration = ModelConfiguration(
@@ -277,10 +288,6 @@ private struct MigrationFixture {
             .compactMap(\.snapshot)
             .sorted { $0.id.uuidString < $1.id.uuidString }
         return (players, submissions)
-    }
-
-    func remove() {
-        try? FileManager.default.removeItem(at: directoryURL)
     }
 
     private static func submission(

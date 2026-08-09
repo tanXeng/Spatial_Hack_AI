@@ -300,31 +300,46 @@ struct CompetitionSwiftDataV2PersistenceTests {
 
     @Test("A failed save rolls back the inserted participant")
     func saveFailureRollsBackContext() async throws {
+        try await FileBackedCompetitionFixture.use { storeURL in
+            try createWritableV2Store(at: storeURL)
+
+            let container = try CompetitionModelContainer.make(storeURL: storeURL, allowsSave: false)
+            let repository = SwiftDataCompetitionRepository(container: container)
+            let player = makePersistentPlayer()
+
+            await #expect(throws: CompetitionRepositoryError.self) {
+                try await repository.save(player: player)
+            }
+
+            #expect(try await repository.player(id: player.id) == nil)
+            #expect(try ModelContext(container).fetch(
+                FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>()
+            ).isEmpty)
+        }
+    }
+}
+
+@MainActor
+private enum FileBackedCompetitionFixture {
+    static func use(_ body: (URL) async throws -> Void) async throws {
         let directoryURL = FileManager.default.temporaryDirectory
             .appendingPathComponent("CompetitionRollbackTests-\(UUID().uuidString)", isDirectory: true)
         try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directoryURL) }
-        let storeURL = directoryURL.appendingPathComponent("competition.store")
-        try createWritableV2Store(at: storeURL)
-
-        let container = try CompetitionModelContainer.make(storeURL: storeURL, allowsSave: false)
-        let repository = SwiftDataCompetitionRepository(container: container)
-        let player = makePersistentPlayer()
-
-        await #expect(throws: CompetitionRepositoryError.self) {
-            try await repository.save(player: player)
+        do {
+            try await body(directoryURL.appendingPathComponent("competition.store"))
+            try FileManager.default.removeItem(at: directoryURL)
+        } catch {
+            try? FileManager.default.removeItem(at: directoryURL)
+            throw error
         }
-
-        #expect(try await repository.player(id: player.id) == nil)
-        #expect(try ModelContext(container).fetch(
-            FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>()
-        ).isEmpty)
     }
 }
 
 @MainActor
 private func createWritableV2Store(at storeURL: URL) throws {
-    _ = try CompetitionModelContainer.make(storeURL: storeURL)
+    try autoreleasepool {
+        _ = try CompetitionModelContainer.make(storeURL: storeURL)
+    }
 }
 
 private extension Array {

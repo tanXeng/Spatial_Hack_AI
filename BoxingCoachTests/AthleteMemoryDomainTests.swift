@@ -224,6 +224,23 @@ struct AthleteMemoryDomainTests {
         }
     }
 
+    @Test("Decoding cannot bypass skill-memory key version validation")
+    func decodedMemoryKeyRevalidatesVersions() throws {
+        let payload = MemoryKeyPayload(
+            eventID: UUID(),
+            athleteID: UUID(),
+            techniqueID: Technique.jab.id,
+            stance: .orthodox,
+            referenceVersion: 0,
+            scoringVersion: 2,
+            calibrationVersion: 1
+        )
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(AthleteSkillMemoryKey.self, from: encoded(payload))
+        }
+    }
+
     @Test("Decoding rejects skill memory containing another athlete's attempt")
     func decodedMemoryRevalidatesAttemptMembership() throws {
         let attempt = try #require(TechniqueAttemptSnapshot(
@@ -401,6 +418,16 @@ struct AthleteMemoryDomainTests {
         let attempts: [TechniqueAttemptSnapshot]
         let pastSelfTrace: PastSelfTrace?
         let updatedAt: Date
+    }
+
+    private struct MemoryKeyPayload: Encodable {
+        let eventID: UUID?
+        let athleteID: UUID
+        let techniqueID: String
+        let stance: Stance
+        let referenceVersion: Int
+        let scoringVersion: Int
+        let calibrationVersion: Int?
     }
 
     private struct PendingRunPayload: Encodable {

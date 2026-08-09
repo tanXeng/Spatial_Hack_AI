@@ -1,6 +1,11 @@
 import Foundation
 import SwiftData
 
+nonisolated private enum AthleteMemoryPersistenceError: Error {
+    case incompatibleMemoryKey
+    case incompatibleRunIdentity
+}
+
 enum CompetitionSchemaV2: VersionedSchema {
     static var versionIdentifier = Schema.Version(2, 0, 0)
 
@@ -75,7 +80,7 @@ enum CompetitionSchemaV2: VersionedSchema {
     @Model
     final class CompetitionPlayerRecord {
         @Attribute(.unique) var id: UUID
-        @Attribute(.unique) var normalizedName: String
+        var normalizedName: String
         var name: String
         var stanceRawValue: String
         var leftReach: Float?
@@ -171,6 +176,7 @@ enum CompetitionSchemaV2: VersionedSchema {
         var completedAt: Date
         var publicDisplayName: String?
         var publicDisplayCode: String?
+        var snapshotData: Data?
 
         init(_ attempt: TechniqueAttemptSnapshot) {
             id = attempt.id
@@ -184,10 +190,17 @@ enum CompetitionSchemaV2: VersionedSchema {
             completedAt = attempt.completedAt
             publicDisplayName = attempt.publicHandleSnapshot?.displayName
             publicDisplayCode = attempt.publicHandleSnapshot?.displayCode
+            snapshotData = try? JSONEncoder().encode(attempt)
         }
 
         var snapshot: TechniqueAttemptSnapshot? {
-            TechniqueAttemptSnapshot(
+            if let snapshotData {
+                return try? JSONDecoder().decode(
+                    TechniqueAttemptSnapshot.self,
+                    from: snapshotData
+                )
+            }
+            return TechniqueAttemptSnapshot(
                 id: id,
                 athleteID: athleteID,
                 eventID: eventID,
@@ -217,7 +230,19 @@ enum CompetitionSchemaV2: VersionedSchema {
         var updatedAt: Date
 
         init(_ memory: AthleteSkillMemory) throws {
-            id = Self.key(athleteID: memory.athleteID, techniqueID: memory.techniqueID)
+            id = memory.key.storageKey
+            athleteID = memory.athleteID
+            techniqueID = memory.techniqueID
+            experienceLevelRawValue = memory.experienceLevel.rawValue
+            attemptIDs = memory.attempts.map(\.id)
+            pastSelfTraceData = try memory.pastSelfTrace.map { try JSONEncoder().encode($0) }
+            updatedAt = memory.updatedAt
+        }
+
+        func apply(_ memory: AthleteSkillMemory) throws {
+            guard id == memory.key.storageKey else {
+                throw AthleteMemoryPersistenceError.incompatibleMemoryKey
+            }
             athleteID = memory.athleteID
             techniqueID = memory.techniqueID
             experienceLevelRawValue = memory.experienceLevel.rawValue
@@ -248,10 +273,6 @@ enum CompetitionSchemaV2: VersionedSchema {
                 updatedAt: updatedAt
             )
         }
-
-        private static func key(athleteID: UUID, techniqueID: String) -> String {
-            "\(athleteID.uuidString.lowercased())|\(techniqueID)"
-        }
     }
 
     @Model
@@ -261,6 +282,7 @@ enum CompetitionSchemaV2: VersionedSchema {
         var eventID: UUID?
         var techniqueID: String
         var requestedAt: Date
+        var snapshotData: Data?
 
         init(_ run: PendingTrainingRun) {
             id = run.id
@@ -268,6 +290,7 @@ enum CompetitionSchemaV2: VersionedSchema {
             eventID = run.eventID
             techniqueID = run.techniqueID
             requestedAt = run.requestedAt
+            snapshotData = TrainingRunSnapshot(run).flatMap { try? JSONEncoder().encode($0) }
         }
 
         var snapshot: PendingTrainingRun? {
@@ -278,6 +301,23 @@ enum CompetitionSchemaV2: VersionedSchema {
                 techniqueID: techniqueID,
                 requestedAt: requestedAt
             )
+        }
+
+        var runSnapshot: TrainingRunSnapshot? {
+            if let snapshotData {
+                return try? JSONDecoder().decode(TrainingRunSnapshot.self, from: snapshotData)
+            }
+            return snapshot.flatMap(TrainingRunSnapshot.init)
+        }
+
+        func apply(_ run: TrainingRunSnapshot) throws {
+            guard run.id == id,
+                  run.athleteID == athleteID,
+                  run.eventID == eventID,
+                  run.techniqueID == techniqueID,
+                  run.requestedAt == requestedAt
+            else { throw AthleteMemoryPersistenceError.incompatibleRunIdentity }
+            snapshotData = try JSONEncoder().encode(run)
         }
     }
 

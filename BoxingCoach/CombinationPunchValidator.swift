@@ -1,6 +1,68 @@
 import Foundation
 import simd
 
+/// Routes tracking interruptions before a combination frame can reach punch admission.
+///
+/// This policy never scores. Ranked sessions retain their recovery presentation, while normal
+/// sessions discard the partial chain and reacquire a fresh bilateral guard before retrying the
+/// same authored target.
+nonisolated enum CombinationTrackingInterruptionPolicy {
+    nonisolated struct Input: Sendable, Equatable {
+        let requiredHandAvailable: Bool
+        let otherHandAvailable: Bool
+        let devicePoseAvailable: Bool
+        let expectedGeneration: UInt64
+        let currentGeneration: UInt64
+        let expectedContinuityEpoch: UInt64
+        let currentContinuityEpoch: UInt64
+
+        nonisolated init(
+            requiredHandAvailable: Bool,
+            otherHandAvailable: Bool,
+            devicePoseAvailable: Bool,
+            expectedGeneration: UInt64,
+            currentGeneration: UInt64,
+            expectedContinuityEpoch: UInt64,
+            currentContinuityEpoch: UInt64
+        ) {
+            self.requiredHandAvailable = requiredHandAvailable
+            self.otherHandAvailable = otherHandAvailable
+            self.devicePoseAvailable = devicePoseAvailable
+            self.expectedGeneration = expectedGeneration
+            self.currentGeneration = currentGeneration
+            self.expectedContinuityEpoch = expectedContinuityEpoch
+            self.currentContinuityEpoch = currentContinuityEpoch
+        }
+    }
+
+    nonisolated enum Decision: Sendable, Equatable {
+        case continueAttempt
+        case discardAndRetry
+        case competitionRecovery
+
+        nonisolated var pausesForFreshGuard: Bool {
+            self != .continueAttempt
+        }
+
+        nonisolated var recordsMetric: Bool { false }
+        nonisolated var flashesTarget: Bool { false }
+        nonisolated var advancesStep: Bool { false }
+    }
+
+    nonisolated static func decision(
+        input: Input,
+        capturesCompetitionEvidence: Bool
+    ) -> Decision {
+        let isCoherent = input.requiredHandAvailable
+            && input.otherHandAvailable
+            && input.devicePoseAvailable
+            && input.currentGeneration == input.expectedGeneration
+            && input.currentContinuityEpoch == input.expectedContinuityEpoch
+        guard !isCoherent else { return .continueAttempt }
+        return capturesCompetitionEvidence ? .competitionRecovery : .discardAndRetry
+    }
+}
+
 /// Combination-specific adapter around the single transferable punch evidence reducer.
 ///
 /// This wrapper resolves number-notation punch metadata. All temporal, hand-shape, motion,

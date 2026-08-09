@@ -203,6 +203,79 @@ final class CombinationPunchValidatorTests: XCTestCase {
         )
     }
 
+    func testNormalCombinationTrackingInterruptionsPauseAndRetryWithoutScoring() {
+        let interruptedInputs: [CombinationTrackingInterruptionPolicy.Input] = [
+            .init(
+                requiredHandAvailable: false,
+                otherHandAvailable: true,
+                devicePoseAvailable: true,
+                expectedGeneration: 4,
+                currentGeneration: 4,
+                expectedContinuityEpoch: 9,
+                currentContinuityEpoch: 9
+            ),
+            .init(
+                requiredHandAvailable: true,
+                otherHandAvailable: true,
+                devicePoseAvailable: false,
+                expectedGeneration: 4,
+                currentGeneration: 4,
+                expectedContinuityEpoch: 9,
+                currentContinuityEpoch: 9
+            ),
+            .init(
+                requiredHandAvailable: true,
+                otherHandAvailable: true,
+                devicePoseAvailable: true,
+                expectedGeneration: 4,
+                currentGeneration: 5,
+                expectedContinuityEpoch: 9,
+                currentContinuityEpoch: 9
+            ),
+            .init(
+                requiredHandAvailable: true,
+                otherHandAvailable: true,
+                devicePoseAvailable: true,
+                expectedGeneration: 4,
+                currentGeneration: 4,
+                expectedContinuityEpoch: 9,
+                currentContinuityEpoch: 10
+            )
+        ]
+
+        for input in interruptedInputs {
+            let decision = CombinationTrackingInterruptionPolicy.decision(
+                input: input,
+                capturesCompetitionEvidence: false
+            )
+            XCTAssertEqual(decision, .discardAndRetry)
+            XCTAssertTrue(decision.pausesForFreshGuard)
+            XCTAssertFalse(decision.recordsMetric)
+            XCTAssertFalse(decision.flashesTarget)
+            XCTAssertFalse(decision.advancesStep)
+        }
+    }
+
+    func testCompetitionTrackingInterruptionRetainsRecoveryUIPath() {
+        let input = CombinationTrackingInterruptionPolicy.Input(
+            requiredHandAvailable: false,
+            otherHandAvailable: true,
+            devicePoseAvailable: true,
+            expectedGeneration: 4,
+            currentGeneration: 4,
+            expectedContinuityEpoch: 9,
+            currentContinuityEpoch: 9
+        )
+
+        XCTAssertEqual(
+            CombinationTrackingInterruptionPolicy.decision(
+                input: input,
+                capturesCompetitionEvidence: true
+            ),
+            .competitionRecovery
+        )
+    }
+
     private func makeTarget(
         punch: PunchType,
         requiredHand: BodySide

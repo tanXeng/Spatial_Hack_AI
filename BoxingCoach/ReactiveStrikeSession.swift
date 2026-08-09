@@ -982,6 +982,67 @@ final class ReactiveStrikeSession {
         return false
     }
 
+    /// Normal combination rounds fail closed on any tracking-chain interruption. They remain on
+    /// the same authored target until three new, coherent bilateral samples establish guard again.
+    /// No attempt or ranked evidence is created while this recovery gate is active.
+    private func waitForNormalCombinationGuardRecovery() async -> Bool {
+        lastFeedback = "Tracking paused · hold both fists in guard"
+
+        var gate = CompetitionTrackingRecoveryGate()
+        var lastPairTimestamp: TimeInterval?
+        var recoveryGeneration = hands.providerGeneration
+        var recoveryEpoch = hands.continuityEpoch
+
+        while !Task.isCancelled, phase == .running {
+            if hands.providerGeneration != recoveryGeneration
+                || hands.continuityEpoch != recoveryEpoch {
+                recoveryGeneration = hands.providerGeneration
+                recoveryEpoch = hands.continuityEpoch
+                lastPairTimestamp = nil
+                gate = CompetitionTrackingRecoveryGate()
+            }
+
+            guard let frame = currentBodyFrame(),
+                  let left = hands.freshObservation(for: .left),
+                  let right = hands.freshObservation(for: .right),
+                  let leftGuard = guardPositionsBody[.left],
+                  let rightGuard = guardPositionsBody[.right]
+            else {
+                _ = gate.observe(freshAndGuarded: false)
+                try? await Task.sleep(for: .milliseconds(25))
+                continue
+            }
+
+            let pairTimestamp = min(left.acquisitionTimestamp, right.acquisitionTimestamp)
+            guard lastPairTimestamp.map({ pairTimestamp > $0 }) ?? true else {
+                try? await Task.sleep(for: .milliseconds(25))
+                continue
+            }
+            lastPairTimestamp = pairTimestamp
+
+            let isFreshGuard = left.fistState == .closed
+                && right.fistState == .closed
+                && CombinationPunchValidator.isRetracted(
+                    fist: frame.toBody(left.fistPosition),
+                    guardPosition: leftGuard,
+                    radius: CombinationPunchValidator.guardRadius
+                )
+                && CombinationPunchValidator.isRetracted(
+                    fist: frame.toBody(right.fistPosition),
+                    guardPosition: rightGuard,
+                    radius: CombinationPunchValidator.guardRadius
+                )
+            if gate.observe(freshAndGuarded: isFreshGuard) {
+                lastFeedback = "Tracking restored · retrying punch"
+                return true
+            }
+
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+
+        return false
+    }
+
     /// Presents exactly one combination target at a time. Each step validates the stance-derived
     /// physical hand and outbound motion, then requires that hand to retract before another target
     /// is allowed to appear. That makes repeated positions such as a double jab unambiguous.
@@ -1062,12 +1123,28 @@ final class ReactiveStrikeSession {
                     let required = hands.freshObservation(for: target.requiredHand)
                     let other = hands.freshObservation(for: target.requiredHand.opposite)
 
-                    if capturesCompetitionEvidence,
-                       required == nil
-                        || other == nil
-                        || hands.deviceTransform == nil
-                        || hands.providerGeneration != captureChain.generation
-                        || hands.continuityEpoch != captureChain.continuityEpoch {
+                    let trackingDecision = CombinationTrackingInterruptionPolicy.decision(
+                        input: .init(
+                            requiredHandAvailable: required != nil,
+                            otherHandAvailable: other != nil,
+                            devicePoseAvailable: hands.deviceTransform != nil,
+                            expectedGeneration: captureChain.generation,
+                            currentGeneration: hands.providerGeneration,
+                            expectedContinuityEpoch: captureChain.continuityEpoch,
+                            currentContinuityEpoch: hands.continuityEpoch
+                        ),
+                        capturesCompetitionEvidence: capturesCompetitionEvidence
+                    )
+                    switch trackingDecision {
+                    case .continueAttempt:
+                        trackingLostAt = nil
+                    case .discardAndRetry:
+                        await discardAttempt(
+                            feedback: "Tracking paused · return both fists to guard"
+                        )
+                        guard await waitForNormalCombinationGuardRecovery() else { return }
+                        continue evidenceRetryLoop
+                    case .competitionRecovery:
                         trackingLostAt = trackingLostAt ?? Date()
                         if Date().timeIntervalSince(trackingLostAt!)
                             >= CompetitionTrackingRecoveryGate.lossGraceSeconds {
@@ -1116,8 +1193,6 @@ final class ReactiveStrikeSession {
                         try? await Task.sleep(for: .milliseconds(16))
                         continue
                     }
-
-                    trackingLostAt = nil
                     if Date() >= deadline {
                         await finishAttempt(
                             result: .miss,

@@ -5,7 +5,8 @@ import simd
 struct RecordedAttempt: Sendable {
     /// Normalized samples covering just the punch itself (idle time at either end trimmed).
     var samples: [MotionSample]
-    /// Fraction of frames that came from real tracking rather than being filled across a dropout.
+    /// Fraction of frames in the **trimmed punch** that came from real tracking rather than
+    /// interpolation across a dropout. Idle guard time in the capture window is excluded.
     var trackedFraction: Float
     /// Wall-clock length of the trimmed punch.
     var duration: TimeInterval
@@ -73,13 +74,23 @@ final class MotionRecorder {
     func finish() -> RecordedAttempt {
         isRecording = false
 
-        let trackedCount = raw.filter { $0.sample != nil }.count
-        let trackedFraction = raw.isEmpty ? 0 : Float(trackedCount) / Float(raw.count)
-
         let filled = fillDropouts()
         let trimmed = trimToPunch(filled)
 
         let duration = (trimmed.last?.time ?? 0) - (trimmed.first?.time ?? 0)
+
+        // Measured on the trimmed punch only — not the full capture window. The attempt window
+        // includes seconds of cheek-height guard while the user waits to throw, and that pose
+        // often sits in the Vision Pro's side/bottom camera blind spot. Counting those idle frames
+        // against the 60 % threshold rejected technically fine punches with a tracking error.
+        // Guard discipline during the punch is scored separately via the guard-hand sub-metric.
+        let trackedFraction: Float
+        if trimmed.isEmpty {
+            trackedFraction = 0
+        } else {
+            let trackedCount = trimmed.filter(\.isTracked).count
+            trackedFraction = Float(trackedCount) / Float(trimmed.count)
+        }
 
         // Rebase to zero so DTW compares two sequences that both start at t=0.
         let offset = trimmed.first?.time ?? 0

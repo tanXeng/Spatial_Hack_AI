@@ -597,7 +597,7 @@ final class AuraPunchSession {
         ) else {
             // Refusing to score a bad capture is deliberate: a confident number built on
             // interpolated motion would coach the user on a punch they never threw.
-            fail("Couldn't track that attempt cleanly enough to score it. Keep your hands in view and try again.")
+            fail("Couldn't track the punch itself cleanly enough to score it. Throw when ready — guard at your cheeks is fine.")
             return
         }
 

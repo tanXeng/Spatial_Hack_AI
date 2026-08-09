@@ -45,11 +45,21 @@ final class HandTrackingService {
     private(set) var leftHand: HandObservation?
     private(set) var rightHand: HandObservation?
 
+    /// Last good observation per side, kept briefly after ARKit drops the anchor so cheek-height
+    /// guard in the headset's blind spot does not flicker to nil every frame.
+    private var leftHandLastGood: HandObservation?
+    private var rightHandLastGood: HandObservation?
+    private var leftHandLastGoodTime: TimeInterval = 0
+    private var rightHandLastGoodTime: TimeInterval = 0
+
+    /// How long to reuse the last tracked pose when ARKit momentarily loses a hand.
+    private let staleHandDuration: TimeInterval = 0.2
+
     /// Head pose in world space, from the device anchor. `nil` until world tracking settles.
     private(set) var deviceTransform: simd_float4x4?
 
-    var leftFistPosition: SIMD3<Float>? { leftHand?.fistPosition }
-    var rightFistPosition: SIMD3<Float>? { rightHand?.fistPosition }
+    var leftFistPosition: SIMD3<Float>? { observation(for: .left)?.fistPosition }
+    var rightFistPosition: SIMD3<Float>? { observation(for: .right)?.fistPosition }
 
     /// True once both hands *and* the head have produced at least one usable sample. Aura Punch
     /// needs all three before it can place a shoulder, so it gates its countdown on this.
@@ -58,7 +68,17 @@ final class HandTrackingService {
     }
 
     func observation(for side: BodySide) -> HandObservation? {
-        side == .left ? leftHand : rightHand
+        let now = CACurrentMediaTime()
+        switch side {
+        case .left:
+            if let leftHand { return leftHand }
+            if now - leftHandLastGoodTime <= staleHandDuration { return leftHandLastGood }
+            return nil
+        case .right:
+            if let rightHand { return rightHand }
+            if now - rightHandLastGoodTime <= staleHandDuration { return rightHandLastGood }
+            return nil
+        }
     }
 
     /// Rebuilt on every `start()` — see the note there. Never make these `let`.
@@ -153,6 +173,10 @@ final class HandTrackingService {
         isRunning = false
         leftHand = nil
         rightHand = nil
+        leftHandLastGood = nil
+        rightHandLastGood = nil
+        leftHandLastGoodTime = 0
+        rightHandLastGoodTime = 0
         deviceTransform = nil
         statusMessage = "Hand tracking stopped"
     }
@@ -219,9 +243,16 @@ final class HandTrackingService {
             timestamp: CACurrentMediaTime()
         )
 
+        let now = CACurrentMediaTime()
         switch side {
-        case .left: leftHand = observation
-        case .right: rightHand = observation
+        case .left:
+            leftHand = observation
+            leftHandLastGood = observation
+            leftHandLastGoodTime = now
+        case .right:
+            rightHand = observation
+            rightHandLastGood = observation
+            rightHandLastGoodTime = now
         }
     }
 

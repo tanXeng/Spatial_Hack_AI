@@ -226,7 +226,11 @@ struct TechniqueScorer: Sendable {
     ) -> TechniqueScore? {
         guard attempt.isUsable, !reference.samples.isEmpty else { return nil }
 
-        let referenceFists = reference.samples.map(\.fist)
+        let useOutboundPath = attempt.endsNearExtension()
+        let pathReferenceSamples = useOutboundPath ? reference.outboundSamples : reference.samples
+        guard pathReferenceSamples.count > 1 else { return nil }
+
+        let referenceFists = pathReferenceSamples.map(\.fist)
         let attemptFists = attempt.samples.map(\.fist)
 
         guard let alignment = DTWComparator.align(
@@ -237,7 +241,11 @@ struct TechniqueScorer: Sendable {
         var metrics: [SubMetric] = [
             extensionMetric(attempt: attempt, reference: reference),
             pathMetric(alignment: alignment),
-            elbowMetric(attempt: attempt, reference: reference, alignment: alignment),
+            elbowMetric(
+                attempt: attempt,
+                referenceSamples: pathReferenceSamples,
+                alignment: alignment
+            ),
             retractionMetric(attempt: attempt, reference: reference)
         ]
 
@@ -302,11 +310,11 @@ struct TechniqueScorer: Sendable {
     /// Did the elbow stay tucked?
     private func elbowMetric(
         attempt: RecordedAttempt,
-        reference: ReferencePunch,
+        referenceSamples: [MotionSample],
         alignment: DTWAlignment
     ) -> SubMetric {
         let deviation = DTWComparator.meanDistance(
-            reference: reference.samples.map(\.elbow),
+            reference: referenceSamples.map(\.elbow),
             attempt: attempt.samples.map(\.elbow),
             along: alignment
         ) ?? 0
@@ -377,6 +385,15 @@ struct TechniqueScorer: Sendable {
               let referenceEnd = reference.samples.last
         else {
             return SubMetric(kind: .retraction, score: nil, measured: 0, detail: "No data")
+        }
+
+        if attempt.endsNearExtension() {
+            return SubMetric(
+                kind: .retraction,
+                score: nil,
+                measured: 0,
+                detail: "Retraction not captured"
+            )
         }
 
         let error = simd_distance(attemptEnd.fist, referenceEnd.fist)

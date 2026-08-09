@@ -24,6 +24,13 @@ struct RecordedAttempt: Sendable {
         samples.map(\.reachFraction).max() ?? 0
     }
 
+    /// True when the attempt ends still near full extension (return phase not captured).
+    func endsNearExtension(threshold: Float = 0.90) -> Bool {
+        let peak = peakReach
+        guard peak > 0.06, let last = samples.last else { return false }
+        return last.reachFraction >= peak * threshold
+    }
+
     /// Technique-aware magnitude used by the Extension score and to decide which arm threw.
     /// Uppercuts are defined by the ordered rise from their low load to their later landing; their
     /// hip load can be radially farther from the shoulder than the fist is at the chin. Every

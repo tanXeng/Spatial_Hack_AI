@@ -48,6 +48,11 @@ struct ReferencePunch: Sendable {
         peakSample?.time ?? 0
     }
 
+    /// Reference samples from guard through full extension (excludes return to guard).
+    var outboundSamples: [MotionSample] {
+        samples.filter { $0.time <= peakTime + 1e-6 }
+    }
+
     /// Whether this sample should receive the guide's landing emphasis.
     ///
     /// Radial reach remains the useful cue for straights and hooks. For an uppercut it would also

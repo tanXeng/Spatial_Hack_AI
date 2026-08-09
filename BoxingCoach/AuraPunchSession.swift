@@ -76,6 +76,10 @@ final class AuraPunchSession {
 
     private let scoredPunchSafetyTimeout: TimeInterval = 20
     private let interScoredPunchDelay: TimeInterval = 0.45
+    /// How long to keep recording after a target hit so retraction can be scored.
+    private let postHitCaptureDuration: TimeInterval = 1.0
+    /// Follow-through ends once reach drops below this fraction of the hit peak.
+    private let retractionReachFraction: Float = 0.85
 
     // MARK: Observable state
 
@@ -626,7 +630,6 @@ final class AuraPunchSession {
             )
 
             if let capture {
-                targets.flash(result: .hit)
                 let punchReference = ReferencePunchLibrary.punch(
                     for: technique,
                     stance: stance,
@@ -642,8 +645,6 @@ final class AuraPunchSession {
                 ) {
                     scores.append(computed)
                 }
-            } else {
-                targets.flash(result: .miss)
             }
 
             try? await Task.sleep(for: .milliseconds(220))
@@ -665,7 +666,7 @@ final class AuraPunchSession {
         await finishAggregated(aggregated)
     }
 
-    /// Records motion until the user's fist reaches the active target (or safety timeout).
+    /// Records motion until the user's fist reaches the active target, then through retraction.
     private func capturePunchUntilHit(
         solver: ArmPoseSolver,
         reference: ReferencePunch,
@@ -682,83 +683,108 @@ final class AuraPunchSession {
 
         for recorder in recorders.values { recorder.begin(at: startTime) }
 
-        let deadline = CACurrentMediaTime() + scoredPunchSafetyTimeout
-        var punchingSide: BodySide?
+        let armingDeadline = CACurrentMediaTime() + scoredPunchSafetyTimeout
+        var hitDetected = false
+        var hitPeakReach: Float = 0
+        var followThroughDeadline: TimeInterval = 0
 
-        while CACurrentMediaTime() < deadline {
+        while true {
             if Task.isCancelled { break }
 
             let now = CACurrentMediaTime()
+            if !hitDetected, now >= armingDeadline { break }
+            if hitDetected, now >= followThroughDeadline { break }
+
             updateLandingTarget(reference: reference, side: side, solver: solver)
 
-            if let hitPosition = targets.activeTargetPosition,
+            if !hitDetected,
+               let hitPosition = targets.activeTargetPosition,
                let fist = hands.nearestFistPosition(to: hitPosition),
                distance(fist, hitPosition) <= targetHitRadius {
-                mirrorArm?.isVisible = false
-                return selectedCapturedAttempt(for: technique.id)
+                hitDetected = true
+                targets.flash(result: .hit)
+                followThroughDeadline = now + postHitCaptureDuration
             }
 
-            guard let frame = bodyFrameForAttempt(solver: solver, at: now) else {
-                for handSide in [BodySide.left, .right] {
-                    guard let recorder = recorders[handSide] else { continue }
-                    if hands.observation(for: handSide) == nil {
-                        recorder.recordDropout(at: now)
+            let leadingReach = recordAttemptFrame(
+                solver: solver,
+                startTime: startTime,
+                throwMessage: throwMessage,
+                at: now
+            )
+
+            if let leadingReach {
+                if hitDetected {
+                    hitPeakReach = max(hitPeakReach, leadingReach)
+                    if hitPeakReach > 0,
+                       leadingReach < hitPeakReach * retractionReachFraction {
+                        break
                     }
                 }
-                mirrorArm?.isVisible = false
-                try? await Task.sleep(for: frameInterval)
-                continue
             }
 
-            var leadingPose: ArmPose?
-            var leadingReach: Float = -1
-            var leadingSide: BodySide?
+            try? await Task.sleep(for: frameInterval)
+        }
 
+        mirrorArm?.isVisible = false
+
+        guard hitDetected else {
+            for recorder in recorders.values { recorder.cancel() }
+            return nil
+        }
+
+        return selectedCapturedAttempt(for: technique.id)
+    }
+
+    /// Records one frame of both arms; returns the leading reach fraction if any hand tracked.
+    @discardableResult
+    private func recordAttemptFrame(
+        solver: ArmPoseSolver,
+        startTime: TimeInterval,
+        throwMessage: String,
+        at now: TimeInterval
+    ) -> Float? {
+        guard let frame = bodyFrameForAttempt(solver: solver, at: now) else {
             for handSide in [BodySide.left, .right] {
                 guard let recorder = recorders[handSide] else { continue }
-                guard let hand = hands.observation(for: handSide) else {
+                if hands.observation(for: handSide) == nil {
                     recorder.recordDropout(at: now)
-                    continue
-                }
-
-                let pose = solver.solve(hand: hand, frame: frame)
-                let sample = solver.normalize(
-                    pose: pose,
-                    guardHand: hands.observation(for: handSide.opposite)?.fistPosition,
-                    frame: frame,
-                    startTime: startTime
-                )
-                recorder.record(sample)
-
-                if sample.reachFraction > leadingReach {
-                    leadingReach = sample.reachFraction
-                    leadingPose = pose
-                    leadingSide = handSide
                 }
             }
+            mirrorArm?.isVisible = false
+            return nil
+        }
 
-            punchingSide = leadingSide ?? punchingSide
+        var leadingPose: ArmPose?
+        var leadingReach: Float = -1
+        var leadingSide: BodySide?
 
-            if let punchingSide, nonPunchingGuardStatus(punchingSide: punchingSide, solver: solver) == false {
-                statusMessage = GuardCoach.waitMessage
-                if let leadingPose {
-                    liveReach = leadingReach
-                    mirrorArm?.isVisible = true
-                    mirrorArm?.pose(
-                        shoulder: leadingPose.shoulder,
-                        elbow: leadingPose.elbow,
-                        fist: leadingPose.fist
-                    )
-                }
-                try? await Task.sleep(for: frameInterval)
+        for handSide in [BodySide.left, .right] {
+            guard let recorder = recorders[handSide] else { continue }
+            guard let hand = hands.observation(for: handSide) else {
+                recorder.recordDropout(at: now)
                 continue
             }
 
-            if statusMessage == GuardCoach.waitMessage {
-                statusMessage = throwMessage
-            }
+            let pose = solver.solve(hand: hand, frame: frame)
+            let sample = solver.normalize(
+                pose: pose,
+                guardHand: hands.observation(for: handSide.opposite)?.fistPosition,
+                frame: frame,
+                startTime: startTime
+            )
+            recorder.record(sample)
 
-            if let leadingPose {
+            if sample.reachFraction > leadingReach {
+                leadingReach = sample.reachFraction
+                leadingPose = pose
+                leadingSide = handSide
+            }
+        }
+
+        if let leadingSide, nonPunchingGuardStatus(punchingSide: leadingSide, solver: solver) == false {
+            statusMessage = GuardCoach.waitMessage
+            if let leadingPose, leadingReach >= 0 {
                 liveReach = leadingReach
                 mirrorArm?.isVisible = true
                 mirrorArm?.pose(
@@ -766,15 +792,26 @@ final class AuraPunchSession {
                     elbow: leadingPose.elbow,
                     fist: leadingPose.fist
                 )
-            } else {
-                mirrorArm?.isVisible = false
             }
+            return leadingReach >= 0 ? leadingReach : nil
+        }
 
-            try? await Task.sleep(for: frameInterval)
+        if statusMessage == GuardCoach.waitMessage {
+            statusMessage = throwMessage
+        }
+
+        if let leadingPose, leadingReach >= 0 {
+            liveReach = leadingReach
+            mirrorArm?.isVisible = true
+            mirrorArm?.pose(
+                shoulder: leadingPose.shoulder,
+                elbow: leadingPose.elbow,
+                fist: leadingPose.fist
+            )
+            return leadingReach
         }
 
         mirrorArm?.isVisible = false
-        for recorder in recorders.values { recorder.cancel() }
         return nil
     }
 

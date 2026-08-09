@@ -21,6 +21,16 @@ nonisolated struct EventEdition: Identifiable, Codable, Hashable, Sendable {
     let scoringVersion: Int
     let calibrationVersion: Int
 
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case title
+        case status
+        case openedAt
+        case closedAt
+        case scoringVersion
+        case calibrationVersion
+    }
+
     init?(
         id: UUID,
         title: String,
@@ -56,6 +66,34 @@ nonisolated struct EventEdition: Identifiable, Codable, Hashable, Sendable {
         self.calibrationVersion = calibrationVersion
     }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(UUID.self, forKey: .id)
+        let title = try container.decode(String.self, forKey: .title)
+        let status = try container.decode(EventEditionStatus.self, forKey: .status)
+        let openedAt = try container.decode(Date.self, forKey: .openedAt)
+        let closedAt = try container.decodeIfPresent(Date.self, forKey: .closedAt)
+        let scoringVersion = try container.decode(Int.self, forKey: .scoringVersion)
+        let calibrationVersion = try container.decode(Int.self, forKey: .calibrationVersion)
+
+        guard let validated = EventEdition(
+            id: id,
+            title: title,
+            status: status,
+            openedAt: openedAt,
+            closedAt: closedAt,
+            scoringVersion: scoringVersion,
+            calibrationVersion: calibrationVersion
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .status,
+                in: container,
+                debugDescription: "Event edition fields do not form a valid open or closed edition."
+            )
+        }
+        self = validated
+    }
+
     var isOpen: Bool { status == .open }
 
     func closing(at date: Date) -> EventEdition? {
@@ -75,37 +113,39 @@ nonisolated struct EventEdition: Identifiable, Codable, Hashable, Sendable {
 nonisolated struct ParticipantPublicHandle: Codable, Hashable, Sendable {
     let eventID: UUID
     let displayName: String
-    let code: String
+    /// Public, display-only, non-authenticating disambiguator; it is not a secret or credential.
+    /// Security invariant: never use this value for authentication, authorization, recovery, or as a PIN.
+    let displayCode: String
 
-    var displayValue: String { "\(displayName) #\(code)" }
+    var displayValue: String { "\(displayName) #\(displayCode)" }
 
     private enum CodingKeys: String, CodingKey {
         case eventID
         case displayName
-        case code
+        case displayCode
     }
 
-    private init(eventID: UUID, displayName: String, code: String) {
+    private init(eventID: UUID, displayName: String, displayCode: String) {
         self.eventID = eventID
         self.displayName = displayName
-        self.code = code
+        self.displayCode = displayCode
     }
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         let eventID = try container.decode(UUID.self, forKey: .eventID)
         let displayName = try container.decode(String.self, forKey: .displayName)
-        let code = try container.decode(String.self, forKey: .code)
+        let displayCode = try container.decode(String.self, forKey: .displayCode)
         guard let validated = Self.reserving(
             eventID: eventID,
             displayName: displayName,
-            code: code,
+            displayCode: displayCode,
             against: []
         ) else {
             throw DecodingError.dataCorruptedError(
-                forKey: .code,
+                forKey: .displayCode,
                 in: container,
-                debugDescription: "Participant code must contain exactly four ASCII digits."
+                debugDescription: "Participant display code must contain exactly four ASCII digits."
             )
         }
         self = validated
@@ -114,18 +154,18 @@ nonisolated struct ParticipantPublicHandle: Codable, Hashable, Sendable {
     static func reserving(
         eventID: UUID,
         displayName: String,
-        code: String,
+        displayCode: String,
         against existing: [ParticipantPublicHandle]
     ) -> ParticipantPublicHandle? {
-        guard isFourDigitCode(code),
-              !existing.contains(where: { $0.eventID == eventID && $0.code == code }),
+        guard isFourDigitDisplayCode(displayCode),
+              !existing.contains(where: { $0.eventID == eventID && $0.displayCode == displayCode }),
               let validatedName = try? CompetitionName.display(displayName)
         else { return nil }
 
         return ParticipantPublicHandle(
             eventID: eventID,
             displayName: validatedName,
-            code: code
+            displayCode: displayCode
         )
     }
 
@@ -134,23 +174,23 @@ nonisolated struct ParticipantPublicHandle: Codable, Hashable, Sendable {
         displayName: String,
         against existing: [ParticipantPublicHandle]
     ) -> ParticipantPublicHandle? {
-        let reserved = Set(existing.lazy.filter { $0.eventID == eventID }.map(\.code))
+        let reserved = Set(existing.lazy.filter { $0.eventID == eventID }.map(\.displayCode))
         guard reserved.count < 10_000 else { return nil }
 
         for candidate in 0..<10_000 {
-            let code = String(format: "%04d", candidate)
-            guard !reserved.contains(code) else { continue }
+            let displayCode = String(format: "%04d", candidate)
+            guard !reserved.contains(displayCode) else { continue }
             return reserving(
                 eventID: eventID,
                 displayName: displayName,
-                code: code,
+                displayCode: displayCode,
                 against: existing
             )
         }
         return nil
     }
 
-    private static func isFourDigitCode(_ value: String) -> Bool {
+    private static func isFourDigitDisplayCode(_ value: String) -> Bool {
         value.utf8.count == 4 && value.utf8.allSatisfy { (48...57).contains($0) }
     }
 }
@@ -166,6 +206,19 @@ nonisolated struct TechniqueAttemptSnapshot: Identifiable, Codable, Hashable, Se
     let startedAt: Date
     let completedAt: Date
     let publicHandleSnapshot: ParticipantPublicHandle?
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case athleteID
+        case eventID
+        case techniqueID
+        case score
+        case scoringVersion
+        case calibrationVersion
+        case startedAt
+        case completedAt
+        case publicHandleSnapshot
+    }
 
     init?(
         id: UUID,
@@ -200,6 +253,43 @@ nonisolated struct TechniqueAttemptSnapshot: Identifiable, Codable, Hashable, Se
         self.startedAt = startedAt
         self.completedAt = completedAt
         self.publicHandleSnapshot = publicHandleSnapshot
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(UUID.self, forKey: .id)
+        let athleteID = try container.decode(UUID.self, forKey: .athleteID)
+        let eventID = try container.decodeIfPresent(UUID.self, forKey: .eventID)
+        let techniqueID = try container.decode(String.self, forKey: .techniqueID)
+        let score = try container.decode(Float.self, forKey: .score)
+        let scoringVersion = try container.decode(Int.self, forKey: .scoringVersion)
+        let calibrationVersion = try container.decodeIfPresent(Int.self, forKey: .calibrationVersion)
+        let startedAt = try container.decode(Date.self, forKey: .startedAt)
+        let completedAt = try container.decode(Date.self, forKey: .completedAt)
+        let publicHandleSnapshot = try container.decodeIfPresent(
+            ParticipantPublicHandle.self,
+            forKey: .publicHandleSnapshot
+        )
+
+        guard let validated = TechniqueAttemptSnapshot(
+            id: id,
+            athleteID: athleteID,
+            eventID: eventID,
+            techniqueID: techniqueID,
+            score: score,
+            scoringVersion: scoringVersion,
+            calibrationVersion: calibrationVersion,
+            startedAt: startedAt,
+            completedAt: completedAt,
+            publicHandleSnapshot: publicHandleSnapshot
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .score,
+                in: container,
+                debugDescription: "Technique attempt fields violate score, version, time, or event provenance invariants."
+            )
+        }
+        self = validated
     }
 }
 
@@ -291,6 +381,15 @@ nonisolated struct AthleteSkillMemory: Codable, Hashable, Sendable {
     let pastSelfTrace: PastSelfTrace?
     let updatedAt: Date
 
+    private enum CodingKeys: String, CodingKey {
+        case athleteID
+        case techniqueID
+        case experienceLevel
+        case attempts
+        case pastSelfTrace
+        case updatedAt
+    }
+
     init?(
         athleteID: UUID,
         techniqueID: String,
@@ -317,6 +416,32 @@ nonisolated struct AthleteSkillMemory: Codable, Hashable, Sendable {
         self.updatedAt = updatedAt
     }
 
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let athleteID = try container.decode(UUID.self, forKey: .athleteID)
+        let techniqueID = try container.decode(String.self, forKey: .techniqueID)
+        let experienceLevel = try container.decode(ExperienceLevel.self, forKey: .experienceLevel)
+        let attempts = try container.decode([TechniqueAttemptSnapshot].self, forKey: .attempts)
+        let pastSelfTrace = try container.decodeIfPresent(PastSelfTrace.self, forKey: .pastSelfTrace)
+        let updatedAt = try container.decode(Date.self, forKey: .updatedAt)
+
+        guard let validated = AthleteSkillMemory(
+            athleteID: athleteID,
+            techniqueID: techniqueID,
+            experienceLevel: experienceLevel,
+            attempts: attempts,
+            pastSelfTrace: pastSelfTrace,
+            updatedAt: updatedAt
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .attempts,
+                in: container,
+                debugDescription: "Athlete memory contains attempts or trace data outside its athlete and technique."
+            )
+        }
+        self = validated
+    }
+
     var bestAttempt: TechniqueAttemptSnapshot? {
         attempts.max {
             if $0.score != $1.score { return $0.score < $1.score }
@@ -332,6 +457,56 @@ nonisolated struct PendingTrainingRun: Identifiable, Codable, Hashable, Sendable
     let techniqueID: String
     let requestedAt: Date
 
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case athleteID
+        case eventID
+        case techniqueID
+        case requestedAt
+    }
+
+    init?(
+        id: UUID,
+        athleteID: UUID,
+        eventID: UUID?,
+        techniqueID: String,
+        requestedAt: Date
+    ) {
+        guard !techniqueID.isEmpty,
+              requestedAt.timeIntervalSinceReferenceDate.isFinite
+        else { return nil }
+
+        self.id = id
+        self.athleteID = athleteID
+        self.eventID = eventID
+        self.techniqueID = techniqueID
+        self.requestedAt = requestedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(UUID.self, forKey: .id)
+        let athleteID = try container.decode(UUID.self, forKey: .athleteID)
+        let eventID = try container.decodeIfPresent(UUID.self, forKey: .eventID)
+        let techniqueID = try container.decode(String.self, forKey: .techniqueID)
+        let requestedAt = try container.decode(Date.self, forKey: .requestedAt)
+
+        guard let validated = PendingTrainingRun(
+            id: id,
+            athleteID: athleteID,
+            eventID: eventID,
+            techniqueID: techniqueID,
+            requestedAt: requestedAt
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .techniqueID,
+                in: container,
+                debugDescription: "Pending training run requires a technique and finite request time."
+            )
+        }
+        self = validated
+    }
+
     func starting(at date: Date) -> ActiveTrainingRun? {
         guard date.timeIntervalSinceReferenceDate.isFinite, date >= requestedAt else { return nil }
         return ActiveTrainingRun(pending: self, startedAt: date)
@@ -346,13 +521,72 @@ nonisolated struct ActiveTrainingRun: Identifiable, Codable, Hashable, Sendable 
     let requestedAt: Date
     let startedAt: Date
 
-    fileprivate init(pending: PendingTrainingRun, startedAt: Date) {
-        id = pending.id
-        athleteID = pending.athleteID
-        eventID = pending.eventID
-        techniqueID = pending.techniqueID
-        requestedAt = pending.requestedAt
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case athleteID
+        case eventID
+        case techniqueID
+        case requestedAt
+        case startedAt
+    }
+
+    private init?(
+        id: UUID,
+        athleteID: UUID,
+        eventID: UUID?,
+        techniqueID: String,
+        requestedAt: Date,
+        startedAt: Date
+    ) {
+        guard !techniqueID.isEmpty,
+              requestedAt.timeIntervalSinceReferenceDate.isFinite,
+              startedAt.timeIntervalSinceReferenceDate.isFinite,
+              startedAt >= requestedAt
+        else { return nil }
+
+        self.id = id
+        self.athleteID = athleteID
+        self.eventID = eventID
+        self.techniqueID = techniqueID
+        self.requestedAt = requestedAt
         self.startedAt = startedAt
+    }
+
+    fileprivate init?(pending: PendingTrainingRun, startedAt: Date) {
+        self.init(
+            id: pending.id,
+            athleteID: pending.athleteID,
+            eventID: pending.eventID,
+            techniqueID: pending.techniqueID,
+            requestedAt: pending.requestedAt,
+            startedAt: startedAt
+        )
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(UUID.self, forKey: .id)
+        let athleteID = try container.decode(UUID.self, forKey: .athleteID)
+        let eventID = try container.decodeIfPresent(UUID.self, forKey: .eventID)
+        let techniqueID = try container.decode(String.self, forKey: .techniqueID)
+        let requestedAt = try container.decode(Date.self, forKey: .requestedAt)
+        let startedAt = try container.decode(Date.self, forKey: .startedAt)
+
+        guard let validated = ActiveTrainingRun(
+            id: id,
+            athleteID: athleteID,
+            eventID: eventID,
+            techniqueID: techniqueID,
+            requestedAt: requestedAt,
+            startedAt: startedAt
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .startedAt,
+                in: container,
+                debugDescription: "Active training run must start at or after its finite request time."
+            )
+        }
+        self = validated
     }
 
     func completing(with attempt: TechniqueAttemptSnapshot) -> CompletedTrainingRun? {
@@ -381,14 +615,78 @@ nonisolated struct CompletedTrainingRun: Identifiable, Codable, Hashable, Sendab
 
     var id: UUID { runID }
 
-    fileprivate init(active: ActiveTrainingRun, attempt: TechniqueAttemptSnapshot) {
-        runID = active.id
-        athleteID = active.athleteID
-        eventID = active.eventID
-        techniqueID = active.techniqueID
-        startedAt = active.startedAt
-        completedAt = attempt.completedAt
-        attemptID = attempt.id
+    private enum CodingKeys: String, CodingKey {
+        case runID
+        case athleteID
+        case eventID
+        case techniqueID
+        case startedAt
+        case completedAt
+        case attemptID
+    }
+
+    private init?(
+        runID: UUID,
+        athleteID: UUID,
+        eventID: UUID?,
+        techniqueID: String,
+        startedAt: Date,
+        completedAt: Date,
+        attemptID: UUID
+    ) {
+        guard !techniqueID.isEmpty,
+              startedAt.timeIntervalSinceReferenceDate.isFinite,
+              completedAt.timeIntervalSinceReferenceDate.isFinite,
+              completedAt >= startedAt
+        else { return nil }
+
+        self.runID = runID
+        self.athleteID = athleteID
+        self.eventID = eventID
+        self.techniqueID = techniqueID
+        self.startedAt = startedAt
+        self.completedAt = completedAt
+        self.attemptID = attemptID
+    }
+
+    fileprivate init?(active: ActiveTrainingRun, attempt: TechniqueAttemptSnapshot) {
+        self.init(
+            runID: active.id,
+            athleteID: active.athleteID,
+            eventID: active.eventID,
+            techniqueID: active.techniqueID,
+            startedAt: active.startedAt,
+            completedAt: attempt.completedAt,
+            attemptID: attempt.id
+        )
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let runID = try container.decode(UUID.self, forKey: .runID)
+        let athleteID = try container.decode(UUID.self, forKey: .athleteID)
+        let eventID = try container.decodeIfPresent(UUID.self, forKey: .eventID)
+        let techniqueID = try container.decode(String.self, forKey: .techniqueID)
+        let startedAt = try container.decode(Date.self, forKey: .startedAt)
+        let completedAt = try container.decode(Date.self, forKey: .completedAt)
+        let attemptID = try container.decode(UUID.self, forKey: .attemptID)
+
+        guard let validated = CompletedTrainingRun(
+            runID: runID,
+            athleteID: athleteID,
+            eventID: eventID,
+            techniqueID: techniqueID,
+            startedAt: startedAt,
+            completedAt: completedAt,
+            attemptID: attemptID
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .completedAt,
+                in: container,
+                debugDescription: "Completed training run must finish at or after its finite start time."
+            )
+        }
+        self = validated
     }
 }
 
@@ -402,13 +700,72 @@ nonisolated struct CancelledTrainingRun: Identifiable, Codable, Hashable, Sendab
 
     var id: UUID { runID }
 
-    fileprivate init(active: ActiveTrainingRun, cancelledAt: Date) {
-        runID = active.id
-        athleteID = active.athleteID
-        eventID = active.eventID
-        techniqueID = active.techniqueID
-        startedAt = active.startedAt
+    private enum CodingKeys: String, CodingKey {
+        case runID
+        case athleteID
+        case eventID
+        case techniqueID
+        case startedAt
+        case cancelledAt
+    }
+
+    private init?(
+        runID: UUID,
+        athleteID: UUID,
+        eventID: UUID?,
+        techniqueID: String,
+        startedAt: Date,
+        cancelledAt: Date
+    ) {
+        guard !techniqueID.isEmpty,
+              startedAt.timeIntervalSinceReferenceDate.isFinite,
+              cancelledAt.timeIntervalSinceReferenceDate.isFinite,
+              cancelledAt >= startedAt
+        else { return nil }
+
+        self.runID = runID
+        self.athleteID = athleteID
+        self.eventID = eventID
+        self.techniqueID = techniqueID
+        self.startedAt = startedAt
         self.cancelledAt = cancelledAt
+    }
+
+    fileprivate init?(active: ActiveTrainingRun, cancelledAt: Date) {
+        self.init(
+            runID: active.id,
+            athleteID: active.athleteID,
+            eventID: active.eventID,
+            techniqueID: active.techniqueID,
+            startedAt: active.startedAt,
+            cancelledAt: cancelledAt
+        )
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let runID = try container.decode(UUID.self, forKey: .runID)
+        let athleteID = try container.decode(UUID.self, forKey: .athleteID)
+        let eventID = try container.decodeIfPresent(UUID.self, forKey: .eventID)
+        let techniqueID = try container.decode(String.self, forKey: .techniqueID)
+        let startedAt = try container.decode(Date.self, forKey: .startedAt)
+        let cancelledAt = try container.decode(Date.self, forKey: .cancelledAt)
+
+        guard let validated = CancelledTrainingRun(
+            runID: runID,
+            athleteID: athleteID,
+            eventID: eventID,
+            techniqueID: techniqueID,
+            startedAt: startedAt,
+            cancelledAt: cancelledAt
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .cancelledAt,
+                in: container,
+                debugDescription: "Cancelled training run must end at or after its finite start time."
+            )
+        }
+        self = validated
     }
 }
 
@@ -427,4 +784,67 @@ nonisolated struct EventAward: Identifiable, Codable, Hashable, Sendable {
     let kind: EventAwardKind
     let attemptID: UUID?
     let awardedAt: Date
+
+    private enum CodingKeys: String, CodingKey {
+        case id
+        case eventID
+        case athleteID
+        case publicHandleSnapshot
+        case kind
+        case attemptID
+        case awardedAt
+    }
+
+    init?(
+        id: UUID,
+        eventID: UUID,
+        athleteID: UUID,
+        publicHandleSnapshot: ParticipantPublicHandle,
+        kind: EventAwardKind,
+        attemptID: UUID?,
+        awardedAt: Date
+    ) {
+        guard publicHandleSnapshot.eventID == eventID,
+              awardedAt.timeIntervalSinceReferenceDate.isFinite
+        else { return nil }
+
+        self.id = id
+        self.eventID = eventID
+        self.athleteID = athleteID
+        self.publicHandleSnapshot = publicHandleSnapshot
+        self.kind = kind
+        self.attemptID = attemptID
+        self.awardedAt = awardedAt
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        let id = try container.decode(UUID.self, forKey: .id)
+        let eventID = try container.decode(UUID.self, forKey: .eventID)
+        let athleteID = try container.decode(UUID.self, forKey: .athleteID)
+        let publicHandleSnapshot = try container.decode(
+            ParticipantPublicHandle.self,
+            forKey: .publicHandleSnapshot
+        )
+        let kind = try container.decode(EventAwardKind.self, forKey: .kind)
+        let attemptID = try container.decodeIfPresent(UUID.self, forKey: .attemptID)
+        let awardedAt = try container.decode(Date.self, forKey: .awardedAt)
+
+        guard let validated = EventAward(
+            id: id,
+            eventID: eventID,
+            athleteID: athleteID,
+            publicHandleSnapshot: publicHandleSnapshot,
+            kind: kind,
+            attemptID: attemptID,
+            awardedAt: awardedAt
+        ) else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .publicHandleSnapshot,
+                in: container,
+                debugDescription: "Event award handle must belong to its event and use a finite award time."
+            )
+        }
+        self = validated
+    }
 }

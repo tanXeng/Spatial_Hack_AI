@@ -316,6 +316,19 @@ final class CompetitionDomainTests: XCTestCase {
 
 @Suite("Competition V2 domain")
 struct CompetitionV2DomainTests {
+    @Test("Participant codes are explicitly public display labels")
+    func participantCodeIsDisplayOnlyAPI() throws {
+        let handle = try #require(ParticipantPublicHandle.reserving(
+            eventID: UUID(),
+            displayName: "Alex",
+            displayCode: "0042",
+            against: []
+        ))
+
+        #expect(handle.displayCode == "0042")
+        #expect(handle.displayValue == "Alex #0042")
+    }
+
     @Test("Four-digit handles are ASCII, collision-checked, and scoped to one event")
     func publicHandleAllocationIsEventScoped() throws {
         let firstEventID = UUID()
@@ -323,32 +336,32 @@ struct CompetitionV2DomainTests {
         let first = try #require(ParticipantPublicHandle.reserving(
             eventID: firstEventID,
             displayName: "Alex",
-            code: "0007",
+            displayCode: "0007",
             against: []
         ))
 
         #expect(ParticipantPublicHandle.reserving(
             eventID: firstEventID,
             displayName: "Blair",
-            code: "0007",
+            displayCode: "0007",
             against: [first]
         ) == nil)
         #expect(ParticipantPublicHandle.reserving(
             eventID: secondEventID,
             displayName: "Blair",
-            code: "0007",
+            displayCode: "0007",
             against: [first]
-        )?.code == "0007")
+        )?.displayCode == "0007")
         #expect(ParticipantPublicHandle.reserving(
             eventID: firstEventID,
             displayName: "Alex",
-            code: "007",
+            displayCode: "007",
             against: []
         ) == nil)
         #expect(ParticipantPublicHandle.reserving(
             eventID: firstEventID,
             displayName: "Alex",
-            code: "１２３４",
+            displayCode: "１２３４",
             against: []
         ) == nil)
     }
@@ -357,7 +370,7 @@ struct CompetitionV2DomainTests {
     func decodedPublicHandleRejectsInvalidCode() throws {
         let eventID = UUID()
         let payload = """
-        {"eventID":"\(eventID.uuidString)","displayName":"Alex","code":"007"}
+        {"eventID":"\(eventID.uuidString)","displayName":"Alex","displayCode":"007"}
         """.data(using: .utf8)!
 
         #expect(throws: DecodingError.self) {
@@ -383,8 +396,8 @@ struct CompetitionV2DomainTests {
 
         #expect(first.name == second.name)
         #expect(first.id != second.id)
-        #expect(first.publicHandle?.code == "0000")
-        #expect(second.publicHandle?.code == "0001")
+        #expect(first.publicHandle?.displayCode == "0000")
+        #expect(second.publicHandle?.displayCode == "0001")
     }
 
     @Test("Competition submissions snapshot event, scoring, calibration, and public handle")
@@ -393,7 +406,7 @@ struct CompetitionV2DomainTests {
         let handle = try #require(ParticipantPublicHandle.reserving(
             eventID: eventID,
             displayName: "Alex",
-            code: "0042",
+            displayCode: "0042",
             against: []
         ))
         var player = makePlayer(id: UUID(), handle: handle)

@@ -7,6 +7,7 @@ final class CoachVoiceCoach {
     private(set) var isListening = false
     private(set) var isCaptureReady = false
     private(set) var isRouting = false
+    private(set) var isGeneratingResponse = false
     private(set) var lastTranscript: String?
     private(set) var lastRoutedClip: CoachClipID?
     private(set) var lastError: String?
@@ -30,24 +31,17 @@ final class CoachVoiceCoach {
         self.context = context
     }
 
-    /// Request permissions and pre-warm the capture audio session when immersion opens.
+    /// Request mic and speech permissions. Does not switch the audio session away from playback.
     func prepare() {
         prepareTask?.cancel()
         prepareTask = Task { [weak self] in
             guard let self else { return }
             permissionsGranted = await speechClient.requestPermissions()
-            guard permissionsGranted, !Task.isCancelled else { return }
-            do {
-                try audioPlayer.prepareForVoiceCapture()
-                isSessionWarm = true
-            } catch {
-                lastError = error.localizedDescription
-            }
         }
     }
 
     func beginPushToTalk() {
-        guard !isListening, !isRouting else { return }
+        guard !isListening, !isRouting, !isGeneratingResponse else { return }
         lastError = nil
         isListening = true
         isCaptureReady = false
@@ -102,40 +96,42 @@ final class CoachVoiceCoach {
                 lastTranscript = nil
                 lastRoutedClip = .didntCatch
                 lastError = "Hold the button a moment longer before speaking."
-                audioPlayer.play(id: .didntCatch)
+                isGeneratingResponse = true
+                audioPlayer.restorePlaybackAfterCapture()
+                await audioPlayer.playAndWait(for: .didntCatch)
+                isGeneratingResponse = false
                 return
             }
 
             isCaptureReady = false
             isRouting = true
-            defer { isRouting = false }
 
             let result = await speechClient.stop()
-            guard !Task.isCancelled else { return }
+            guard !Task.isCancelled else {
+                isRouting = false
+                return
+            }
+
+            isRouting = false
+            isGeneratingResponse = true
+            defer { isGeneratingResponse = false }
 
             let transcript = result.transcript
+            audioPlayer.restorePlaybackAfterCapture()
 
             if transcript.isEmpty {
                 lastTranscript = transcript
                 lastRoutedClip = .didntCatch
-                audioPlayer.play(id: .didntCatch)
-                return
-            }
-
-            if let previous = lastTranscript,
-               let lastRoutedAt,
-               Date().timeIntervalSince(lastRoutedAt) < 3,
-               transcript.caseInsensitiveCompare(previous) == .orderedSame {
-                lastTranscript = transcript
+                await audioPlayer.playAndWait(for: .didntCatch)
                 return
             }
 
             lastTranscript = transcript
 
-            let clipID = await router.resolve(transcript: result.transcript, context: context)
+            let clipID = await router.resolve(transcript: transcript, context: context)
             lastRoutedClip = clipID
             lastRoutedAt = Date()
-            audioPlayer.play(id: clipID)
+            await audioPlayer.playAndWait(for: clipID)
         }
     }
 
@@ -149,6 +145,7 @@ final class CoachVoiceCoach {
         speechClient.cancel()
         isListening = false
         isRouting = false
+        isGeneratingResponse = false
         isCaptureReady = false
         isSessionWarm = false
         audioPlayer.restorePlaybackMode()

@@ -12,9 +12,10 @@ final class CoachAudioPlayer {
     private var playbackDelegate = PlaybackDelegate()
     private var queue: [CoachClipID] = []
     private var isPlaying = false
-    private var sessionConfigured = false
-    private var voiceCaptureActive = false
+    private var playbackReady = false
+    private var captureActive = false
     private var interruptionObserver: NSObjectProtocol?
+    private var voiceResponseContinuation: CheckedContinuation<Void, Never>?
 
     deinit {
         if let interruptionObserver {
@@ -25,7 +26,7 @@ final class CoachAudioPlayer {
     /// Call as soon as the immersive space is ready — before the user starts a drill.
     /// visionOS can fail to route audio if the session is first configured after a button tap.
     func prepare() {
-        configureSessionIfNeeded()
+        ensurePlaybackSession()
         registerForInterruptionsIfNeeded()
 
         if CoachClipLibrary.url(for: .welcome) == nil {
@@ -38,6 +39,23 @@ final class CoachAudioPlayer {
             enqueue(id)
         } else {
             startPlaying(id)
+        }
+    }
+
+    /// Plays a single clip and suspends until playback finishes. Used for PTT responses.
+    func playAndWait(for id: CoachClipID) async {
+        await withCheckedContinuation { continuation in
+            voiceResponseContinuation = continuation
+            if isPlaying {
+                queue.removeAll()
+                player?.stop()
+                player = nil
+                isPlaying = false
+            }
+            startPlaying(id)
+            if !isPlaying {
+                finishVoiceResponseIfNeeded()
+            }
         }
     }
 
@@ -54,6 +72,7 @@ final class CoachAudioPlayer {
         isPlaying = false
         player?.stop()
         player = nil
+        finishVoiceResponseIfNeeded()
     }
 
     var isClipPlaying: Bool { isPlaying }
@@ -61,16 +80,11 @@ final class CoachAudioPlayer {
     /// Switches the audio session for push-to-talk capture while keeping coach playback available.
     func prepareForVoiceCapture() throws {
         registerForInterruptionsIfNeeded()
-        playbackDelegate.onFinish = { [weak self] in
-            Task { @MainActor in
-                self?.playNextFromQueue()
-            }
-        }
+        installPlaybackFinishHandler()
 
         let session = AVAudioSession.sharedInstance()
-        if voiceCaptureActive, session.category == .playAndRecord, session.mode == .voiceChat {
+        if captureActive, session.category == .playAndRecord, session.mode == .voiceChat {
             try session.setActive(true, options: .notifyOthersOnDeactivation)
-            sessionConfigured = true
             return
         }
 
@@ -81,16 +95,23 @@ final class CoachAudioPlayer {
             options: [.mixWithOthers, .duckOthers]
         )
         try session.setActive(true, options: .notifyOthersOnDeactivation)
-        voiceCaptureActive = true
-        sessionConfigured = true
+        captureActive = true
+    }
+
+    /// Returns to playback mode after a push-to-talk cycle without tearing down the player.
+    func restorePlaybackAfterCapture() {
+        captureActive = false
+        ensurePlaybackSession()
     }
 
     func restorePlaybackMode() {
-        voiceCaptureActive = false
+        captureActive = false
+        playbackReady = false
         let session = AVAudioSession.sharedInstance()
         do {
             try session.setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers, .duckOthers])
             try session.setActive(true)
+            playbackReady = true
         } catch {
             Self.logger.error("Failed to restore playback mode: \(error.localizedDescription, privacy: .public)")
         }
@@ -107,10 +128,11 @@ final class CoachAudioPlayer {
     private func startPlaying(_ id: CoachClipID) {
         guard let url = CoachClipLibrary.url(for: id) else {
             Self.logger.error("Missing coach clip in bundle: \(id.rawValue, privacy: .public).mp3")
+            finishVoiceResponseIfNeeded()
             playNextFromQueue()
             return
         }
-        configureSessionIfNeeded()
+        ensurePlaybackSession()
 
         do {
             let next = try AVAudioPlayer(contentsOf: url)
@@ -123,6 +145,7 @@ final class CoachAudioPlayer {
                 Self.logger.error("AVAudioPlayer.play() returned false for \(id.rawValue, privacy: .public)")
                 isPlaying = false
                 player = nil
+                finishVoiceResponseIfNeeded()
                 playNextFromQueue()
                 return
             }
@@ -130,6 +153,7 @@ final class CoachAudioPlayer {
             player = nil
             isPlaying = false
             Self.logger.error("Failed to play \(id.rawValue, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            finishVoiceResponseIfNeeded()
             playNextFromQueue()
         }
     }
@@ -142,23 +166,45 @@ final class CoachAudioPlayer {
         startPlaying(next)
     }
 
-    private func configureSessionIfNeeded() {
-        guard !sessionConfigured else { return }
-        sessionConfigured = true
-
-        playbackDelegate.onFinish = { [weak self] in
-            Task { @MainActor in
-                self?.playNextFromQueue()
-            }
-        }
+    private func ensurePlaybackSession() {
+        installPlaybackFinishHandler()
 
         let session = AVAudioSession.sharedInstance()
+        if playbackReady,
+           !captureActive,
+           session.category == .playback,
+           session.mode == .spokenAudio {
+            try? session.setActive(true)
+            return
+        }
+
         do {
+            if captureActive {
+                try session.setActive(false, options: .notifyOthersOnDeactivation)
+            }
             try session.setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers, .duckOthers])
             try session.setActive(true)
+            captureActive = false
+            playbackReady = true
         } catch {
-            Self.logger.error("AVAudioSession setup failed: \(error.localizedDescription, privacy: .public)")
+            Self.logger.error("AVAudioSession playback setup failed: \(error.localizedDescription, privacy: .public)")
         }
+    }
+
+    private func installPlaybackFinishHandler() {
+        playbackDelegate.onFinish = { [weak self] in
+            Task { @MainActor in
+                guard let self else { return }
+                self.finishVoiceResponseIfNeeded()
+                self.playNextFromQueue()
+            }
+        }
+    }
+
+    private func finishVoiceResponseIfNeeded() {
+        guard let continuation = voiceResponseContinuation else { return }
+        voiceResponseContinuation = nil
+        continuation.resume()
     }
 
     private func registerForInterruptionsIfNeeded() {

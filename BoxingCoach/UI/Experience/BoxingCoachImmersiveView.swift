@@ -11,6 +11,7 @@ struct BoxingCoachImmersiveView: View {
     @Environment(\.openWindow) private var openWindow
 
     private let controlsAttachmentID = "TrainingControls"
+    private let voiceCoachAttachmentID = "VoiceCoachControl"
     private let instructionsAttachmentID = "TrainingInstructions"
 
     var body: some View {
@@ -29,6 +30,12 @@ struct BoxingCoachImmersiveView: View {
                 instructions.name = "TrainingInstructions"
                 instructions.position = SIMD3<Float>(0, 0.18, -1.15)
                 instructionAnchor.addChild(instructions)
+            }
+
+            if let voiceCoach = attachments.entity(for: voiceCoachAttachmentID) {
+                voiceCoach.name = "VoiceCoachControl"
+                voiceCoach.position = SIMD3<Float>(-0.38, -0.12, -1.05)
+                instructionAnchor.addChild(voiceCoach)
             }
 
             if let controls = attachments.entity(for: controlsAttachmentID) {
@@ -52,28 +59,33 @@ struct BoxingCoachImmersiveView: View {
                 )
             }
 
-            Attachment(id: controlsAttachmentID) {
-                VStack(spacing: 12) {
-                    if showsVoiceCoach {
-                        CoachPushToTalkButton(
-                            isListening: session.voiceCoach.isListening,
-                            isCaptureReady: session.voiceCoach.isCaptureReady,
-                            isRouting: session.voiceCoach.isRouting,
-                            isDisabled: flow.controlsDisabled,
-                            onPress: { session.voiceCoach.beginPushToTalk() },
-                            onRelease: { session.voiceCoach.endPushToTalk() }
-                        )
-                    }
-
-                    Button("End Training", systemImage: "stop.circle") {
-                        endTraining()
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(isAuraExperience ? .large : .regular)
-                    .font(isAuraExperience ? .title3.weight(.semibold) : .body)
-                    .disabled(flow.controlsDisabled)
-                    .accessibilityHint("Ends the current training session and returns to results")
+            Attachment(id: voiceCoachAttachmentID) {
+                if showsVoiceCoach {
+                    CoachPushToTalkButton(
+                        isListening: session.voiceCoach.isListening,
+                        isCaptureReady: session.voiceCoach.isCaptureReady,
+                        isRouting: session.voiceCoach.isRouting,
+                        isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
+                        isDisabled: flow.controlsDisabled,
+                        style: .compactSpatial,
+                        onPress: { session.voiceCoach.beginPushToTalk() },
+                        onRelease: { session.voiceCoach.endPushToTalk() }
+                    )
+                    .padding(10)
+                    .glassBackgroundEffect()
                 }
+            }
+
+            Attachment(id: controlsAttachmentID) {
+                Button("End Training", systemImage: "stop.circle") {
+                    endTraining()
+                }
+                .buttonStyle(.bordered)
+                .tint(.red)
+                .controlSize(isAuraExperience ? .large : .regular)
+                .font(isAuraExperience ? .title3.weight(.semibold) : .body)
+                .disabled(flow.controlsDisabled)
+                .accessibilityHint("Ends the current training session and returns to results")
                 .padding(isAuraExperience ? 18 : 14)
                 .glassBackgroundEffect()
             }
@@ -128,26 +140,9 @@ struct BoxingCoachImmersiveView: View {
     }
 
     private var showsVoiceCoach: Bool {
-        switch flow.route {
-        case .experience(.aura):
-            switch session.auraPunch.phase {
-            case .guiding, .countdown, .attempting, .scoring:
-                return true
-            default:
-                return false
-            }
-        case .experience(.reactive):
-            switch session.phase {
-            case .calibrating, .running:
-                return true
-            default:
-                return false
-            }
-        case .experience(.competitionCalibration), .experience(.competition):
-            return false
-        default:
-            return false
-        }
+        guard !flow.controlsDisabled else { return false }
+        if case .experience = flow.route { return true }
+        return false
     }
 
     private func refreshVoiceCoachContext() {
@@ -160,6 +155,13 @@ struct BoxingCoachImmersiveView: View {
                 techniqueName: technique.name
             ))
         case .experience(.reactive):
+            session.voiceCoach.updateContext(CoachVoiceContext(
+                feature: .reactiveStrike,
+                auraPhase: nil,
+                drillPhase: session.phase,
+                techniqueName: nil
+            ))
+        case .experience(.competitionCalibration), .experience(.competition):
             session.voiceCoach.updateContext(CoachVoiceContext(
                 feature: .reactiveStrike,
                 auraPhase: nil,

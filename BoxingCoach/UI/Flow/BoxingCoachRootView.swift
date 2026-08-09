@@ -14,46 +14,51 @@ struct BoxingCoachRootView: View {
     @AccessibilityFocusState private var joinCompetitionFocused: Bool
 
     var body: some View {
-        Group {
-            switch flow.route {
-            case .features:
-                featureSelection
+        ZStack(alignment: .bottomLeading) {
+            Group {
+                switch flow.route {
+                case .features:
+                    featureSelection
 
-            case .reactiveSetup:
-                ReactiveSetupView(
-                    controlsDisabled: flow.controlsDisabled,
-                    onSelect: flow.chooseReactiveMode,
-                    onBack: flow.backFromSetup
-                )
+                case .reactiveSetup:
+                    ReactiveSetupView(
+                        controlsDisabled: flow.controlsDisabled,
+                        onSelect: flow.chooseReactiveMode,
+                        onBack: flow.backFromSetup
+                    )
 
-            case .combinationSetup:
-                CombinationSetupView(
-                    stance: flow.draftStance,
-                    controlsDisabled: flow.controlsDisabled,
-                    onStanceChange: flow.setDraftStance,
-                    onSelect: flow.chooseCombination,
-                    onBack: flow.backFromSetup
-                )
+                case .combinationSetup:
+                    CombinationSetupView(
+                        stance: flow.draftStance,
+                        controlsDisabled: flow.controlsDisabled,
+                        onStanceChange: flow.setDraftStance,
+                        onSelect: flow.chooseCombination,
+                        onBack: flow.backFromSetup
+                    )
 
-            case .auraSetup:
-                AuraSetupView(
-                    stance: flow.draftStance,
-                    controlsDisabled: flow.controlsDisabled,
-                    onStanceChange: flow.setDraftStance,
-                    onSelect: flow.chooseAuraTechnique,
-                    onBack: flow.backFromSetup
-                )
+                case .auraSetup:
+                    AuraSetupView(
+                        stance: flow.draftStance,
+                        controlsDisabled: flow.controlsDisabled,
+                        onStanceChange: flow.setDraftStance,
+                        onSelect: flow.chooseAuraTechnique,
+                        onBack: flow.backFromSetup
+                    )
 
-            case .experience(let selection):
-                TrainingExperienceView(
-                    selection: selection,
-                    session: session,
-                    presentationError: flow.presentationError,
-                    controlsDisabled: flow.controlsDisabled,
-                    onStart: { start(selection) },
-                    onChangeSelection: { changeSelection(selection) }
-                )
+                case .experience(let selection):
+                    TrainingExperienceView(
+                        selection: selection,
+                        session: session,
+                        presentationError: flow.presentationError,
+                        controlsDisabled: flow.controlsDisabled,
+                        onStart: { start(selection) },
+                        onChangeSelection: { changeSelection(selection) }
+                    )
+                }
             }
+
+            CoachVoiceCoachPanel(isDisabled: flow.controlsDisabled)
+                .padding(.bottom, 8)
         }
         .padding(32)
         .frame(
@@ -67,6 +72,7 @@ struct BoxingCoachRootView: View {
         }
         .onChange(of: flow.route) {
             AccessibilityNotification.ScreenChanged().post()
+            refreshWindowVoiceContext()
         }
         .onChange(of: competitionStore.currentPlayer) { oldPlayer, newPlayer in
             guard oldPlayer?.id != newPlayer?.id
@@ -77,6 +83,8 @@ struct BoxingCoachRootView: View {
         }
         .onAppear {
             flow.controlWindowDidAppear()
+            session.voiceCoach.prepare()
+            refreshWindowVoiceContext()
         }
         .task {
             await competitionStore.bootstrap()
@@ -208,6 +216,44 @@ struct BoxingCoachRootView: View {
 
     private func announce(_ message: String) {
         AccessibilityNotification.Announcement(message).post()
+    }
+
+    private func refreshWindowVoiceContext() {
+        switch flow.route {
+        case .features:
+            session.voiceCoach.updateContext(.idle)
+        case .reactiveSetup, .combinationSetup:
+            session.voiceCoach.updateContext(CoachVoiceContext(
+                feature: .reactiveStrike,
+                auraPhase: nil,
+                drillPhase: .idle,
+                techniqueName: nil
+            ))
+        case .auraSetup:
+            session.voiceCoach.updateContext(CoachVoiceContext(
+                feature: .auraPunch,
+                auraPhase: .idle,
+                drillPhase: nil,
+                techniqueName: nil
+            ))
+        case .experience(let selection):
+            switch selection {
+            case .aura(let technique, _):
+                session.voiceCoach.updateContext(CoachVoiceContext(
+                    feature: .auraPunch,
+                    auraPhase: session.auraPunch.phase,
+                    drillPhase: nil,
+                    techniqueName: technique.name
+                ))
+            case .reactive, .competitionCalibration, .competition:
+                session.voiceCoach.updateContext(CoachVoiceContext(
+                    feature: .reactiveStrike,
+                    auraPhase: nil,
+                    drillPhase: session.phase,
+                    techniqueName: nil
+                ))
+            }
+        }
     }
 }
 

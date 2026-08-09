@@ -3,6 +3,21 @@ import simd
 @testable import BoxingCoach
 
 final class CombinationPunchValidatorTests: XCTestCase {
+    func testSweptSegmentDetectsTargetCrossingBetweenSamples() {
+        XCTAssertTrue(CombinationPunchValidator.segmentIntersectsSphere(
+            from: SIMD3<Float>(0, 0, 0),
+            to: SIMD3<Float>(0, 0, 1),
+            center: SIMD3<Float>(0, 0, 0.5),
+            radius: 0.1
+        ))
+        XCTAssertFalse(CombinationPunchValidator.segmentIntersectsSphere(
+            from: SIMD3<Float>(0.2, 0, 0),
+            to: SIMD3<Float>(0.2, 0, 1),
+            center: SIMD3<Float>(0, 0, 0.5),
+            radius: 0.1
+        ))
+    }
+
     private let guardPosition = SIMD3<Float>(0, 0, 0)
     private let targetPosition = SIMD3<Float>(0, 0, 0.60)
     private let hitRadius: Float = 0.05

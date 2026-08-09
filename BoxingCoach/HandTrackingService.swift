@@ -25,9 +25,45 @@ struct HandObservation: Sendable {
 
     /// The point used as "the fist" for hit tests and scoring.
     var fistPosition: SIMD3<Float>
+    var fistState: TrackedFistState
+    var fistClosureRatio: Float
 
     /// `CACurrentMediaTime()` when this sample was produced.
     var timestamp: TimeInterval
+}
+
+nonisolated enum TrackedFistState: String, Codable, Sendable {
+    case open
+    case closed
+    case uncertain
+}
+
+/// Deterministic hand-shape evidence. The ratios are normalized by palm width so calibration and
+/// validation do not silently favor one hand size. An unavailable finger chain is omitted; fewer
+/// than three complete chains can never claim an open or closed fist.
+nonisolated enum FistStateClassifier {
+    static func classify(
+        fingertipToKnuckleRatios ratios: [Float],
+        closedPrototype: Float? = nil,
+        openPrototype: Float? = nil
+    ) -> TrackedFistState {
+        let valid = ratios.filter { $0.isFinite && $0 >= 0 }
+        guard valid.count >= 3 else { return .uncertain }
+        let mean = valid.reduce(0, +) / Float(valid.count)
+
+        if let closedPrototype, let openPrototype,
+           closedPrototype.isFinite, openPrototype.isFinite,
+           closedPrototype < openPrototype {
+            let span = openPrototype - closedPrototype
+            if mean <= closedPrototype + span * 0.35 { return .closed }
+            if mean >= closedPrototype + span * 0.65 { return .open }
+            return .uncertain
+        }
+
+        if mean <= 1.25 { return .closed }
+        if mean >= 1.55 { return .open }
+        return .uncertain
+    }
 }
 
 /// Tracks both hands and the device (head) via ARKit.
@@ -51,6 +87,7 @@ final class HandTrackingService {
     private var rightHandLastGood: HandObservation?
     private var leftHandLastGoodTime: TimeInterval = 0
     private var rightHandLastGoodTime: TimeInterval = 0
+    private var fistPrototypes: [BodySide: (closed: Float, open: Float)] = [:]
 
     /// How long to reuse the last tracked pose when ARKit momentarily loses a hand.
     private let staleHandDuration: TimeInterval = 0.2
@@ -79,6 +116,18 @@ final class HandTrackingService {
             if now - rightHandLastGoodTime <= staleHandDuration { return rightHandLastGood }
             return nil
         }
+    }
+
+    func freshObservation(for side: BodySide, maxAge: TimeInterval = 0.1) -> HandObservation? {
+        guard let observation = observation(for: side) else { return nil }
+        let age = CACurrentMediaTime() - observation.timestamp
+        guard age >= 0, age <= maxAge else { return nil }
+        return observation
+    }
+
+    func setFistCalibration(side: BodySide, closed: Float, open: Float) {
+        guard closed.isFinite, open.isFinite, closed < open else { return }
+        fistPrototypes[side] = (closed, open)
     }
 
     /// Rebuilt on every `start()` — see the note there. Never make these `let`.
@@ -178,6 +227,7 @@ final class HandTrackingService {
         leftHandLastGoodTime = 0
         rightHandLastGoodTime = 0
         deviceTransform = nil
+        fistPrototypes.removeAll()
         statusMessage = "Hand tracking stopped"
     }
 
@@ -229,17 +279,44 @@ final class HandTrackingService {
             return
         }
 
-        // Prefer middle finger tip as a stable "punch point"; fall back to index tip / wrist.
-        // Reactive Strike's hit tests depend on this ordering — do not reorder casually.
-        let fistCandidates: [HandSkeleton.JointName] = [.middleFingerTip, .indexFingerTip, .wrist]
-        let fistTransform = fistCandidates.lazy.compactMap(worldTransform).first ?? wristTransform
+        let fingerChains: [(HandSkeleton.JointName, HandSkeleton.JointName)] = [
+            (.indexFingerKnuckle, .indexFingerTip),
+            (.middleFingerKnuckle, .middleFingerTip),
+            (.ringFingerKnuckle, .ringFingerTip),
+            (.littleFingerKnuckle, .littleFingerTip)
+        ]
+        let trackedChains = fingerChains.compactMap { knuckleName, tipName -> (SIMD3<Float>, SIMD3<Float>)? in
+            guard let knuckle = worldTransform(knuckleName)?.translation,
+                  let tip = worldTransform(tipName)?.translation else { return nil }
+            return (knuckle, tip)
+        }
+        guard trackedChains.count >= 3 else {
+            clear(chirality: anchor.chirality)
+            return
+        }
+        let knuckles = trackedChains.map(\.0)
+        let fistCenter = knuckles.reduce(SIMD3<Float>.zero, +) / Float(knuckles.count)
+        let indexKnuckle = worldTransform(.indexFingerKnuckle)?.translation
+        let littleKnuckle = worldTransform(.littleFingerKnuckle)?.translation
+        let palmWidth = indexKnuckle.flatMap { index in
+            littleKnuckle.map { max(distance(index, $0), 0.001) }
+        } ?? max(distance(knuckles.first!, knuckles.last!), 0.001)
+        let ratios = trackedChains.map { distance($0.0, $0.1) / palmWidth }
+        let closureRatio = ratios.reduce(0, +) / Float(ratios.count)
+        let prototype = fistPrototypes[side]
 
         let observation = HandObservation(
             side: side,
             wristPosition: wristTransform.translation,
             wristOrientation: simd_quatf(rotationMatrix(wristTransform)),
             elbowHint: worldTransform(.forearmArm)?.translation,
-            fistPosition: fistTransform.translation,
+            fistPosition: fistCenter,
+            fistState: FistStateClassifier.classify(
+                fingertipToKnuckleRatios: ratios,
+                closedPrototype: prototype?.closed,
+                openPrototype: prototype?.open
+            ),
+            fistClosureRatio: closureRatio,
             timestamp: CACurrentMediaTime()
         )
 

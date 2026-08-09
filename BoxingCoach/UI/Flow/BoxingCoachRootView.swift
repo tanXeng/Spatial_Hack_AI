@@ -6,6 +6,7 @@ import SwiftUI
 struct BoxingCoachRootView: View {
     @Environment(ReactiveStrikeSession.self) private var session
     @Environment(TrainingFlowCoordinator.self) private var flow
+    @Environment(EventStore.self) private var eventStore
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
@@ -14,6 +15,57 @@ struct BoxingCoachRootView: View {
     var body: some View {
         Group {
             switch flow.route {
+            case .hostSetup:
+                HostSetupView()
+
+            case .welcome:
+                EventWelcomeView()
+
+            case .newParticipant:
+                NewParticipantView()
+
+            case .returningParticipant:
+                ReturningParticipantView()
+
+            case .participantHome(let participantID):
+                ParticipantHomeView(participantID: participantID)
+
+            case .lessonOverview(let participantID):
+                LessonOverviewView(participantID: participantID)
+
+            case .safetyPreflight(let participantID, let plan):
+                SafetyPreflightView(participantID: participantID, plan: plan)
+
+            case .permissionPreflight(let participantID, let plan):
+                PermissionPreflightView(participantID: participantID, plan: plan)
+
+            case .eventExperience(let runID, let plan):
+                EventRunExperienceView(runID: runID, plan: plan)
+
+            case .savingResults(let runID), .eventResults(let runID):
+                EventResultView(runID: runID)
+
+            case .profile(let participantID):
+                EventProfileView(participantID: participantID)
+
+            case .leaderboard(let eventID):
+                EventLeaderboardView(eventID: eventID)
+
+            case .hostDashboard(let eventID):
+                HostDashboardView(eventID: eventID)
+
+            case .closeEventReview(let eventID):
+                CloseEventReviewView(eventID: eventID)
+
+            case .winnerReveal(let eventID):
+                WinnerRevealView(eventID: eventID)
+
+            case .experimentalLab:
+                FeatureSelectionView(
+                    controlsDisabled: flow.controlsDisabled,
+                    onSelect: flow.chooseFeature
+                )
+
             case .features:
                 FeatureSelectionView(
                     controlsDisabled: flow.controlsDisabled,
@@ -79,6 +131,14 @@ struct BoxingCoachRootView: View {
         .onAppear {
             flow.controlWindowDidAppear()
         }
+        .task {
+            if eventStore.loadState == .idle { await eventStore.bootstrap() }
+            if case .failed = eventStore.loadState {
+                flow.navigate(to: .welcome)
+            } else {
+                flow.installEventEditionStart(hasActiveEvent: eventStore.activeEvent != nil)
+            }
+        }
         .onDisappear {
             flow.controlWindowDidDisappear()
         }
@@ -135,4 +195,5 @@ struct BoxingCoachRootView: View {
     BoxingCoachRootView()
         .environment(ReactiveStrikeSession())
         .environment(TrainingFlowCoordinator())
+        .environment(EventStore.preview())
 }

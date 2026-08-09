@@ -3,7 +3,7 @@
 <plist version="1.0">
 <dict>
 	<key>NSHandsTrackingUsageDescription</key>
-	<string>Boxing Coach uses hand tracking to detect when you punch virtual targets.</string>
+	<string>Boxing Coach uses processed hand positions to place virtual targets, recognize controlled punches, and create on-device training results.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationPreferredDefaultSceneSessionRole</key>

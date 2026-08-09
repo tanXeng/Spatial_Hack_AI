@@ -4,7 +4,8 @@ SCHEME := BoxingCoach
 CONFIGURATION := Debug
 SIM_DESTINATION := generic/platform=visionOS Simulator
 DEVICE_DESTINATION := generic/platform=visionOS
-TEST_DESTINATION := platform=visionOS Simulator,name=Apple Vision Pro,OS=27.0
+SIMULATOR_OS ?= 27.0
+TEST_DESTINATION := platform=visionOS Simulator,name=Apple Vision Pro,OS=$(SIMULATOR_OS)
 DERIVED_DATA_ROOT := /private/tmp/BoxingCoachDerivedData
 
 .PHONY: all

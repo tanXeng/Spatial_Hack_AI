@@ -15,6 +15,7 @@ final class TargetController {
     private weak var root: Entity?
     private(set) var activeTarget: ModelEntity?
     private(set) var activeTargetPosition: SIMD3<Float>?
+    private var coachPathRoot: Entity?
 
     private let idleColor = PlatformColor(red: 1.0, green: 0.55, blue: 0.1, alpha: 1.0)
     private let hitColor = PlatformColor(red: 0.2, green: 0.8, blue: 0.3, alpha: 1.0)
@@ -53,5 +54,27 @@ final class TargetController {
         activeTarget?.removeFromParent()
         activeTarget = nil
         activeTargetPosition = nil
+    }
+
+    func showCoachPath(from start: SIMD3<Float>, to end: SIMD3<Float>) {
+        removeCoachPath()
+        guard start.isFinite, end.isFinite else { return }
+        let path = Entity()
+        path.name = "GuidedCoachPath"
+        let mesh = MeshResource.generateSphere(radius: 0.012)
+        let material = SimpleMaterial(color: .cyan, isMetallic: false)
+        for index in 0...12 {
+            let t = Float(index) / 12
+            let marker = ModelEntity(mesh: mesh, materials: [material])
+            marker.position = start + (end - start) * t
+            path.addChild(marker)
+        }
+        root?.addChild(path)
+        coachPathRoot = path
+    }
+
+    func removeCoachPath() {
+        coachPathRoot?.removeFromParent()
+        coachPathRoot = nil
     }
 }

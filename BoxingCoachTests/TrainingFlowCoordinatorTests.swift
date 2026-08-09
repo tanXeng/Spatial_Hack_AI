@@ -3,6 +3,24 @@ import XCTest
 
 @MainActor
 final class TrainingFlowCoordinatorTests: XCTestCase {
+    func testEventEditionStartsNeutralAndHandoffClearsTransientEngineState() {
+        let flow = TrainingFlowCoordinator()
+        let session = ReactiveStrikeSession()
+
+        flow.installEventEditionStart(hasActiveEvent: true)
+        XCTAssertEqual(flow.route, .welcome)
+
+        flow.navigate(to: .participantHome(UUID()))
+        session.configureEventChallenge(stance: .southpaw)
+        session.guided.start(plan: .controlledOneTwoOfficial)
+        flow.participantHandoff(session: session)
+
+        XCTAssertEqual(flow.route, .welcome)
+        XCTAssertEqual(session.phase, .idle)
+        XCTAssertEqual(session.guided.stage, .idle)
+        XCTAssertEqual(session.stance, .orthodox)
+    }
+
     func testAirAndBagRouteDirectlyToExperienceWhileCombinationRoutesToSetup() {
         for mode in [ReactiveStrikeMode.air, .bag] {
             let flow = TrainingFlowCoordinator()

@@ -19,16 +19,12 @@ struct BoxingCoachImmersiveView: View {
             root.name = "BoxingCoachTrainingRoot"
             content.add(root)
 
-            // Keep coaching just above the user's neutral gaze instead of at a fixed room height.
-            // At 1.15 m forward and 18 cm up this is roughly nine degrees above line of sight.
-            let instructionAnchor = AnchorEntity(.head, trackingMode: .continuous)
-            instructionAnchor.name = "TrainingInstructionAnchor"
-            content.add(instructionAnchor)
-
             if let instructions = attachments.entity(for: instructionsAttachmentID) {
                 instructions.name = "TrainingInstructions"
-                instructions.position = SIMD3<Float>(0, 0.18, -1.15)
-                instructionAnchor.addChild(instructions)
+                // The calibrated session moves this once into the user's body-relative world
+                // frame. It intentionally does not follow the head continuously.
+                instructions.position = SIMD3<Float>(0, 1.55, -1.10)
+                root.addChild(instructions)
             }
 
             if let controls = attachments.entity(for: controlsAttachmentID) {
@@ -39,25 +35,46 @@ struct BoxingCoachImmersiveView: View {
 
             session.attachSceneRoot(root)
             flow.immersiveSceneDidBecomeReady(session: session)
+        } update: { content, _ in
+            guard let position = session.instructionPanelWorldPosition,
+                  let instructions = content.entities.first?.findEntity(named: "TrainingInstructions")
+            else { return }
+            instructions.position = position
         } attachments: {
             Attachment(id: instructionsAttachmentID) {
                 ImmersiveInstructionBanner(instruction: currentInstruction)
             }
 
             Attachment(id: controlsAttachmentID) {
-                Button("End Training", systemImage: "stop.circle") {
-                    endTraining()
+                VStack(spacing: 10) {
+                    if session.isTrackingPaused {
+                        Button("Resume Training", systemImage: "play.circle.fill") {
+                            session.requestTrackingResume()
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(!session.trackingReadyToResume)
+                        .accessibilityHint("Available after both hands return to guard with stable tracking")
+                    }
+                    Button("End Training", systemImage: "stop.circle") {
+                        endTraining()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .disabled(flow.controlsDisabled)
+                    .accessibilityHint("Ends the current training session and returns to results")
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(flow.controlsDisabled)
                 .padding(14)
                 .glassBackgroundEffect()
-                .accessibilityHint("Ends the current training session and returns to results")
             }
         }
         .onChange(of: session.phase) { _, phase in
-            guard case .experience(.reactive) = flow.route,
-                  phase == .finished else { return }
+            let isReactiveRoute: Bool
+            switch flow.route {
+            case .experience(.reactive), .eventExperience:
+                isReactiveRoute = true
+            default:
+                isReactiveRoute = false
+            }
+            guard isReactiveRoute, phase == .finished else { return }
             announce("Reactive Strike complete")
             finishTraining()
         }
@@ -68,8 +85,14 @@ struct BoxingCoachImmersiveView: View {
             finishTraining()
         }
         .onChange(of: session.errorMessage) { _, message in
-            guard case .experience(.reactive) = flow.route,
-                  let message else { return }
+            let isReactiveRoute: Bool
+            switch flow.route {
+            case .experience(.reactive), .eventExperience:
+                isReactiveRoute = true
+            default:
+                isReactiveRoute = false
+            }
+            guard isReactiveRoute, let message else { return }
             announce(message)
             finishTraining()
         }
@@ -80,7 +103,14 @@ struct BoxingCoachImmersiveView: View {
             finishTraining()
         }
         .onChange(of: session.lastFeedback) { _, message in
-            guard case .experience(.reactive) = flow.route,
+            let isReactiveRoute: Bool
+            switch flow.route {
+            case .experience(.reactive), .eventExperience:
+                isReactiveRoute = true
+            default:
+                isReactiveRoute = false
+            }
+            guard isReactiveRoute,
                   session.phase == .running || session.phase == .calibrating else { return }
             announce(message)
         }
@@ -133,6 +163,36 @@ struct BoxingCoachImmersiveView: View {
 
     private var currentInstruction: ImmersiveInstruction {
         switch flow.route {
+        case .eventExperience(_, let plan):
+            if session.isTrackingPaused {
+                return ImmersiveInstruction(
+                    stage: session.trackingReadyToResume ? "READY TO RESUME" : "TRACKING PAUSED",
+                    message: session.lastFeedback,
+                    symbol: session.trackingReadyToResume ? "play.circle.fill" : "pause.circle.fill"
+                )
+            }
+            switch session.phase {
+            case .idle:
+                return ImmersiveInstruction(stage: "GET READY", message: "Raise both hands into guard", symbol: "hand.raised.fill")
+            case .calibrating:
+                return ImmersiveInstruction(stage: "CALIBRATION", message: session.lastFeedback, symbol: "ruler")
+            case .running:
+                if plan == .guidedCore || plan == .observeOnly {
+                    return ImmersiveInstruction(
+                        stage: guidedStageLabel,
+                        message: session.guided.instruction,
+                        symbol: plan == .observeOnly ? "eye.fill" : "figure.boxing"
+                    )
+                }
+                return ImmersiveInstruction(
+                    stage: session.progressLabel.uppercased(),
+                    message: session.lastFeedback,
+                    symbol: "list.number"
+                )
+            case .finished:
+                return ImmersiveInstruction(stage: "SESSION COMPLETE", message: "Your result is ready to save", symbol: "checkmark.circle.fill")
+            }
+
         case .experience(.aura(let technique, _)):
             let action = technique.name.lowercased()
             switch session.auraPunch.phase {
@@ -232,6 +292,25 @@ struct BoxingCoachImmersiveView: View {
                 message: "Preparing your training space",
                 symbol: "figure.boxing"
             )
+        }
+    }
+
+    private var guidedStageLabel: String {
+        switch session.guided.stage {
+        case .jabWatch: "JAB · WATCH"
+        case .jabFollow: "JAB · FOLLOW"
+        case .jabBaseline: "JAB · YOUR TURN"
+        case .jabCorrection: "JAB · ONE ADJUSTMENT"
+        case .jabRetest: "JAB · RETEST"
+        case .crossWatch: "CROSS · WATCH"
+        case .crossFollow: "CROSS · FOLLOW"
+        case .crossBaseline: "CROSS · YOUR TURN"
+        case .crossCorrection: "CROSS · ONE ADJUSTMENT"
+        case .crossRetest: "CROSS · RETEST"
+        case .oneTwoPractice(let rep): "1–2 PRACTICE · REP \(max(rep, 1))"
+        case .challenge(let rep, let punch): "REP \(rep) · \(punch.displayName.uppercased())"
+        case .paused: "TRACKING PAUSED"
+        default: "GUIDED LESSON"
         }
     }
 }

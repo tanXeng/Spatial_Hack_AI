@@ -11,6 +11,7 @@ enum BoxingCoachSceneID {
 struct BoxingCoachApp: App {
     @State private var session = ReactiveStrikeSession()
     @State private var flow = TrainingFlowCoordinator()
+    @State private var eventStore = EventStore.live()
 
     var body: some Scene {
         // `Window` is intentionally single-instance. A named `WindowGroup` creates another
@@ -20,12 +21,14 @@ struct BoxingCoachApp: App {
             BoxingCoachRootView()
                 .environment(session)
                 .environment(flow)
+                .environment(eventStore)
         }
 
         ImmersiveSpace(id: BoxingCoachSceneID.immersiveSpace) {
             BoxingCoachImmersiveView()
                 .environment(session)
                 .environment(flow)
+                .environment(eventStore)
         }
         .immersionStyle(selection: .constant(.mixed), in: .mixed)
     }

@@ -6,7 +6,7 @@ and local test material belong under the git-ignored `local/` directory.
 
 ## Build from the root
 
-Requirements: Xcode 27 beta or newer with the visionOS 27 SDK.
+Requirements: Xcode 27 beta or newer with the visionOS 27 SDK. The app deployment target is visionOS 26.
 
 ```sh
 make
@@ -22,7 +22,7 @@ Useful targets:
 
 - `make build` — unsigned visionOS Simulator build
 - `make build-device` — unsigned generic visionOS device compile check
-- `make test` — run the unit suite on the visionOS 27 Apple Vision Pro simulator
+- `make test` — run the unit suite on Apple Vision Pro (`SIMULATOR_OS=27.0` by default)
 
 Open `BoxingCoach.xcodeproj` and select the `BoxingCoach` scheme to run on Apple Vision Pro.
 ARKit hand tracking is unavailable in the simulator, so live punch validation requires hardware.
@@ -31,6 +31,7 @@ ARKit hand tracking is unavailable in the simulator, so live punch validation re
 
 ```text
 BoxingCoach/
+├── EventEdition/  event domain, SwiftData, recovery, exports, and kiosk UI
 ├── Models/        stance, technique, and body-measurement domain models
 ├── Resources/     locally authored reference punch trajectories
 ├── Scoring/       motion recording, path comparison, scoring, and feedback
@@ -49,6 +50,12 @@ BoxingCoach/
 app. The project uses Xcode synchronized groups, so new source files inside `BoxingCoach/` are
 included without manually changing `project.pbxproj`.
 
+The app launches into a neutral event handoff screen (or first-run host setup), never a previous
+participant profile. Event rules are frozen with a SHA-256 digest when the competition opens.
+Profiles, attempts, award snapshots, and checksum-protected recovery data remain local to the
+Vision Pro. Players create and reopen profiles using a unique player name within the active event;
+host tools are available directly on the device.
+
 The selection window is dismissed after a training engine starts, leaving only the spatial drill
 and a compact **End Training** control in view. Completion, tracking errors, early ending, and
 system-driven immersive dismissal restore the window before closing immersion so results and
@@ -56,6 +63,25 @@ actionable errors remain available. Immersion closes only after the single contr
 that it has appeared, avoiding timing-dependent loss of the last result.
 
 ## Training and tracking behavior
+
+Event Edition teaches and ranks one controlled five-repetition jab–cross challenge. Each punch
+can earn 30 contact points, 0–10 centre-accuracy points, and 10 guard-return points, for a locked
+500-point maximum. Speed and reaction time are excluded from scoring, eligibility, ties, and
+awards. Only complete, confidently tracked, opted-in official attempts can rank; the best of two
+official attempts is used.
+
+Event runs calibrate open hands, relaxed fists, per-hand guard, and comfortable reach. The fist
+point is the centroid of at least three tracked knuckles, not a fingertip fallback. A stale hand or
+head sample pauses the challenge after 100 ms, removes the target, discards the partial punch,
+and requires 0.5 seconds back in guard plus explicit Resume. Swept segment collision prevents a
+fast punch from tunnelling through the target between samples.
+
+Final results are committed exactly once by run UUID before the results route appears. SwiftData
+uses explicit saves with CloudKit disabled. Public CSV omits private history; full event JSON
+contains immutable event/result snapshots but no anchors, video,
+room mesh, or raw joint streams. On-device Foundation Models may rewrite the already-selected
+single correction; validation and a two-second timeout always fall back to deterministic copy and
+the model can never change points or ranking.
 
 Aura Punch exposes one Uppercut drill that alternates hands each repetition. Its mirrored
 reference paths load beside the hip, drive diagonally inward, and peak at the body centreline.
@@ -79,9 +105,11 @@ from the headset pose and local body measurements, then uses the tracked forearm
 hint. This supports body-relative path, extension, elbow, guard, and retraction scoring, but it
 cannot directly evaluate shoulder roll, hip rotation, foot placement, or impact force.
 
-The unit target covers calibration geometry, Air/Bag bounds, stance and combination validation,
-flow routing, legacy uppercut lookup, and the mirrored uppercut trajectory. Live hand tracking and
-punch feel still require an Apple Vision Pro; the simulator cannot supply ARKit hand anchors.
+The unit target covers event validation, scoring boundaries, ranking/ties/awards, persistence,
+exact-once saves, recovery checksums, name-only player lookup, export privacy, calibrated fist evidence,
+tracking pause recovery, swept collisions, flow routing, and the legacy training engines. Live
+hand tracking and punch feel still require an Apple Vision Pro; the simulator cannot supply ARKit
+hand anchors.
 
 ## Repository policy
 

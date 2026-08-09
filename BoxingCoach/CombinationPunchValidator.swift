@@ -47,6 +47,7 @@ nonisolated struct CombinationPunchValidator: Sendable {
     private var previousRequiredFist: SIMD3<Float>?
     private var previousRequiredTimestamp: TimeInterval?
     private var wrongHandWasInsideTarget = false
+    private var previousOtherFist: SIMD3<Float>?
 
     /// Creates a validator for one resolved combination target.
     ///
@@ -101,9 +102,16 @@ nonisolated struct CombinationPunchValidator: Sendable {
         let otherHandIsInsideTarget: Bool
         if let otherFist, Self.isFinite(otherFist) {
             let distanceToTarget = simd_distance(otherFist, target.position)
-            otherHandIsInsideTarget = distanceToTarget.isFinite && distanceToTarget <= hitRadius
+            otherHandIsInsideTarget = (distanceToTarget.isFinite && distanceToTarget <= hitRadius)
+                || previousOtherFist.map {
+                    Self.segmentIntersectsSphere(
+                        from: $0, to: otherFist, center: target.position, radius: hitRadius
+                    )
+                } == true
+            previousOtherFist = otherFist
         } else {
             otherHandIsInsideTarget = false
+            previousOtherFist = nil
         }
 
         let wrongHandEnteredTarget = otherHandIsInsideTarget && !wrongHandWasInsideTarget
@@ -133,10 +141,17 @@ nonisolated struct CombinationPunchValidator: Sendable {
                 }
                 guard deltaTime >= Self.minimumSampleInterval else { return .armed }
             }
+            let previousFist = previousRequiredFist
             previousRequiredFist = requiredFist
             previousRequiredTimestamp = timestamp
             let distanceToTarget = simd_distance(requiredFist, target.position)
-            guard distanceToTarget.isFinite, distanceToTarget <= hitRadius else { return .armed }
+            let crossedTarget = previousFist.map {
+                Self.segmentIntersectsSphere(
+                    from: $0, to: requiredFist, center: target.position, radius: hitRadius
+                )
+            } ?? false
+            guard (distanceToTarget.isFinite && distanceToTarget <= hitRadius) || crossedTarget
+            else { return .armed }
             phase = .hit
             return .hit
 
@@ -229,5 +244,22 @@ nonisolated struct CombinationPunchValidator: Sendable {
 
     private static func isFinite(_ value: SIMD3<Float>) -> Bool {
         value.x.isFinite && value.y.isFinite && value.z.isFinite
+    }
+
+    static func segmentIntersectsSphere(
+        from start: SIMD3<Float>,
+        to end: SIMD3<Float>,
+        center: SIMD3<Float>,
+        radius: Float
+    ) -> Bool {
+        guard isFinite(start), isFinite(end), isFinite(center), radius.isFinite, radius > 0
+        else { return false }
+        let segment = end - start
+        let squaredLength = simd_length_squared(segment)
+        guard squaredLength.isFinite else { return false }
+        if squaredLength <= .ulpOfOne { return simd_distance(start, center) <= radius }
+        let projection = simd_dot(center - start, segment) / squaredLength
+        let t = min(max(projection, 0), 1)
+        return simd_distance(start + segment * t, center) <= radius
     }
 }

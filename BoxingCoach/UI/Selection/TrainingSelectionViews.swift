@@ -115,27 +115,11 @@ struct CombinationSetupView: View {
             onBack: onBack
         ) {
             VStack(spacing: 20) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Stance")
-                        .font(.headline)
-
-                    Picker(
-                        "Stance",
-                        selection: Binding(
-                            get: { stance },
-                            set: { onStanceChange($0) }
-                        )
-                    ) {
-                        ForEach(Stance.allCases) { stance in
-                            Text(stance.title).tag(stance)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(controlsDisabled)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(18)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+                StancePickerCard(
+                    stance: stance,
+                    controlsDisabled: controlsDisabled,
+                    onStanceChange: onStanceChange
+                )
 
                 VStack(spacing: 12) {
                     ForEach(Combination.all) { combination in
@@ -177,27 +161,13 @@ struct AuraSetupView: View {
             onBack: onBack
         ) {
             VStack(spacing: 20) {
-                VStack(alignment: .leading, spacing: 10) {
-                    Text("Stance")
-                        .font(.headline)
+                StancePickerCard(
+                    stance: stance,
+                    controlsDisabled: controlsDisabled,
+                    onStanceChange: onStanceChange
+                )
 
-                    Picker(
-                        "Stance",
-                        selection: Binding(
-                            get: { stance },
-                            set: { onStanceChange($0) }
-                        )
-                    ) {
-                        ForEach(Stance.allCases) { stance in
-                            Text(stance.title).tag(stance)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .disabled(controlsDisabled)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(18)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+                AuraPunchTutorialCard()
 
                 VStack(spacing: 12) {
                     ForEach(Technique.all) { technique in
@@ -248,40 +218,6 @@ struct AuraSetupView: View {
         }
         .padding(18)
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
-    }
-}
-
-struct UnavailableFeatureView: View {
-    let feature: TrainingFeature
-    let controlsDisabled: Bool
-    let onBack: () -> Void
-
-    var body: some View {
-        TrainingDetailScaffold(
-            backLabel: "Features",
-            title: feature.title,
-            subtitle: feature.subtitle,
-            controlsDisabled: controlsDisabled,
-            onBack: onBack
-        ) {
-            VStack(spacing: 12) {
-                Text("Coming soon")
-                    .font(.title2.bold())
-                Text("\(feature.title) is planned for later. For this demo, use Aura Punch or Reactive Strike.")
-                    .font(.body)
-                    .foregroundStyle(.secondary)
-                    .multilineTextAlignment(.center)
-
-                Button("Back to Features") {
-                    onBack()
-                }
-                .buttonStyle(.borderedProminent)
-                .disabled(controlsDisabled)
-            }
-            .padding(24)
-            .frame(maxWidth: .infinity)
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
-        }
     }
 }
 

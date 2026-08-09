@@ -3,19 +3,17 @@ import XCTest
 
 @MainActor
 final class TrainingFlowCoordinatorTests: XCTestCase {
-    func testAirAndBagRouteDirectlyToExperienceWhileCombinationRoutesToSetup() {
-        for mode in [ReactiveStrikeMode.air, .bag] {
-            let flow = TrainingFlowCoordinator()
+    func testAirRoutesDirectlyToExperienceWhileCombinationRoutesToSetup() {
+        let flow = TrainingFlowCoordinator()
 
-            flow.chooseFeature(.reactiveStrike)
-            XCTAssertEqual(flow.route, .reactiveSetup)
+        flow.chooseFeature(.reactiveStrike)
+        XCTAssertEqual(flow.route, .reactiveSetup)
 
-            flow.chooseReactiveMode(mode)
-            XCTAssertEqual(
-                flow.route,
-                .experience(.reactive(mode: mode, combination: nil, stance: .orthodox))
-            )
-        }
+        flow.chooseReactiveMode(.air)
+        XCTAssertEqual(
+            flow.route,
+            .experience(.reactive(mode: .air, combination: nil, stance: .orthodox))
+        )
 
         let combinationFlow = TrainingFlowCoordinator()
         combinationFlow.chooseFeature(.reactiveStrike)

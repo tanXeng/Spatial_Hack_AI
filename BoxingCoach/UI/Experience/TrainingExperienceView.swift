@@ -67,7 +67,11 @@ struct TrainingExperienceView: View {
             onBack: onChangeSelection
         ) {
             VStack(spacing: 16) {
-                TrainingStatusCard(message: auraStatusLine)
+                if aura.phase == .idle, aura.errorMessage == nil, aura.statusMessage != "Stopped" {
+                    AuraPunchTutorialCard(compact: true)
+                } else {
+                    TrainingStatusCard(message: auraStatusLine)
+                }
 
                 if aura.phase == .attempting || aura.phase == .guiding {
                     PunchExtensionMeter(value: aura.liveReach)

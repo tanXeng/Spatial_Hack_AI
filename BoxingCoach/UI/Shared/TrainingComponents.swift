@@ -109,3 +109,78 @@ struct LabeledMetricRow: View {
         .accessibilityValue(spokenValue ?? value)
     }
 }
+
+struct StancePickerCard: View {
+    let stance: Stance
+    let controlsDisabled: Bool
+    let onStanceChange: (Stance) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Stance")
+                .font(.headline)
+
+            Picker(
+                "Stance",
+                selection: Binding(
+                    get: { stance },
+                    set: { onStanceChange($0) }
+                )
+            ) {
+                ForEach(Stance.allCases) { stance in
+                    Text(stance.title).tag(stance)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(controlsDisabled)
+
+            Text(stance.footDescription)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+    }
+}
+
+struct AuraPunchTutorialCard: View {
+    var compact: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: compact ? 8 : 12) {
+            Text("How Aura Punch works")
+                .font(compact ? .headline : .title3.weight(.semibold))
+
+            tutorialStep(
+                title: "Watch",
+                detail: "A ghost arm demonstrates the punch on your body."
+            )
+            tutorialStep(
+                title: "Follow",
+                detail: "Match the motion rep by rep and return to guard between steps."
+            )
+            tutorialStep(
+                title: "Throw",
+                detail: "After the demo, throw the punch on your own."
+            )
+            tutorialStep(
+                title: "Score",
+                detail: "Get feedback on extension, path, elbow, and retraction."
+            )
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(compact ? 16 : 18)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+    }
+
+    private func tutorialStep(title: String, detail: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            Text(title)
+                .font(compact ? .subheadline.weight(.semibold) : .body.weight(.semibold))
+            Text(detail)
+                .font(compact ? .footnote : .subheadline)
+                .foregroundStyle(.secondary)
+        }
+    }
+}

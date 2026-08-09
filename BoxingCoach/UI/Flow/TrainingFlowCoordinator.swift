@@ -1,7 +1,6 @@
 import Foundation
 
 enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
-    case anthropometry
     case auraPunch
     case reactiveStrike
 
@@ -9,7 +8,6 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var title: String {
         switch self {
-        case .anthropometry: return "Anthropometry"
         case .auraPunch: return "Aura Punch"
         case .reactiveStrike: return "Reactive Strike"
         }
@@ -17,15 +15,12 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var subtitle: String {
         switch self {
-        case .anthropometry: return "Calibrate height, reach, and guard"
         case .auraPunch: return "Follow a spatial punch guide"
         case .reactiveStrike: return "Hit floating targets on reaction"
         }
     }
 
-    var isAvailable: Bool {
-        self == .reactiveStrike || self == .auraPunch
-    }
+    var isAvailable: Bool { true }
 }
 
 enum TrainingSelection: Hashable, Sendable {
@@ -45,7 +40,6 @@ enum TrainingFlowRoute: Hashable, Sendable {
     case reactiveSetup
     case combinationSetup
     case auraSetup
-    case unavailableFeature(TrainingFeature)
     case experience(TrainingSelection)
 }
 
@@ -99,8 +93,6 @@ final class TrainingFlowCoordinator {
             route = .reactiveSetup
         case .auraPunch:
             route = .auraSetup
-        case .anthropometry:
-            route = .unavailableFeature(feature)
         }
     }
 

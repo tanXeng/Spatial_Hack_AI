@@ -33,15 +33,23 @@ struct BoxingCoachImmersiveView: View {
 
             if let controls = attachments.entity(for: controlsAttachmentID) {
                 controls.name = "TrainingControls"
-                controls.position = SIMD3<Float>(0, 0.78, -0.9)
-                root.addChild(controls)
+                if isAuraExperience {
+                    controls.position = SIMD3<Float>(0, -0.32, -1.05)
+                    instructionAnchor.addChild(controls)
+                } else {
+                    controls.position = SIMD3<Float>(0, 0.78, -0.9)
+                    root.addChild(controls)
+                }
             }
 
             session.attachSceneRoot(root)
             flow.immersiveSceneDidBecomeReady(session: session)
         } attachments: {
             Attachment(id: instructionsAttachmentID) {
-                ImmersiveInstructionBanner(instruction: currentInstruction)
+                ImmersiveInstructionBanner(
+                    instruction: currentInstruction,
+                    style: isAuraExperience ? .prominent : .compact
+                )
             }
 
             Attachment(id: controlsAttachmentID) {
@@ -49,8 +57,10 @@ struct BoxingCoachImmersiveView: View {
                     endTraining()
                 }
                 .buttonStyle(.borderedProminent)
+                .controlSize(isAuraExperience ? .large : .regular)
+                .font(isAuraExperience ? .title3.weight(.semibold) : .body)
                 .disabled(flow.controlsDisabled)
-                .padding(14)
+                .padding(isAuraExperience ? 18 : 14)
                 .glassBackgroundEffect()
                 .accessibilityHint("Ends the current training session and returns to results")
             }
@@ -94,6 +104,11 @@ struct BoxingCoachImmersiveView: View {
             openWindow(id: BoxingCoachSceneID.controlWindow)
             flow.immersiveSceneDidClose(session: session)
         }
+    }
+
+    private var isAuraExperience: Bool {
+        if case .experience(.aura) = flow.route { return true }
+        return false
     }
 
     private func endTraining() {
@@ -146,13 +161,13 @@ struct BoxingCoachImmersiveView: View {
                 }
                 return ImmersiveInstruction(
                     stage: "GET READY",
-                    message: "Raise your guard to begin the \(action) training",
+                    message: "Raise your guard — a ghost arm will demonstrate the \(action) on your body",
                     symbol: "figure.boxing"
                 )
             case .acquiring:
                 return ImmersiveInstruction(
                     stage: "GET READY",
-                    message: "Raise your guard and keep both hands visible",
+                    message: "Raise your guard and keep both hands visible to follow the ghost",
                     symbol: "hand.raised.fill"
                 )
             case .guiding:

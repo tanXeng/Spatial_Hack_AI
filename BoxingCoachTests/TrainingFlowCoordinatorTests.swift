@@ -73,19 +73,17 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
         XCTAssertTrue(calibration.isCalibrated)
     }
 
-    func testAirAndBagRouteDirectlyToExperienceWhileCombinationRoutesToSetup() {
-        for mode in [ReactiveStrikeMode.air, .bag] {
-            let flow = TrainingFlowCoordinator(calibration: .calibratedFixture)
+    func testAirRoutesDirectlyToExperienceWhileCombinationRoutesToSetup() {
+        let flow = TrainingFlowCoordinator(calibration: .calibratedFixture)
 
-            flow.chooseFeature(.reactiveStrike)
-            XCTAssertEqual(flow.route, .reactiveSetup)
+        flow.chooseFeature(.reactiveStrike)
+        XCTAssertEqual(flow.route, .reactiveSetup)
 
-            flow.chooseReactiveMode(mode)
-            XCTAssertEqual(
-                flow.route,
-                .experience(.reactive(mode: mode, combination: nil, stance: .orthodox))
-            )
-        }
+        flow.chooseReactiveMode(.air)
+        XCTAssertEqual(
+            flow.route,
+            .experience(.reactive(mode: .air, combination: nil, stance: .orthodox))
+        )
 
         let combinationFlow = TrainingFlowCoordinator(calibration: .calibratedFixture)
         combinationFlow.chooseFeature(.reactiveStrike)

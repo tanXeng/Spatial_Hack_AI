@@ -15,6 +15,13 @@ nonisolated enum Stance: String, CaseIterable, Identifiable, Hashable, Sendable,
         }
     }
 
+    var footDescription: String {
+        switch self {
+        case .orthodox: return "Left foot forward, right foot back"
+        case .southpaw: return "Right foot forward, left foot back"
+        }
+    }
+
     /// The forward (weak) hand — throws the jab and lead hook.
     var leadSide: BodySide {
         self == .orthodox ? .left : .right

@@ -45,13 +45,6 @@ struct BoxingCoachRootView: View {
                     onBack: flow.backFromSetup
                 )
 
-            case .unavailableFeature(let feature):
-                UnavailableFeatureView(
-                    feature: feature,
-                    controlsDisabled: flow.controlsDisabled,
-                    onBack: flow.backFromSetup
-                )
-
             case .experience(let selection):
                 TrainingExperienceView(
                     selection: selection,

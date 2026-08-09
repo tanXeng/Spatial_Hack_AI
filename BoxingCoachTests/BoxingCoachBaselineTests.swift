@@ -145,4 +145,65 @@ final class BoxingCoachTechniqueTests: XCTestCase {
         XCTAssertEqual(capturedLandingHeight, referenceLandingHeight, accuracy: 1e-5)
         XCTAssertGreaterThan(attempt.extensionMagnitude(for: Technique.uppercut.id), 0.9)
     }
+
+    func testFullReferenceJabScoresHighly() throws {
+        let reference = ReferencePunchLibrary.punch(
+            for: .jab,
+            stance: .orthodox,
+            measurements: .averageAdult,
+            side: .left
+        )
+        let attempt = RecordedAttempt(
+            samples: reference.samples,
+            trackedFraction: 1,
+            duration: reference.duration
+        )
+
+        let score = try XCTUnwrap(
+            TechniqueScorer().score(
+                attempt: attempt,
+                reference: reference,
+                technique: .jab,
+                thrownSide: .left,
+                stance: .orthodox
+            )
+        )
+
+        XCTAssertGreaterThanOrEqual(score.overall, 74)
+        XCTAssertNotNil(score.metric(.retraction)?.score)
+    }
+
+    func testOutboundOnlyAttemptDoesNotTankScoreOnRetraction() throws {
+        let reference = ReferencePunchLibrary.punch(
+            for: .jab,
+            stance: .orthodox,
+            measurements: .averageAdult,
+            side: .left
+        )
+        let outboundSamples = reference.outboundSamples
+        XCTAssertGreaterThan(outboundSamples.count, 8)
+
+        let attempt = RecordedAttempt(
+            samples: outboundSamples,
+            trackedFraction: 1,
+            duration: (outboundSamples.last?.time ?? 0) - (outboundSamples.first?.time ?? 0)
+        )
+
+        XCTAssertTrue(attempt.endsNearExtension())
+
+        let score = try XCTUnwrap(
+            TechniqueScorer().score(
+                attempt: attempt,
+                reference: reference,
+                technique: .jab,
+                thrownSide: .left,
+                stance: .orthodox
+            )
+        )
+
+        let retraction = try XCTUnwrap(score.metric(.retraction))
+        XCTAssertNil(retraction.score)
+        XCTAssertEqual(retraction.detail, "Retraction not captured")
+        XCTAssertGreaterThanOrEqual(score.overall, 60)
+    }
 }

@@ -2,10 +2,8 @@ import Foundation
 import simd
 
 /// Reactive Strike modes from the project brief.
-/// Bag Mode does not recognize a real bag yet — targets spawn in a tighter "bag zone" volume.
 enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Hashable, Sendable {
     case air
-    case bag
     case combination
 
     var id: String { rawValue }
@@ -13,7 +11,6 @@ enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Hashable, Sendable 
     var title: String {
         switch self {
         case .air: return "Air Mode"
-        case .bag: return "Bag Mode"
         case .combination: return "Combination Mode"
         }
     }
@@ -21,16 +18,13 @@ enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Hashable, Sendable 
     var subtitle: String {
         switch self {
         case .air: return "Targets float in front of you"
-        case .bag: return "Targets appear in a punching-bag zone"
         case .combination: return "Throw a stance-aware punch sequence"
         }
     }
 
     var reachProfile: ReachProfile {
         switch self {
-        case .air: return .air
-        case .bag: return .bagZone
-        case .combination: return .air
+        case .air, .combination: return .air
         }
     }
 }
@@ -73,17 +67,6 @@ struct ReachProfile: Sendable, Equatable {
         forwardBandFraction: 0.10
     )
 
-    /// Tighter forward volume approximating a standing bag (no bag recognition yet).
-    static let bagZone = ReachProfile(
-        forwardMin: 0.60,
-        forwardMax: 0.70,
-        lateralMin: -0.18,
-        lateralMax: 0.18,
-        verticalMin: -0.28,
-        verticalMax: 0.28,
-        forwardBandFraction: 0.08
-    )
-
     /// Returns a random target in body space. Convert it through the current `BodyFrame` before
     /// handing it to RealityKit.
     func randomBodyTargetPosition() -> SIMD3<Float> {
@@ -97,9 +80,7 @@ struct ReachProfile: Sendable, Equatable {
     /// A target inside this radius is on the user's chest, not in front of it.
     static let minimumForwardSpawn: Float = 0.30
 
-    /// Anchors this exact profile to a measured forward reach while preserving its shape. In
-    /// particular, calibrating Bag Mode cannot silently replace its tighter lateral/forward zone
-    /// with Air Mode bounds.
+    /// Anchors this exact profile to a measured forward reach while preserving its shape.
     ///
     /// **Every target lands in the last `forwardBandFraction` of the user's reach**, so the drill
     /// always demands something close to full extension — which is the technique being coached. A

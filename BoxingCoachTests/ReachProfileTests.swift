@@ -88,13 +88,10 @@ final class ReachProfileTests: XCTestCase {
     func testCalibratedProfilesPutEveryTargetInTheLastTenthOfReach() {
         let measuredReach: Float = 0.80
         let originalAir = ReachProfile.air
-        let originalBag = ReachProfile.bagZone
         let air = originalAir.calibrated(measuredForwardReach: measuredReach)
-        let bag = originalBag.calibrated(measuredForwardReach: measuredReach)
 
         // The far edge is the measurement itself — no haircut applied on top of it.
         XCTAssertEqual(air.forwardMax, measuredReach, accuracy: 1e-6)
-        XCTAssertEqual(bag.forwardMax, measuredReach, accuracy: 1e-6)
 
         // The band is a fraction of reach, so it demands near-full extension at any body size.
         XCTAssertEqual(
@@ -102,32 +99,21 @@ final class ReachProfileTests: XCTestCase {
             measuredReach * originalAir.forwardBandFraction,
             accuracy: 1e-6
         )
-        XCTAssertEqual(
-            forwardWidth(of: bag),
-            measuredReach * originalBag.forwardBandFraction,
-            accuracy: 1e-6
-        )
 
         // Lateral bounds have no dimensional relationship to forward reach and must not scale.
         XCTAssertEqual(air.lateralMin, originalAir.lateralMin, accuracy: 1e-6)
         XCTAssertEqual(air.lateralMax, originalAir.lateralMax, accuracy: 1e-6)
-        XCTAssertEqual(bag.lateralMin, originalBag.lateralMin, accuracy: 1e-6)
-        XCTAssertEqual(bag.lateralMax, originalBag.lateralMax, accuracy: 1e-6)
 
         XCTAssertEqual(air.verticalMin, originalAir.verticalMin)
         XCTAssertEqual(air.verticalMax, originalAir.verticalMax)
-        XCTAssertEqual(bag.verticalMin, originalBag.verticalMin)
-        XCTAssertEqual(bag.verticalMax, originalBag.verticalMax)
 
-        XCTAssertGreaterThan(bag.forwardMin, air.forwardMin)
-        XCTAssertLessThan(forwardWidth(of: bag), forwardWidth(of: air))
-        XCTAssertLessThan(lateralWidth(of: bag), lateralWidth(of: air))
+        XCTAssertGreaterThanOrEqual(air.forwardMin / air.forwardMax, 0.85)
     }
 
     /// Regression test for targets spawning well inside the user's range, where a half-extended
     /// arm scores a hit.
     func testCalibratedTargetsAlwaysSitNearFullReach() {
-        for profile in [ReachProfile.air, .bagZone] {
+        for profile in [ReachProfile.air] {
             for measuredReach in stride(from: Float(0.40), through: 0.90, by: 0.05) {
                 let calibrated = profile.calibrated(measuredForwardReach: measuredReach)
                 let expectedNearEdge = measuredReach * (1 - profile.forwardBandFraction)
@@ -163,16 +149,15 @@ final class ReachProfileTests: XCTestCase {
 
     func testCalibrationClampsUsableReachWithoutChangingProfileIdentity() {
         let shortAir = ReachProfile.air.calibrated(measuredForwardReach: 0.10)
-        let longBag = ReachProfile.bagZone.calibrated(measuredForwardReach: 2.0)
+        let longAir = ReachProfile.air.calibrated(measuredForwardReach: 2.0)
 
         XCTAssertEqual(shortAir.forwardMax, 0.35, accuracy: 1e-6)
         XCTAssertGreaterThanOrEqual(shortAir.forwardMin, ReachProfile.minimumForwardSpawn)
         XCTAssertLessThan(shortAir.forwardMin, shortAir.forwardMax)
 
-        XCTAssertEqual(longBag.forwardMax, 0.95, accuracy: 1e-6)
-        XCTAssertLessThan(lateralWidth(of: longBag), lateralWidth(of: ReachProfile.air))
-        XCTAssertEqual(longBag.verticalMin, ReachProfile.bagZone.verticalMin)
-        XCTAssertEqual(longBag.verticalMax, ReachProfile.bagZone.verticalMax)
+        XCTAssertEqual(longAir.forwardMax, 0.95, accuracy: 1e-6)
+        XCTAssertEqual(longAir.verticalMin, ReachProfile.air.verticalMin)
+        XCTAssertEqual(longAir.verticalMax, ReachProfile.air.verticalMax)
     }
 
     func testSettledReachMeasuresTheHeldExtensionNotTheOutboundRamp() throws {
@@ -277,9 +262,7 @@ final class ReachProfileTests: XCTestCase {
     func testRandomBodyTargetsRemainInsideEveryProfileBound() {
         let profiles = [
             ReachProfile.air,
-            ReachProfile.bagZone,
-            ReachProfile.air.calibrated(measuredForwardReach: 0.82),
-            ReachProfile.bagZone.calibrated(measuredForwardReach: 0.82)
+            ReachProfile.air.calibrated(measuredForwardReach: 0.82)
         ]
 
         for profile in profiles {
@@ -328,10 +311,6 @@ final class ReachProfileTests: XCTestCase {
             accuracy: 0.05,
             "The test frames should represent meaningfully different world-space yaws"
         )
-    }
-
-    private func lateralWidth(of profile: ReachProfile) -> Float {
-        profile.lateralMax - profile.lateralMin
     }
 
     private func forwardWidth(of profile: ReachProfile) -> Float {

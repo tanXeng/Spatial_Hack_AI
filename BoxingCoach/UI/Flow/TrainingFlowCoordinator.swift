@@ -1,6 +1,8 @@
 import Foundation
 
 enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
+    // Kept through the target-fix merge, which dropped it. On that branch Anthropometry was still
+    // an inert "coming soon" card; here it is the calibration gate every other feature depends on.
     case anthropometry
     case auraPunch
     case reactiveStrike
@@ -17,7 +19,7 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var subtitle: String {
         switch self {
-        case .anthropometry: return "Calibrate height, reach, and guard"
+        case .anthropometry: return "Calibrate your reach and guard"
         case .auraPunch: return "Follow a spatial punch guide"
         case .reactiveStrike: return "Hit floating targets on reaction"
         }
@@ -45,7 +47,6 @@ enum TrainingFlowRoute: Hashable, Sendable {
     case reactiveSetup
     case combinationSetup
     case auraSetup
-    case unavailableFeature(TrainingFeature)
     case experience(TrainingSelection)
 }
 

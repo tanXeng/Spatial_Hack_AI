@@ -22,6 +22,7 @@ Useful targets:
 
 - `make build` — unsigned visionOS Simulator build
 - `make build-device` — unsigned generic visionOS device compile check
+- `make test` — run the unit suite on the visionOS 27 Apple Vision Pro simulator
 
 Open `BoxingCoach.xcodeproj` and select the `BoxingCoach` scheme to run on Apple Vision Pro.
 ARKit hand tracking is unavailable in the simulator, so live punch validation requires hardware.
@@ -30,30 +31,57 @@ ARKit hand tracking is unavailable in the simulator, so live punch validation re
 
 ```text
 BoxingCoach/
-├── Models/       stance, technique, and body-measurement domain models
-├── Resources/    locally authored reference punch trajectories
-├── Scoring/      motion recording, path comparison, scoring, and feedback
-├── Spatial/      body-relative arm solving and silhouette rendering
+├── Models/        stance, technique, and body-measurement domain models
+├── Resources/     locally authored reference punch trajectories
+├── Scoring/       motion recording, path comparison, scoring, and feedback
+├── Spatial/       body-relative arm solving and silhouette rendering
+├── UI/
+│   ├── Flow/      typed navigation and immersive-space lifecycle
+│   ├── Selection/ feature, mode, stance, and technique setup
+│   ├── Experience/ live guidance, controls, scores, and results
+│   └── Shared/    reusable status, error, progress, and metric components
 ├── *Session.swift
-├── HandTrackingService.swift
-└── BoxingCoach*View.swift
+├── Combination*.swift
+└── HandTrackingService.swift
 ```
 
 `BoxingCoach.xcodeproj`, `Info.plist`, and the `BoxingCoach/` source tree are the complete active
 app. The project uses Xcode synchronized groups, so new source files inside `BoxingCoach/` are
 included without manually changing `project.pbxproj`.
 
-## Uppercut and tracking behavior
+The selection window is dismissed after a training engine starts, leaving only the spatial drill
+and a compact **End Training** control in view. Completion, tracking errors, early ending, and
+system-driven immersive dismissal restore the window before closing immersion so results and
+actionable errors remain available. Immersion closes only after the single control window reports
+that it has appeared, avoiding timing-dependent loss of the last result.
 
-Aura Punch exposes separate left- and right-hand uppercut drills. Both reference paths curve
-inward and peak at the user's estimated body centerline; the endpoint is derived from shoulder
-width and arm reach rather than a fixed lateral offset.
+## Training and tracking behavior
+
+Aura Punch exposes one Uppercut drill that alternates hands each repetition. Its mirrored
+reference paths load beside the hip, drive diagonally inward, and peak at the body centreline.
+Legacy `left-uppercut` and `right-uppercut` identifiers resolve to this unified technique.
+
+Reactive Strike begins by capturing both guard positions and, when needed, measuring a stable
+outward extension from each arm. It uses the shorter comfortable reach so every target remains
+available to either hand. Calibration and target placement use the live head-derived body frame
+rather than world Z or a fixed room height, so the drill is invariant to where the user stands or
+faces. Air Mode and Combination Mode use body-relative target placement after reach calibration.
+
+Combination Mode adds five numbered combinations with Orthodox/Southpaw hand mapping. It shows
+one target at a time and accepts a step only after the required physical hand leaves guard with
+outward velocity, reaches the target, and retracts before the next step. Wrong-hand contact and a
+stationary extended fist do not advance the sequence; wrong-hand contact ends that repetition as
+a miss.
 
 visionOS provides tracked hands and processed forearm joints, plus the headset pose. It does not
 provide direct shoulder or full-body tracking. Boxing Coach therefore estimates each shoulder
 from the headset pose and local body measurements, then uses the tracked forearm as an elbow-bend
 hint. This supports body-relative path, extension, elbow, guard, and retraction scoring, but it
 cannot directly evaluate shoulder roll, hip rotation, foot placement, or impact force.
+
+The unit target covers calibration geometry, Air Mode bounds, stance and combination validation,
+flow routing, legacy uppercut lookup, and the mirrored uppercut trajectory. Live hand tracking and
+punch feel still require an Apple Vision Pro; the simulator cannot supply ARKit hand anchors.
 
 ## Repository policy
 

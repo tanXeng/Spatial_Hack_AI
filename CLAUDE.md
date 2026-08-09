@@ -24,13 +24,14 @@ All three features in `TrainingFeature` are now built.
 | Reactive Strike | Built | Spawns floating targets and times the user's reaction. Has three modes — see below. Owns `HandTrackingService` and the immersive scene root, and hosts `AuraPunchSession`. |
 | Anthropometry | Built | Measures forward reach per arm and captures the guard pose. **Gates the app** — an uncalibrated launch opens straight into it and no other feature is reachable until it produces a measurement. Feeds both the Reactive Strike spawn volume and Aura Punch's `BodyMeasurements`. |
 
-**Punching Bag is no longer a separate feature.** It became `ReactiveStrikeMode.bag`, one of three modes on Reactive Strike:
+**Punching Bag no longer exists in any form.** It was briefly `ReactiveStrikeMode.bag`; the `target-fix` merge removed that case and `ReachProfile.bagZone` outright. Reactive Strike has two modes:
 
 | Mode | Description |
 |---|---|
 | `.air` | Targets float in front of you. |
-| `.bag` | Targets appear in a punching-bag zone. |
 | `.combination` | Throw a stance-aware punch sequence, validated punch by punch. |
+
+Both resolve to `ReachProfile.air`.
 
 ### Aura Punch — detailed spec
 
@@ -70,7 +71,9 @@ launch (uncalibrated) → .experience(.calibration)   ← mandatory, Back hidden
 
 `TrainingSelection` is the committed choice — `.aura(technique:stance:)`, `.reactive(mode:combination:stance:)`, or `.calibration`.
 
-`chooseFeature` refuses any non-Anthropometry feature while uncalibrated and bounces back to calibration. `TrainingFeature.isAvailable` is now `true` for everything; the `.unavailableFeature` route and `UnavailableFeatureView` are unreachable leftovers.
+`chooseFeature` refuses any non-Anthropometry feature while uncalibrated and bounces back to calibration. `TrainingFeature.isAvailable` is now `true` for everything; the `.unavailableFeature` route and `UnavailableFeatureView` were removed by the `target-fix` merge, which is safe because the gate makes them unreachable.
+
+**`target-fix` deleted `TrainingFeature.anthropometry`; the merge kept it deliberately.** On that branch Anthropometry was still an inert "coming soon" card with nothing behind it. Here it is the calibration gate that `TrainingSelection.calibration` and every other feature depend on — removing the case breaks the app-entry flow.
 
 ### Scene management — read before touching navigation
 
@@ -145,13 +148,13 @@ Guard was removed from the scored sub-metrics. `Scoring/GuardCoach.swift` now ha
 Two rules here were each fixed after targets spawned at roughly two-thirds of arm's length:
 
 - **`ReachCalibration.settledForwardReach`** requires a *plateau*: the longest run of samples within `plateauTolerance` (1.5 cm) of the peak must span `plateauDuration` (0.30 s). The rule it replaced finalized 0.25 s after the fist first cleared guard and then took the 75th percentile — both halves measured the outbound ramp, and a punch needs ~0.3–0.5 s to reach lockout, so the window closed mid-flight. `robustForwardReach` survives only as the timeout fallback.
-- **`ReachProfile.calibrated`** anchors `forwardMax` to the measurement and puts `forwardMin` at `reach * (1 - forwardBandFraction)` — Air 0.10, Bag 0.08. **Every target therefore lands in the last 8–10% of the user's reach**, so the drill always demands near-full extension, which is the technique being coached. A wide forward band let targets spawn well inside the user's range where a half-extended arm scores a hit. The fraction is proportional, not a fixed distance, so it means the same thing at any body size: 0.50 m reach → 0.45–0.50, 0.80 m reach → 0.72–0.80. The authored `forwardMin`/`forwardMax` literals are now only the uncalibrated fallback. Lateral bounds are not scaled at all — how wide a user punches has no dimensional relationship to how far forward they reach.
+- **`ReachProfile.calibrated`** anchors `forwardMax` to the measurement and puts `forwardMin` at `reach * (1 - forwardBandFraction)` — 0.10 for Air, the only profile left. **Every target therefore lands in the last 10% of the user's reach**, so the drill always demands near-full extension, which is the technique being coached. A wide forward band let targets spawn well inside the user's range where a half-extended arm scores a hit. The fraction is proportional, not a fixed distance, so it means the same thing at any body size: 0.50 m reach → 0.45–0.50, 0.80 m reach → 0.72–0.80. The authored `forwardMin`/`forwardMax` literals are now only the uncalibrated fallback. Lateral bounds are not scaled at all — how wide a user punches has no dimensional relationship to how far forward they reach.
 
   Combination Mode is unaffected: it already passes `reachProfile.forwardMax` as `forwardBase` and applies its own per-punch multipliers (hook 0.88, uppercut 0.82) as deliberate punch geometry.
 
 Also: the calibration cue spawns at `BodyMeasurements.averageAdult.armReach`, never at the profile's `forwardMax`. Air's 0.75 m far edge is past most people's reach, so cueing there made users lean, which moves `BodyFrame.origin` and corrupts the measurement being taken.
 
-One measurement serves all three Reactive Strike modes — `mode.reachProfile.calibrated(...)` preserves each mode's shape, so there is no per-mode calibration cache and switching Air → Bag → Combination never re-measures.
+One measurement serves both Reactive Strike modes and Aura Punch — `mode.reachProfile.calibrated(...)` preserves each mode's shape, so there is no per-mode calibration cache and switching Air → Combination never re-measures.
 
 ### Uppercut extension is measured differently — do not "simplify" this
 

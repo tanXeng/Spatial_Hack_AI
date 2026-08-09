@@ -9,8 +9,7 @@ enum CoachClipID: String, CaseIterable, Sendable {
     case backToGuard = "back_to_guard"
     case repFaster = "rep_faster"
     case countdown
-    // Per-impact feedback uses an original short transient, not the legacy spoken prompt.
-    case hitTarget = "clean_hit_1"
+    case hitTarget = "hit_target"
     case scoring
     case resultsGood = "results_good"
     case resultsNeedsWork = "results_needs_work"
@@ -32,25 +31,6 @@ enum CoachClipID: String, CaseIterable, Sendable {
     case didntCatch = "didnt_catch"
 }
 
-/// Original, non-verbal sonic-ring resources used by the training-audio coordinator.
-enum SonicRingSoundID: String, CaseIterable, Sendable {
-    case calibrateReach = "calibrate_reach"
-    case extendOtherArm = "extend_other_arm"
-    case reachCalibrated = "reach_calibrated"
-    case gymAmbienceLoop = "gym_ambience_loop"
-    case competitionCrowdLowLoop = "competition_crowd_low_loop"
-    case bellStart = "bell_start"
-    case bellEnd = "bell_end"
-    case cleanHitOne = "clean_hit_1"
-    case cleanHitTwo = "clean_hit_2"
-    case cleanHitThree = "clean_hit_3"
-    case rejectedHit = "rejected_hit"
-    case trackingLost = "tracking_lost"
-    case trackingRestored = "tracking_restored"
-    case improvementSting = "improvement_sting"
-    case winnerSwell = "winner_swell"
-}
-
 struct CoachClipLibrary: TrainingAudioResourceResolving {
     private static let fileExtensions = ["mp3", "m4a", "wav", "caf", "aac"]
     private static let subdirectories = ["CoachAudio", "Resources/CoachAudio", nil as String?]
@@ -64,10 +44,6 @@ struct CoachClipLibrary: TrainingAudioResourceResolving {
     }
 
     static func url(for id: CoachClipID) -> URL? {
-        url(for: id.rawValue)
-    }
-
-    static func url(for id: SonicRingSoundID) -> URL? {
         url(for: id.rawValue)
     }
 

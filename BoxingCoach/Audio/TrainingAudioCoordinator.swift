@@ -730,7 +730,7 @@ final class TrainingAudioCoordinator {
     }
 
     private func impactResourceForNextVoice() -> TrainingAudioResourceID {
-        let variants: [TrainingAudioResourceID] = [.cleanImpact1, .cleanImpact2, .cleanImpact3]
+        let variants = TrainingAudioResourceID.cleanImpactVariants
         let resource = variants[nextImpactVariant % variants.count]
         nextImpactVariant = (nextImpactVariant + 1) % variants.count
         return resource

@@ -140,6 +140,7 @@ nonisolated enum TrainingAudioResourceID: Hashable, Sendable {
     case cleanImpact1
     case cleanImpact2
     case cleanImpact3
+    case rejectedImpact
     case trackingLost
     case trackingRestored
     case startBell
@@ -161,6 +162,8 @@ nonisolated enum TrainingAudioResourceID: Hashable, Sendable {
             "clean_impact_2"
         case .cleanImpact3:
             "clean_impact_3"
+        case .rejectedImpact:
+            "rejected_hit"
         case .trackingLost:
             "tracking_lost"
         case .trackingRestored:
@@ -174,6 +177,35 @@ nonisolated enum TrainingAudioResourceID: Hashable, Sendable {
         case .winnerSwell:
             "winner_swell"
         }
+    }
+
+    /// The complete locally authored, non-verbal ring inventory plus calibration cues.
+    static let sonicRingResources: [Self] = [
+        .coach(.calibrateReach),
+        .coach(.extendOtherArm),
+        .coach(.reachCalibrated),
+        .gymAmbience,
+        .competitionCrowd,
+        .startBell,
+        .endBell,
+        .cleanImpact1,
+        .cleanImpact2,
+        .cleanImpact3,
+        .rejectedImpact,
+        .trackingLost,
+        .trackingRestored,
+        .improvementSting,
+        .winnerSwell
+    ]
+
+    static let cleanImpactVariants: [Self] = [
+        .cleanImpact1,
+        .cleanImpact2,
+        .cleanImpact3
+    ]
+
+    var isLoopingBed: Bool {
+        self == .gymAmbience || self == .competitionCrowd
     }
 }
 

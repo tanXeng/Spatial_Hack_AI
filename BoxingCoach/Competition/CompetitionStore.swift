@@ -342,6 +342,66 @@ final class CompetitionStore {
         mode == .reactiveStrike ? reactiveStandings : combinationStandings
     }
 
+    /// Persists the six original admitted attempts and the fitted reach at the deterministic Aura
+    /// completion boundary. No aggregate score is assigned a punch identity.
+    func persistCoachingCycle(
+        _ result: CoachingCycleResult,
+        fittedReach: BilateralReach
+    ) async throws {
+        guard var player = currentPlayer else { throw CompetitionStoreError.noPlayer }
+        guard let roundProof = result.roundProof else {
+            throw CompetitionStoreError.incompleteRun
+        }
+
+        let admitted = roundProof.baseline.attempts + roundProof.retest.attempts
+        guard admitted.count == CoachingCycleSession.requiredAttempts * 2 else {
+            throw CompetitionStoreError.incompleteRun
+        }
+        let snapshots = try admitted.map { attempt -> TechniqueAttemptSnapshot in
+            let evidence = attempt.evidence
+            guard let scoringVersion = Int(exactly: evidence.identity.scoringVersion),
+                  let calibrationVersion = Int(exactly: evidence.identity.calibrationVersion),
+                  let snapshot = TechniqueAttemptSnapshot(
+                    id: evidence.identity.id,
+                    athleteID: player.id,
+                    eventID: player.publicHandle?.eventID,
+                    techniqueID: result.technique.id,
+                    score: evidence.score.overall,
+                    scoringVersion: scoringVersion,
+                    calibrationVersion: calibrationVersion,
+                    startedAt: result.completedAt.addingTimeInterval(-evidence.score.duration),
+                    completedAt: result.completedAt,
+                    publicHandleSnapshot: player.publicHandle
+                  )
+            else { throw CompetitionStoreError.incompleteRun }
+            return snapshot
+        }
+
+        try await repository.save(techniqueAttempts: snapshots)
+        let stored = try await repository.techniqueAttempts(
+            athleteID: player.id,
+            techniqueID: result.technique.id
+        )
+        let trace = roundProof.retest.attempts.last.flatMap(Self.pastSelfTrace)
+        let updatedAt = max(now(), result.completedAt)
+        guard let memory = AthleteSkillMemory(
+            athleteID: player.id,
+            techniqueID: result.technique.id,
+            experienceLevel: player.experienceLevel,
+            attempts: stored,
+            pastSelfTrace: trace,
+            updatedAt: updatedAt
+        ) else { throw CompetitionStoreError.incompleteRun }
+        try await repository.save(skillMemory: memory)
+
+        player.reach = fittedReach
+        player.calibrationVersion = CompetitionPlayer.calibrationVersion
+        player.calibratedAt = updatedAt
+        player.lastSeenAt = updatedAt
+        try await repository.save(player: player)
+        currentPlayer = player
+    }
+
     private func prepareRankedRun(
         mode: CompetitionMode,
         stance: Stance
@@ -385,6 +445,26 @@ final class CompetitionStore {
             present(error)
             return nil
         }
+    }
+
+    private static func pastSelfTrace(
+        from attempt: CoachingAttemptEvidence
+    ) -> PastSelfTrace? {
+        guard let firstTime = attempt.actualSamples.first?.time,
+              let lastTime = attempt.actualSamples.last?.time
+        else { return nil }
+        let duration = max(lastTime - firstTime, 1e-6)
+        let samples = attempt.actualSamples.map { sample in
+            NormalizedTraceSample(
+                time: Float((sample.time - firstTime) / duration),
+                position: sample.fist
+            )
+        }
+        return PastSelfTrace(
+            attemptID: attempt.evidence.identity.id,
+            coordinateSpace: .normalizedBody,
+            samples: samples
+        )
     }
 
     private func evidence(

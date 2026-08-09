@@ -378,6 +378,9 @@ nonisolated struct CoachingCycleResult: Sendable {
     let correction: CorrectionPlan
     let retest: TechniqueAttemptEvidence
     let proof: ProofComparison
+    /// Complete three-attempt like-for-like proof for coaching cycles. `nil` keeps the original
+    /// single-attempt result initializer source-compatible for standalone scoring callers.
+    let roundProof: CoachingRoundProof?
     let completedAt: Date
 
     init(
@@ -389,6 +392,7 @@ nonisolated struct CoachingCycleResult: Sendable {
         correction: CorrectionPlan,
         retest: TechniqueAttemptEvidence,
         proof: ProofComparison,
+        roundProof: CoachingRoundProof? = nil,
         completedAt: Date
     ) throws {
         guard completedAt.timeIntervalSinceReferenceDate.isFinite else {
@@ -406,6 +410,17 @@ nonisolated struct CoachingCycleResult: Sendable {
               proof.retest.identity == retest.identity,
               proof.overallDelta == retest.score.overall - baseline.score.overall
         else { throw LearningEvidenceRejectionReason.attemptIdentityMismatch }
+        if let roundProof {
+            guard roundProof.baseline.attempts.contains(where: {
+                      $0.evidence.identity == baseline.identity
+                  }),
+                  roundProof.retest.attempts.contains(where: {
+                      $0.evidence.identity == retest.identity
+                  }),
+                  roundProof.baseline.attempts.count == CoachingCycleSession.requiredAttempts,
+                  roundProof.retest.attempts.count == CoachingCycleSession.requiredAttempts
+            else { throw LearningEvidenceRejectionReason.attemptIdentityMismatch }
+        }
 
         self.track = track
         self.technique = technique
@@ -415,6 +430,7 @@ nonisolated struct CoachingCycleResult: Sendable {
         self.correction = correction
         self.retest = retest
         self.proof = proof
+        self.roundProof = roundProof
         self.completedAt = completedAt
     }
 }

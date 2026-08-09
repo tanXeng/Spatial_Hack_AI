@@ -17,9 +17,9 @@ struct CoachVoiceCoachPanel: View {
                 isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
                 isDisabled: isDisabled || requiresRecovery,
                 onPress: {
-                    session.voiceCoach.beginPushToTalk(origin: .controlWindow)
+                    session.beginCoachPushToTalk(origin: .controlWindow)
                 },
-                onRelease: { session.voiceCoach.endPushToTalk() }
+                onRelease: { session.endCoachPushToTalk() }
             )
 
             if requiresRecovery {

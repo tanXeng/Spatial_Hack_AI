@@ -46,10 +46,28 @@ final class PunchPathOverlayEntity {
     }
 
     func show(actual: [SIMD3<Float>], reference: [SIMD3<Float>]) {
+        show(
+            actual: actual.map {
+                CorrectionPathSample(position: $0, provenance: .measured)
+            },
+            reference: reference.map {
+                CorrectionPathSample(position: $0, provenance: .estimated)
+            }
+        )
+    }
+
+    func show(actual: [CorrectionPathSample], reference: [CorrectionPathSample]) {
         clearChildren(of: actualRoot)
         clearChildren(of: referenceRoot)
-        add(path: actual.prefix(5), to: actualRoot, material: actualMaterial)
-        add(path: reference.prefix(5), to: referenceRoot, material: referenceMaterial)
+        add(path: actual.prefix(5).map(\.position), to: actualRoot, material: actualMaterial)
+        add(path: reference.prefix(5).map(\.position), to: referenceRoot, material: referenceMaterial)
+        var accessibility = root.components[AccessibilityComponent.self] ?? AccessibilityComponent()
+        accessibility.isAccessibilityElement = true
+        accessibility.label = "Correction path comparison"
+        accessibility.value = actual.contains(where: { $0.provenance == .interpolated })
+            ? "Actual athlete path in coral, including interpolated samples. Fitted reference path in cyan, estimated."
+            : "Actual athlete path in coral, measured. Fitted reference path in cyan, estimated."
+        root.components.set(accessibility)
         root.isEnabled = !actualRoot.children.isEmpty && !referenceRoot.children.isEmpty
     }
 
@@ -57,12 +75,22 @@ final class PunchPathOverlayEntity {
         root.isEnabled = false
     }
 
+    func clear() {
+        clearChildren(of: actualRoot)
+        clearChildren(of: referenceRoot)
+        root.isEnabled = false
+    }
+
+    var visiblePointCount: Int {
+        actualRoot.children.count + referenceRoot.children.count
+    }
+
     func removeFromScene() {
         root.removeFromParent()
     }
 
     private func add(
-        path: ArraySlice<SIMD3<Float>>,
+        path: [SIMD3<Float>],
         to parent: Entity,
         material: UnlitMaterial
     ) {
@@ -75,7 +103,9 @@ final class PunchPathOverlayEntity {
     }
 
     private func clearChildren(of entity: Entity) {
-        for child in entity.children {
+        // RealityKit's child collection is live. Snapshot it so removing one child
+        // cannot shift the collection and leave the next private path point behind.
+        for child in Array(entity.children) {
             child.removeFromParent()
         }
     }

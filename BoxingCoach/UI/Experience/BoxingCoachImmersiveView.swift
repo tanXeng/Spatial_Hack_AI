@@ -17,6 +17,7 @@ nonisolated struct ImmersiveAudioControlVisibility: Equatable, Sendable {
 struct BoxingCoachImmersiveView: View {
     @Environment(ReactiveStrikeSession.self) private var session
     @Environment(TrainingFlowCoordinator.self) private var flow
+    @Environment(CompetitionStore.self) private var competitionStore
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openWindow) private var openWindow
 
@@ -88,9 +89,9 @@ struct BoxingCoachImmersiveView: View {
                             isDisabled: flow.controlsDisabled,
                             style: .compactSpatial,
                             onPress: {
-                                session.voiceCoach.beginPushToTalk(origin: .immersiveSpace)
+                                session.beginCoachPushToTalk(origin: .immersiveSpace)
                             },
-                            onRelease: { session.voiceCoach.endPushToTalk() }
+                            onRelease: { session.endCoachPushToTalk() }
                         )
                     }
                     if audioControlVisibility.showsRecoveryAction {
@@ -147,8 +148,22 @@ struct BoxingCoachImmersiveView: View {
         .onChange(of: session.auraPunch.phase) { _, phase in
             guard case .experience(.aura) = flow.route,
                   phase == .results else { return }
-            announce("Aura Punch scoring complete")
-            finishTraining()
+            Task {
+                if competitionStore.currentPlayer != nil,
+                   let result = session.auraPunch.cycleResult,
+                   let reach = session.auraPunch.fittedReach {
+                    do {
+                        try await competitionStore.persistCoachingCycle(
+                            result,
+                            fittedReach: reach
+                        )
+                    } catch {
+                        announce("Training complete. Athlete memory could not be saved.")
+                    }
+                }
+                announce("Aura Punch scoring complete")
+                finishTraining()
+            }
         }
         .onChange(of: session.errorMessage) { _, message in
             guard isReactiveEngineExperience, let message else { return }
@@ -316,68 +331,17 @@ struct BoxingCoachImmersiveView: View {
 
     private var currentInstruction: ImmersiveInstruction {
         switch flow.route {
-        case .experience(.aura(_, let technique, _)):
-            let action = technique.name.lowercased()
+        case .experience(.aura):
             let aura = session.auraPunch
-            if aura.isTrackingPaused {
-                return ImmersiveInstruction(
-                    stage: "TRACKING PAUSED",
-                    message: "Hold both closed fists in guard and look forward",
-                    symbol: "pause.circle.fill",
-                    action: "Recover tracking",
-                    progress: aura.cyclePresentation.progress,
-                    metric: nil
-                )
-            }
-            switch session.auraPunch.phase {
-            case .idle:
-                if session.auraPunch.statusMessage == "Stopped" {
-                    return ImmersiveInstruction(
-                        stage: "TRAINING STOPPED",
-                        message: "Your training was stopped",
-                        symbol: "stop.circle.fill"
-                    )
-                }
-                return ImmersiveInstruction(
-                    stage: "GET READY",
-                    message: "Raise your guard — the hologram will show you the punch",
-                    symbol: "figure.boxing"
-                )
-            case .acquiring:
-                return ImmersiveInstruction(
-                    stage: "GET READY",
-                    message: "Raise your guard and keep both hands visible",
-                    symbol: "hand.raised.fill"
-                )
-            case .guiding, .countdown, .attempting:
-                let presentation = aura.cyclePresentation
-                return ImmersiveInstruction(
-                    stage: presentation.stage,
-                    message: aura.coachingDetail,
-                    symbol: auraCoachingSymbol,
-                    action: presentation.action,
-                    progress: presentation.progress,
-                    metric: presentation.metric
-                )
-            case .scoring:
-                let presentation = aura.cyclePresentation
-                return ImmersiveInstruction(
-                    stage: presentation.stage,
-                    message: aura.coachingDetail.isEmpty
-                        ? "Hold your guard while we compare your \(action)"
-                        : aura.coachingDetail,
-                    symbol: "waveform.path.ecg",
-                    action: presentation.action,
-                    progress: presentation.progress,
-                    metric: presentation.metric
-                )
-            case .results:
-                return ImmersiveInstruction(
-                    stage: "COMPLETE",
-                    message: "Your results are ready",
-                    symbol: "checkmark.circle.fill"
-                )
-            }
+            return AuraImmersiveInstructionPolicy.instruction(
+                phase: aura.phase,
+                coachingHeadline: aura.coachingHeadline,
+                coachingDetail: aura.coachingDetail,
+                cyclePresentation: aura.cyclePresentation,
+                trackingPaused: aura.isTrackingPaused,
+                trainingPaused: aura.isTrainingPaused,
+                statusMessage: aura.statusMessage
+            )
 
         case .experience(let selection):
             return ImmersiveInstructionPolicy.instruction(
@@ -397,19 +361,4 @@ struct BoxingCoachImmersiveView: View {
         }
     }
 
-    private var auraCoachingSymbol: String {
-        switch session.auraPunch.learningStage {
-        case .learnWatch:
-            return "eye.fill"
-        case .correction, .correctiveDrill:
-            return "scope"
-        case .proof, .complete:
-            return "chart.line.uptrend.xyaxis"
-        case .fit:
-            return "ruler"
-        case .learnOutbound, .learnLanding, .learnReturn, .guidedRehearsal,
-             .baseline, .retest, .transfer:
-            return "figure.boxing"
-        }
-    }
 }

@@ -51,7 +51,7 @@ struct ImmersiveInstructionBanner: View {
         .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: cornerRadius))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(instruction.stage)
-        .accessibilityValue(accessibilityValue)
+        .accessibilityValue(instruction.accessibilityValue)
         .accessibilityAddTraits(.updatesFrequently)
         .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: instruction)
     }
@@ -125,12 +125,6 @@ struct ImmersiveInstructionBanner: View {
                 .font(.callout.weight(.semibold))
                 .foregroundStyle(.tint)
         }
-    }
-
-    private var accessibilityValue: String {
-        [instruction.message, instruction.progress, instruction.metric, instruction.action]
-            .compactMap { $0 }
-            .joined(separator: ". ")
     }
 
     private var bannerWidth: CGFloat {

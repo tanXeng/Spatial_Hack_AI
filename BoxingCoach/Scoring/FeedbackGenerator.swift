@@ -8,7 +8,7 @@ nonisolated enum CoachingFeedbackSource: String, Sendable, Equatable {
 /// A local, allow-listed drill selected from deterministic evidence.
 ///
 /// This is deliberately not part of `CoachRelayResponse`: the relay may change prose only.
-nonisolated enum CoachCorrectiveDrill: String, Sendable, Equatable, Codable {
+nonisolated enum CoachCorrectiveDrill: String, CaseIterable, Sendable, Equatable, Codable {
     case trackingRecovery = "tracking_recovery"
     case correctHand = "correct_hand"
     case fullExtension = "full_extension"

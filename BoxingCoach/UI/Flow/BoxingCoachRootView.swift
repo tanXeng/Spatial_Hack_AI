@@ -92,6 +92,9 @@ struct BoxingCoachRootView: View {
                     || oldPlayer?.reach != newPlayer?.reach
                     || oldPlayer?.calibrationVersion != newPlayer?.calibrationVersion
             else { return }
+            if oldPlayer?.id != newPlayer?.id {
+                session.resetForParticipantHandoff()
+            }
             syncPlayerCalibration(newPlayer)
         }
         .onAppear {

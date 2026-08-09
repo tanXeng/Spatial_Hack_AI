@@ -767,6 +767,31 @@ private final class DelayedCompetitionRepository: CompetitionRepository {
         return try await base.submissions()
     }
 
+    func save(techniqueAttempts: [TechniqueAttemptSnapshot]) async throws {
+        try await base.save(techniqueAttempts: techniqueAttempts)
+    }
+
+    func techniqueAttempts(
+        athleteID: UUID,
+        techniqueID: String
+    ) async throws -> [TechniqueAttemptSnapshot] {
+        try await base.techniqueAttempts(
+            athleteID: athleteID,
+            techniqueID: techniqueID
+        )
+    }
+
+    func save(skillMemory: AthleteSkillMemory) async throws {
+        try await base.save(skillMemory: skillMemory)
+    }
+
+    func skillMemory(
+        athleteID: UUID,
+        techniqueID: String
+    ) async throws -> AthleteSkillMemory? {
+        try await base.skillMemory(athleteID: athleteID, techniqueID: techniqueID)
+    }
+
     func reset() async throws {
         try await base.reset()
     }

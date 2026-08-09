@@ -8,6 +8,7 @@ nonisolated enum CoachingCycleError: Error, Equatable, Sendable {
     case attemptStanceMismatch
     case attemptHandMismatch
     case unavailableProof
+    case proofThresholdNotMet
 }
 
 nonisolated enum CoachingAttemptRejection: Equatable, Sendable {
@@ -16,12 +17,33 @@ nonisolated enum CoachingAttemptRejection: Equatable, Sendable {
     case trainingPaused
 }
 
-/// Immutable admitted evidence plus the two body-relative paths needed for correction display.
+/// Immutable admitted evidence plus the exact body-relative samples used to score the attempt.
 nonisolated struct CoachingAttemptEvidence: Sendable {
     let evidence: TechniqueAttemptEvidence
-    let actualPath: [SIMD3<Float>]
-    let referencePath: [SIMD3<Float>]
+    let actualSamples: [MotionSample]
+    let referenceSamples: [MotionSample]
 
+    var actualPath: [SIMD3<Float>] { actualSamples.map(\.fist) }
+    var referencePath: [SIMD3<Float>] { referenceSamples.map(\.fist) }
+
+    init(
+        evidence: TechniqueAttemptEvidence,
+        actualSamples: [MotionSample],
+        referenceSamples: [MotionSample]
+    ) throws {
+        guard !actualSamples.isEmpty,
+              !referenceSamples.isEmpty,
+              actualSamples.allSatisfy(Self.isFinite),
+              referenceSamples.allSatisfy(Self.isFinite)
+        else { throw CoachingCycleError.attemptNotAdmissible }
+
+        self.evidence = evidence
+        self.actualSamples = actualSamples
+        self.referenceSamples = referenceSamples
+    }
+
+    /// Compatibility boundary for older callers that retained only fist positions. New live
+    /// admissions use the sample initializer so interpolation provenance is never invented.
     init(
         evidence: TechniqueAttemptEvidence,
         actualPath: [SIMD3<Float>],
@@ -34,15 +56,50 @@ nonisolated struct CoachingAttemptEvidence: Sendable {
         else { throw CoachingCycleError.attemptNotAdmissible }
 
         self.evidence = evidence
-        self.actualPath = actualPath
-        self.referencePath = referencePath
+        self.actualSamples = Self.samples(from: actualPath, tracked: true)
+        self.referenceSamples = Self.samples(from: referencePath, tracked: false)
     }
+
+    private static func samples(
+        from path: [SIMD3<Float>],
+        tracked: Bool
+    ) -> [MotionSample] {
+        path.enumerated().map { index, point in
+            MotionSample(
+                time: TimeInterval(index),
+                fist: point,
+                elbow: point,
+                guardHand: nil,
+                isTracked: tracked
+            )
+        }
+    }
+
+    private static func isFinite(_ sample: MotionSample) -> Bool {
+        sample.time.isFinite
+            && sample.fist.isFinite
+            && sample.elbow.isFinite
+            && (sample.guardHand?.isFinite ?? true)
+    }
+}
+
+nonisolated enum CorrectionPathProvenance: Equatable, Sendable {
+    case measured
+    case interpolated
+    case estimated
+}
+
+nonisolated struct CorrectionPathSample: Equatable, Sendable {
+    let position: SIMD3<Float>
+    let provenance: CorrectionPathProvenance
 }
 
 nonisolated struct CorrectionPathOverlay: Equatable, Sendable {
     let side: BodySide
-    let actualPath: [SIMD3<Float>]
-    let referencePath: [SIMD3<Float>]
+    let focus: SubMetricKind
+    let alignmentDistance: Float
+    let actualSamples: [CorrectionPathSample]
+    let referenceSamples: [CorrectionPathSample]
     let actualLabel: String
     let referenceLabel: String
     let actualColorName: String
@@ -50,6 +107,99 @@ nonisolated struct CorrectionPathOverlay: Equatable, Sendable {
     let trackedFraction: Float
     let cue: String
     let sourceBadge: String
+
+    var actualPath: [SIMD3<Float>] { actualSamples.map(\.position) }
+    var referencePath: [SIMD3<Float>] { referenceSamples.map(\.position) }
+}
+
+/// A three-attempt coaching round. Its aggregate score is explicitly round-level; it is never
+/// paired with one punch or assigned a synthetic attempt identity.
+nonisolated struct CoachingRoundEvidence: Sendable {
+    let attempts: [CoachingAttemptEvidence]
+    let score: TechniqueScore
+
+    init(attempts: [CoachingAttemptEvidence], technique: Technique) throws {
+        guard attempts.count == CoachingCycleSession.requiredAttempts,
+              let first = attempts.first,
+              attempts.allSatisfy({ $0.evidence.technique == technique }),
+              attempts.allSatisfy({
+                  $0.evidence.stance == first.evidence.stance
+                      && $0.evidence.identity.referenceVersion
+                          == first.evidence.identity.referenceVersion
+                      && $0.evidence.identity.scoringVersion
+                          == first.evidence.identity.scoringVersion
+                      && $0.evidence.identity.calibrationVersion
+                          == first.evidence.identity.calibrationVersion
+              }),
+              Set(attempts.map(\.evidence.identity.id)).count == attempts.count,
+              let score = TechniqueScore.averaging(
+                  attempts.map(\.evidence.score),
+                  techniqueID: technique.id
+              )
+        else { throw CoachingCycleError.attemptNotAdmissible }
+
+        let metricAvailability = attempts.map { attempt in
+            Set(attempt.evidence.score.metrics.compactMap { metric in
+                metric.score == nil ? nil : metric.kind
+            })
+        }
+        guard metricAvailability.dropFirst().allSatisfy({ $0 == metricAvailability[0] }) else {
+            throw CoachingCycleError.attemptNotAdmissible
+        }
+
+        self.attempts = attempts
+        self.score = score
+    }
+}
+
+/// Like-for-like proof over two complete rounds. The six original punch-score identities remain
+/// available through `baseline.attempts` and `retest.attempts`.
+nonisolated struct CoachingRoundProof: Sendable {
+    let baseline: CoachingRoundEvidence
+    let retest: CoachingRoundEvidence
+    let overallDelta: Float
+    let metricDeltas: [MetricDelta]
+
+    init(baseline: CoachingRoundEvidence, retest: CoachingRoundEvidence) throws {
+        guard let baselineFirst = baseline.attempts.first?.evidence,
+              let retestFirst = retest.attempts.first?.evidence,
+              baselineFirst.technique == retestFirst.technique,
+              baselineFirst.stance == retestFirst.stance,
+              baseline.attempts.map(\.evidence.side) == retest.attempts.map(\.evidence.side),
+              baselineFirst.identity.referenceVersion == retestFirst.identity.referenceVersion,
+              baselineFirst.identity.scoringVersion == retestFirst.identity.scoringVersion,
+              baselineFirst.identity.calibrationVersion == retestFirst.identity.calibrationVersion
+        else { throw CoachingCycleError.unavailableProof }
+
+        let baselineAvailability = Set(baseline.score.metrics.compactMap { metric in
+            metric.score == nil ? nil : metric.kind
+        })
+        let retestAvailability = Set(retest.score.metrics.compactMap { metric in
+            metric.score == nil ? nil : metric.kind
+        })
+        guard baselineAvailability == retestAvailability else {
+            throw CoachingCycleError.unavailableProof
+        }
+
+        let overallDelta = retest.score.overall - baseline.score.overall
+        guard overallDelta.isFinite else { throw CoachingCycleError.unavailableProof }
+        let metricDeltas = SubMetricKind.allCases.compactMap { kind -> MetricDelta? in
+            guard let before = baseline.score.metric(kind)?.score,
+                  let after = retest.score.metric(kind)?.score,
+                  (after - before).isFinite
+            else { return nil }
+            return MetricDelta(kind: kind, delta: after - before)
+        }
+
+        self.baseline = baseline
+        self.retest = retest
+        self.overallDelta = overallDelta
+        self.metricDeltas = metricDeltas
+    }
+
+    func metricDelta(for kind: SubMetricKind) -> Float? {
+        metricDeltas.first { $0.kind == kind }?.delta
+    }
 }
 
 nonisolated struct CoachingProofMetric: Equatable, Sendable {
@@ -93,9 +243,14 @@ nonisolated struct CoachingCycleSession: Sendable {
     private(set) var correction: CorrectionDecision?
     private(set) var correctionPlan: CorrectionPlan?
     private(set) var correctionOverlay: CorrectionPathOverlay?
+    private(set) var baselineRound: CoachingRoundEvidence?
+    private(set) var retestRound: CoachingRoundEvidence?
+    /// A genuine admitted attempt retained for source compatibility. Round proof uses
+    /// `baselineRound` and never treats this attempt as an aggregate.
     private(set) var baselineSnapshot: TechniqueAttemptEvidence?
+    /// A genuine admitted attempt retained for source compatibility.
     private(set) var retestSnapshot: TechniqueAttemptEvidence?
-    private(set) var proof: ProofComparison?
+    private(set) var proof: CoachingRoundProof?
     private(set) var proofMetric: CoachingProofMetric?
     private(set) var result: CoachingCycleResult?
     private(set) var hasPartialAttempt = false
@@ -114,6 +269,13 @@ nonisolated struct CoachingCycleSession: Sendable {
         case .retest: retestAttempts.count
         default: 0
         }
+    }
+
+    var proofMeetsTarget: Bool {
+        guard let delta = proofMetric?.delta,
+              let target = correctionPlan?.targetImprovement
+        else { return false }
+        return delta >= target
     }
 
     var presentation: CoachingCyclePresentation {
@@ -165,7 +327,18 @@ nonisolated struct CoachingCycleSession: Sendable {
         case .retest:
             return .init(stage: "RETEST", instruction: plain ? "Repeat the same punch with the correction." : "Retest under the same scoring contract.", action: "Punch", progress: progress, metric: nil, timer: nil)
         case .proof:
-            return .init(stage: "PROOF", instruction: proofMetric.map { $0.delta >= 0 ? "The selected metric improved." : "The selected metric did not improve yet." } ?? "Preparing like-for-like proof.", action: "Continue", progress: nil, metric: metric, timer: nil)
+            return .init(
+                stage: "PROOF",
+                instruction: proofMetric.map { _ in
+                    proofMeetsTarget
+                        ? "The selected metric improved."
+                        : "The selected metric did not improve enough yet."
+                } ?? "Preparing like-for-like proof.",
+                action: proofMeetsTarget ? "Continue" : "Practice again",
+                progress: nil,
+                metric: metric,
+                timer: nil
+            )
         case .transfer:
             return .init(stage: "TRANSFER · 1–2", instruction: plain ? "Use the correct lead hand for the jab, then the rear hand for the cross." : "Transfer into a stance-correct 1–2.", action: "Throw 1–2", progress: nil, metric: metric, timer: nil)
         case .complete:
@@ -272,12 +445,32 @@ nonisolated struct CoachingCycleSession: Sendable {
     mutating func continueFromProof() throws {
         try requireStage(.proof)
         guard proof != nil else { throw CoachingCycleError.unavailableProof }
+        guard proofMeetsTarget else { throw CoachingCycleError.proofThresholdNotMet }
         transition(from: .proof, to: .transfer)
+    }
+
+    mutating func retryCorrectionFromProof() throws {
+        try requireStage(.proof)
+        guard proof != nil else { throw CoachingCycleError.unavailableProof }
+        guard !proofMeetsTarget else { throw CoachingCycleError.attemptNotAdmissible }
+
+        retestAttempts.removeAll(keepingCapacity: false)
+        retestRound = nil
+        retestSnapshot = nil
+        proof = nil
+        proofMetric = nil
+        while completedStages.last == .retest || completedStages.last == .correctiveDrill {
+            completedStages.removeLast()
+        }
+        stage = .correctiveDrill
+        hasPartialAttempt = false
     }
 
     mutating func completeTransfer(at completedAt: Date = Date()) throws {
         try requireStage(.transfer)
-        guard let baseline = baselineSnapshot,
+        guard baselineRound != nil,
+              retestRound != nil,
+              let baseline = baselineSnapshot,
               let retest = retestSnapshot,
               let correctionPlan,
               let proof
@@ -293,7 +486,8 @@ nonisolated struct CoachingCycleSession: Sendable {
             baseline: baseline,
             correction: correctionPlan,
             retest: retest,
-            proof: proof,
+            proof: try ProofComparison(baseline: baseline, retest: retest),
+            roundProof: proof,
             completedAt: completedAt
         )
     }
@@ -308,6 +502,8 @@ nonisolated struct CoachingCycleSession: Sendable {
         correction = nil
         correctionPlan = nil
         correctionOverlay = nil
+        baselineRound = nil
+        retestRound = nil
         baselineSnapshot = nil
         retestSnapshot = nil
         proof = nil
@@ -319,9 +515,7 @@ nonisolated struct CoachingCycleSession: Sendable {
     }
 
     private mutating func finishBaseline() throws {
-        guard let aggregate = aggregateEvidence(from: baselineAttempts) else {
-            throw CoachingCycleError.attemptNotAdmissible
-        }
+        let aggregate = try CoachingRoundEvidence(attempts: baselineAttempts, technique: technique)
         let decision = CorrectionSelector().select(
             score: aggregate.score,
             technique: technique,
@@ -329,7 +523,8 @@ nonisolated struct CoachingCycleSession: Sendable {
         )
         let focus = decision.focus ?? aggregate.score.weakest?.kind ?? .path
         correction = decision
-        baselineSnapshot = aggregate
+        baselineRound = aggregate
+        baselineSnapshot = aggregate.attempts.first?.evidence
         correctionPlan = try CorrectionPlan(
             technique: technique,
             focus: focus,
@@ -343,16 +538,20 @@ nonisolated struct CoachingCycleSession: Sendable {
     }
 
     private mutating func finishRetest() throws {
-        guard let baseline = baselineSnapshot,
-              let retest = aggregateEvidence(from: retestAttempts),
+        guard let baseline = baselineRound,
               let correction,
               let focus = correctionPlan?.focus,
               let baselineValue = baseline.score.metric(focus)?.score,
-              let retestValue = retest.score.metric(focus)?.score
+              baselineSnapshot != nil
         else { throw CoachingCycleError.unavailableProof }
 
-        let comparison = try ProofComparison(baseline: baseline, retest: retest)
-        retestSnapshot = retest
+        let retest = try CoachingRoundEvidence(attempts: retestAttempts, technique: technique)
+        guard let retestValue = retest.score.metric(focus)?.score,
+              let retestSnapshot = retest.attempts.first?.evidence
+        else { throw CoachingCycleError.unavailableProof }
+        let comparison = try CoachingRoundProof(baseline: baseline, retest: retest)
+        retestRound = retest
+        self.retestSnapshot = retestSnapshot
         proof = comparison
         proofMetric = CoachingProofMetric(
             kind: focus,
@@ -411,40 +610,19 @@ nonisolated struct CoachingCycleSession: Sendable {
                   evidence.identity.calibrationVersion == first.identity.calibrationVersion
             else { throw CoachingCycleError.attemptNotAdmissible }
         }
-        if stage == .retest, let baselineSnapshot {
-            let baselineAvailability = Set(baselineSnapshot.score.metrics.compactMap { metric in
+        if stage == .retest, let baselineRound {
+            let baselineAvailability = Set(baselineRound.score.metrics.compactMap { metric in
                 metric.score == nil ? nil : metric.kind
             })
             guard availableMetrics == baselineAvailability,
-                  evidence.identity.referenceVersion == baselineSnapshot.identity.referenceVersion,
-                  evidence.identity.scoringVersion == baselineSnapshot.identity.scoringVersion,
-                  evidence.identity.calibrationVersion == baselineSnapshot.identity.calibrationVersion
+                  evidence.identity.referenceVersion
+                    == baselineRound.attempts[0].evidence.identity.referenceVersion,
+                  evidence.identity.scoringVersion
+                    == baselineRound.attempts[0].evidence.identity.scoringVersion,
+                  evidence.identity.calibrationVersion
+                    == baselineRound.attempts[0].evidence.identity.calibrationVersion
             else { throw CoachingCycleError.attemptNotAdmissible }
         }
-    }
-
-    private func aggregateEvidence(
-        from attempts: [CoachingAttemptEvidence]
-    ) -> TechniqueAttemptEvidence? {
-        guard attempts.count == Self.requiredAttempts,
-              let last = attempts.last,
-              let score = TechniqueScore.averaging(
-                attempts.map(\.evidence.score),
-                techniqueID: technique.id
-              )
-        else { return nil }
-
-        let quality = Dictionary(uniqueKeysWithValues: score.metrics.compactMap { metric in
-            metric.quality.map { (metric.kind, $0) }
-        })
-        return try? TechniqueAttemptEvidence(
-            punch: last.evidence.punch,
-            score: score,
-            metricQuality: quality,
-            referenceVersion: last.evidence.identity.referenceVersion,
-            scoringVersion: last.evidence.identity.scoringVersion,
-            calibrationVersion: last.evidence.identity.calibrationVersion
-        )
     }
 
     private func makeCorrectionOverlay(
@@ -456,22 +634,50 @@ nonisolated struct CoachingCycleSession: Sendable {
                 < (rhs.evidence.score.metric(focus)?.score ?? 100)
         }) else { return nil }
 
-        let count = min(attempt.actualPath.count, attempt.referencePath.count)
-        guard count > 0 else { return nil }
-        let actual = Self.resample(attempt.actualPath, count: count)
-        let reference = Self.resample(attempt.referencePath, count: count)
-        let worstIndex = zip(actual, reference).enumerated().max { lhs, rhs in
-            simd_distance(lhs.element.0, lhs.element.1)
-                < simd_distance(rhs.element.0, rhs.element.1)
+        guard let alignment = DTWComparator.align(
+            reference: attempt.referencePath,
+            attempt: attempt.actualPath
+        ) else { return nil }
+        let worstIndex = alignment.pairs.enumerated().max { lhs, rhs in
+            Self.focusError(
+                focus,
+                pair: lhs.element,
+                actual: attempt.actualSamples,
+                reference: attempt.referenceSamples
+            ) < Self.focusError(
+                focus,
+                pair: rhs.element,
+                actual: attempt.actualSamples,
+                reference: attempt.referenceSamples
+            )
         }?.offset ?? 0
         let lower = max(0, worstIndex - 2)
-        let upper = min(count - 1, worstIndex + 2)
+        let upper = min(alignment.pairs.count - 1, worstIndex + 2)
+        let selectedPairs = alignment.pairs[lower...upper]
+        let actualSamples = selectedPairs.map { pair in
+            let sample = attempt.actualSamples[pair.attempt]
+            return CorrectionPathSample(
+                position: sample.fist,
+                provenance: sample.isTracked ? .measured : .interpolated
+            )
+        }
+        let referenceSamples = selectedPairs.map { pair in
+            CorrectionPathSample(
+                position: attempt.referenceSamples[pair.reference].fist,
+                provenance: .estimated
+            )
+        }
+        let includesInterpolation = actualSamples.contains { $0.provenance == .interpolated }
 
         return CorrectionPathOverlay(
             side: attempt.evidence.side,
-            actualPath: Array(actual[lower...upper]),
-            referencePath: Array(reference[lower...upper]),
-            actualLabel: "Actual path · Measured",
+            focus: focus,
+            alignmentDistance: alignment.normalizedDistance,
+            actualSamples: actualSamples,
+            referenceSamples: referenceSamples,
+            actualLabel: includesInterpolation
+                ? "Actual path · Includes interpolated samples"
+                : "Actual path · Measured",
             referenceLabel: "Reference path · Estimated fit",
             actualColorName: "Coral",
             referenceColorName: "Cyan",
@@ -479,6 +685,35 @@ nonisolated struct CoachingCycleSession: Sendable {
             cue: decision.localCue,
             sourceBadge: "Measured locally · Offline coach"
         )
+    }
+
+    private static func focusError(
+        _ focus: SubMetricKind,
+        pair: AlignedPair,
+        actual: [MotionSample],
+        reference: [MotionSample]
+    ) -> Float {
+        let actualSample = actual[pair.attempt]
+        let referenceSample = reference[pair.reference]
+        switch focus {
+        case .extensionReach:
+            return abs(actualSample.reachFraction - referenceSample.reachFraction)
+        case .path:
+            return simd_distance(actualSample.fist, referenceSample.fist)
+        case .elbow:
+            return simd_distance(actualSample.elbow, referenceSample.elbow)
+        case .guardHand:
+            guard let actualGuard = actualSample.guardHand,
+                  let referenceGuard = referenceSample.guardHand
+            else { return 0 }
+            return simd_distance(actualGuard, referenceGuard)
+        case .retraction:
+            let normalizedProgress = Float(pair.reference)
+                / Float(max(1, reference.count - 1))
+            return normalizedProgress >= 0.5
+                ? simd_distance(actualSample.fist, referenceSample.fist)
+                : 0
+        }
     }
 
     private mutating func transition(from: LearningStage, to: LearningStage) {
@@ -490,22 +725,6 @@ nonisolated struct CoachingCycleSession: Sendable {
     private func requireStage(_ expected: LearningStage) throws {
         guard stage == expected else {
             throw CoachingCycleError.invalidTransition(expected: expected, actual: stage)
-        }
-    }
-
-    private static func resample(
-        _ path: [SIMD3<Float>],
-        count: Int
-    ) -> [SIMD3<Float>] {
-        guard count > 1, path.count > 1 else {
-            return Array(repeating: path.first ?? .zero, count: max(1, count))
-        }
-        return (0..<count).map { index in
-            let position = Float(index) * Float(path.count - 1) / Float(count - 1)
-            let lower = Int(position.rounded(.down))
-            let upper = min(path.count - 1, lower + 1)
-            let fraction = position - Float(lower)
-            return simd_mix(path[lower], path[upper], SIMD3(repeating: fraction))
         }
     }
 

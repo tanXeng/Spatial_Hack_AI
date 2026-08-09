@@ -299,6 +299,14 @@ final class ReactiveStrikeSession {
             audienceTrack: audienceTrack,
             audioCoordinator: audioCoordinator
         )
+        auraPunch.reachDidFit = { [weak self] reach in
+            guard let self else { return }
+            self.calibratedReaches[.air] = reach.bySide
+            self.latestCalibratedReaches = reach.bySide
+            self.reachProfile = ReachProfile.air.calibrated(
+                measuredForwardReach: reach.conservative
+            )
+        }
     }
 
     var progressLabel: String {
@@ -360,6 +368,16 @@ final class ReactiveStrikeSession {
             rank: rank,
             isWinner: isWinner
         ))
+    }
+
+    func beginCoachPushToTalk(origin: TrainingAudioSceneOwner) {
+        auraPunch.trainingWillPauseForVoiceCapture()
+        voiceCoach.beginPushToTalk(origin: origin)
+    }
+
+    func endCoachPushToTalk() {
+        voiceCoach.endPushToTalk()
+        auraPunch.trainingDidEndVoiceCapture()
     }
 
     func configure(
@@ -584,9 +602,11 @@ final class ReactiveStrikeSession {
     func resetForParticipantHandoff() {
         resetForNewRound()
         auraPunch.reset()
+        voiceCoach.shutdown()
         hands.stop()
         targets.removeActiveTarget()
         calibratedReaches.removeAll()
+        latestCalibratedReaches.removeAll()
         guardPositionsBody.removeAll()
         reachProfile = .air
         stance = .orthodox

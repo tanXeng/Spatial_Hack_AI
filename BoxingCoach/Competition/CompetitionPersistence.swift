@@ -22,6 +22,12 @@ protocol CompetitionRepository: AnyObject {
     func save(player: CompetitionPlayer) async throws
     func submit(_ submission: CompetitionSubmission) async throws -> CompetitionSubmission
     func submissions() async throws -> [CompetitionSubmission]
+    func save(techniqueAttempts: [TechniqueAttemptSnapshot]) async throws
+    func techniqueAttempts(athleteID: UUID, techniqueID: String) async throws
+        -> [TechniqueAttemptSnapshot]
+    func save(skillMemory: AthleteSkillMemory) async throws
+    func skillMemory(athleteID: UUID, techniqueID: String) async throws
+        -> AthleteSkillMemory?
     func reset() async throws
 }
 
@@ -29,6 +35,8 @@ protocol CompetitionRepository: AnyObject {
 final class InMemoryCompetitionRepository: CompetitionRepository {
     private var players: [UUID: CompetitionPlayer] = [:]
     private var values: [UUID: CompetitionSubmission] = [:]
+    private var attemptValues: [UUID: TechniqueAttemptSnapshot] = [:]
+    private var memoryValues: [String: AthleteSkillMemory] = [:]
 
     func player(normalizedName: String) async throws -> CompetitionPlayer? {
         players.values.first { $0.normalizedName == normalizedName }
@@ -49,9 +57,47 @@ final class InMemoryCompetitionRepository: CompetitionRepository {
         values.values.sorted { $0.endedAt > $1.endedAt }
     }
 
+    func save(techniqueAttempts: [TechniqueAttemptSnapshot]) async throws {
+        for attempt in techniqueAttempts {
+            if let existing = attemptValues[attempt.id], existing != attempt {
+                throw CompetitionRepositoryError.invalidSubmission
+            }
+            attemptValues[attempt.id] = attempt
+        }
+    }
+
+    func techniqueAttempts(
+        athleteID: UUID,
+        techniqueID: String
+    ) async throws -> [TechniqueAttemptSnapshot] {
+        attemptValues.values
+            .filter { $0.athleteID == athleteID && $0.techniqueID == techniqueID }
+            .sorted { $0.completedAt < $1.completedAt }
+    }
+
+    func save(skillMemory: AthleteSkillMemory) async throws {
+        memoryValues[Self.memoryKey(
+            athleteID: skillMemory.athleteID,
+            techniqueID: skillMemory.techniqueID
+        )] = skillMemory
+    }
+
+    func skillMemory(
+        athleteID: UUID,
+        techniqueID: String
+    ) async throws -> AthleteSkillMemory? {
+        memoryValues[Self.memoryKey(athleteID: athleteID, techniqueID: techniqueID)]
+    }
+
     func reset() async throws {
         players.removeAll()
         values.removeAll()
+        attemptValues.removeAll()
+        memoryValues.removeAll()
+    }
+
+    private static func memoryKey(athleteID: UUID, techniqueID: String) -> String {
+        "\(athleteID.uuidString.lowercased())|\(techniqueID)"
     }
 }
 
@@ -318,7 +364,65 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
             .sorted { $0.endedAt > $1.endedAt }
     }
 
+    func save(techniqueAttempts: [TechniqueAttemptSnapshot]) async throws {
+        let existing = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.TechniqueAttemptRecord>()
+        )
+        let existingByID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+        for attempt in techniqueAttempts {
+            if let record = existingByID[attempt.id] {
+                guard record.snapshot == attempt else {
+                    throw CompetitionRepositoryError.invalidSubmission
+                }
+            } else {
+                context.insert(CompetitionSchemaV3.TechniqueAttemptRecord(attempt))
+            }
+        }
+        try saveContext()
+    }
+
+    func techniqueAttempts(
+        athleteID: UUID,
+        techniqueID: String
+    ) async throws -> [TechniqueAttemptSnapshot] {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.TechniqueAttemptRecord>())
+            .compactMap(\.snapshot)
+            .filter { $0.athleteID == athleteID && $0.techniqueID == techniqueID }
+            .sorted { $0.completedAt < $1.completedAt }
+    }
+
+    func save(skillMemory: AthleteSkillMemory) async throws {
+        let records = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
+        )
+        if let existing = records.first(where: {
+            $0.athleteID == skillMemory.athleteID
+                && $0.techniqueID == skillMemory.techniqueID
+        }) {
+            context.delete(existing)
+        }
+        context.insert(try CompetitionSchemaV3.AthleteSkillMemoryRecord(skillMemory))
+        try saveContext()
+    }
+
+    func skillMemory(
+        athleteID: UUID,
+        techniqueID: String
+    ) async throws -> AthleteSkillMemory? {
+        let attempts = try await techniqueAttempts(
+            athleteID: athleteID,
+            techniqueID: techniqueID
+        )
+        return try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
+        )
+        .first { $0.athleteID == athleteID && $0.techniqueID == techniqueID }?
+        .snapshot(attempts: attempts)
+    }
+
     func reset() async throws {
+        try context.delete(model: CompetitionSchemaV3.AthleteSkillMemoryRecord.self)
+        try context.delete(model: CompetitionSchemaV3.TechniqueAttemptRecord.self)
         try context.delete(model: CompetitionSchemaV3.CompetitionSubmissionRecord.self)
         try context.delete(model: CompetitionSchemaV3.CompetitionPlayerRecord.self)
         try saveContext()

@@ -51,9 +51,17 @@ enum SonicRingSoundID: String, CaseIterable, Sendable {
     case winnerSwell = "winner_swell"
 }
 
-enum CoachClipLibrary {
-    private static let fileExtensions = ["mp3", "wav", "m4a", "aac"]
+struct CoachClipLibrary: TrainingAudioResourceResolving {
+    private static let fileExtensions = ["mp3", "m4a", "wav", "caf", "aac"]
     private static let subdirectories = ["CoachAudio", "Resources/CoachAudio", nil as String?]
+
+    func url(for resource: TrainingAudioResourceID) -> URL? {
+        Self.url(for: resource)
+    }
+
+    static func url(for resource: TrainingAudioResourceID) -> URL? {
+        url(for: resource.fileName)
+    }
 
     static func url(for id: CoachClipID) -> URL? {
         url(for: id.rawValue)
@@ -64,8 +72,8 @@ enum CoachClipLibrary {
     }
 
     static func url(for id: String) -> URL? {
-        for subdirectory in subdirectories {
-            for fileExtension in fileExtensions {
+        for fileExtension in fileExtensions {
+            for subdirectory in subdirectories {
                 if let url = Bundle.main.url(
                     forResource: id,
                     withExtension: fileExtension,

@@ -61,6 +61,36 @@ nonisolated struct CompetitionPlayer: Identifiable, Codable, Hashable, Sendable 
     var calibratedAt: Date?
     let createdAt: Date
     var lastSeenAt: Date
+    let experienceLevel: ExperienceLevel
+    let publicHandle: ParticipantPublicHandle?
+
+    init(
+        id: UUID,
+        name: String,
+        normalizedName: String,
+        rememberedStance: Stance,
+        reach: BilateralReach?,
+        calibrationVersion: Int?,
+        calibratedAt: Date?,
+        createdAt: Date,
+        lastSeenAt: Date,
+        experienceLevel: ExperienceLevel = .beginner,
+        publicHandle: ParticipantPublicHandle? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.normalizedName = normalizedName
+        self.rememberedStance = rememberedStance
+        self.reach = reach
+        self.calibrationVersion = calibrationVersion
+        self.calibratedAt = calibratedAt
+        self.createdAt = createdAt
+        self.lastSeenAt = lastSeenAt
+        self.experienceLevel = experienceLevel
+        self.publicHandle = publicHandle
+    }
+
+    var eventID: UUID? { publicHandle?.eventID }
 
     var hasCurrentCalibration: Bool {
         reach != nil && calibrationVersion == Self.calibrationVersion
@@ -121,6 +151,50 @@ nonisolated struct CompetitionSubmission: Identifiable, Codable, Hashable, Senda
     let startedAt: Date
     let endedAt: Date
     let trackingStatus: CompetitionTrackingStatus
+    let eventID: UUID?
+    let scoringVersion: Int
+    let calibrationVersion: Int?
+    let publicHandleSnapshot: ParticipantPublicHandle?
+
+    init(
+        id: UUID,
+        playerID: UUID,
+        playerName: String,
+        normalizedPlayerName: String,
+        mode: CompetitionMode,
+        score: Int,
+        validSteps: Int,
+        totalSteps: Int,
+        completedRepetitions: Int,
+        meanCentreErrorMeters: Float?,
+        speedTieBreakSeconds: TimeInterval?,
+        startedAt: Date,
+        endedAt: Date,
+        trackingStatus: CompetitionTrackingStatus,
+        eventID: UUID? = nil,
+        scoringVersion: Int = CompetitionScorer.scoringVersion,
+        calibrationVersion: Int? = nil,
+        publicHandleSnapshot: ParticipantPublicHandle? = nil
+    ) {
+        self.id = id
+        self.playerID = playerID
+        self.playerName = playerName
+        self.normalizedPlayerName = normalizedPlayerName
+        self.mode = mode
+        self.score = score
+        self.validSteps = validSteps
+        self.totalSteps = totalSteps
+        self.completedRepetitions = completedRepetitions
+        self.meanCentreErrorMeters = meanCentreErrorMeters
+        self.speedTieBreakSeconds = speedTieBreakSeconds
+        self.startedAt = startedAt
+        self.endedAt = endedAt
+        self.trackingStatus = trackingStatus
+        self.eventID = eventID
+        self.scoringVersion = scoringVersion
+        self.calibrationVersion = calibrationVersion
+        self.publicHandleSnapshot = publicHandleSnapshot
+    }
 }
 
 nonisolated struct CompetitionStanding: Identifiable, Hashable, Sendable {
@@ -170,6 +244,7 @@ nonisolated enum CompetitionName {
 }
 
 nonisolated enum CompetitionScorer {
+    static let scoringVersion = 2
     static let targetRadius: Float = 0.12
 
     static func submission(
@@ -215,7 +290,11 @@ nonisolated enum CompetitionScorer {
             speedTieBreakSeconds: speed,
             startedAt: startedAt,
             endedAt: endedAt,
-            trackingStatus: evidence.trackingStatus
+            trackingStatus: evidence.trackingStatus,
+            eventID: player.eventID,
+            scoringVersion: scoringVersion,
+            calibrationVersion: player.calibrationVersion,
+            publicHandleSnapshot: player.publicHandle
         )
     }
 }

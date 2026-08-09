@@ -1,4 +1,5 @@
 import XCTest
+import Testing
 @testable import BoxingCoach
 
 final class CompetitionDomainTests: XCTestCase {
@@ -310,5 +311,140 @@ final class CompetitionDomainTests: XCTestCase {
 
     private func uuid(_ suffix: UInt8) -> UUID {
         UUID(uuid: (0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, suffix))
+    }
+}
+
+@Suite("Competition V2 domain")
+struct CompetitionV2DomainTests {
+    @Test("Four-digit handles are ASCII, collision-checked, and scoped to one event")
+    func publicHandleAllocationIsEventScoped() throws {
+        let firstEventID = UUID()
+        let secondEventID = UUID()
+        let first = try #require(ParticipantPublicHandle.reserving(
+            eventID: firstEventID,
+            displayName: "Alex",
+            code: "0007",
+            against: []
+        ))
+
+        #expect(ParticipantPublicHandle.reserving(
+            eventID: firstEventID,
+            displayName: "Blair",
+            code: "0007",
+            against: [first]
+        ) == nil)
+        #expect(ParticipantPublicHandle.reserving(
+            eventID: secondEventID,
+            displayName: "Blair",
+            code: "0007",
+            against: [first]
+        )?.code == "0007")
+        #expect(ParticipantPublicHandle.reserving(
+            eventID: firstEventID,
+            displayName: "Alex",
+            code: "007",
+            against: []
+        ) == nil)
+        #expect(ParticipantPublicHandle.reserving(
+            eventID: firstEventID,
+            displayName: "Alex",
+            code: "１２３４",
+            against: []
+        ) == nil)
+    }
+
+    @Test("Decoding cannot bypass the four-digit public-handle contract")
+    func decodedPublicHandleRejectsInvalidCode() throws {
+        let eventID = UUID()
+        let payload = """
+        {"eventID":"\(eventID.uuidString)","displayName":"Alex","code":"007"}
+        """.data(using: .utf8)!
+
+        #expect(throws: DecodingError.self) {
+            try JSONDecoder().decode(ParticipantPublicHandle.self, from: payload)
+        }
+    }
+
+    @Test("Duplicate display names remain distinct through athlete IDs and event codes")
+    func duplicateDisplayNamesRemainDistinct() throws {
+        let eventID = UUID()
+        let firstHandle = try #require(ParticipantPublicHandle.allocating(
+            eventID: eventID,
+            displayName: "Alex",
+            against: []
+        ))
+        let secondHandle = try #require(ParticipantPublicHandle.allocating(
+            eventID: eventID,
+            displayName: "Alex",
+            against: [firstHandle]
+        ))
+        let first = makePlayer(id: UUID(), handle: firstHandle)
+        let second = makePlayer(id: UUID(), handle: secondHandle)
+
+        #expect(first.name == second.name)
+        #expect(first.id != second.id)
+        #expect(first.publicHandle?.code == "0000")
+        #expect(second.publicHandle?.code == "0001")
+    }
+
+    @Test("Competition submissions snapshot event, scoring, calibration, and public handle")
+    func submissionCapturesVersionedEventIdentity() throws {
+        let eventID = UUID()
+        let handle = try #require(ParticipantPublicHandle.reserving(
+            eventID: eventID,
+            displayName: "Alex",
+            code: "0042",
+            against: []
+        ))
+        var player = makePlayer(id: UUID(), handle: handle)
+        let submission = try #require(CompetitionScorer.submission(
+            id: UUID(),
+            player: player,
+            evidence: perfectReactiveEvidence(),
+            startedAt: Date(timeIntervalSince1970: 1),
+            endedAt: Date(timeIntervalSince1970: 2)
+        ))
+
+        player.name = "Renamed Later"
+        #expect(submission.eventID == eventID)
+        #expect(submission.scoringVersion == CompetitionScorer.scoringVersion)
+        #expect(submission.calibrationVersion == CompetitionPlayer.calibrationVersion)
+        #expect(submission.publicHandleSnapshot == handle)
+        #expect(submission.publicHandleSnapshot?.displayName == "Alex")
+    }
+
+    private func makePlayer(id: UUID, handle: ParticipantPublicHandle) -> CompetitionPlayer {
+        CompetitionPlayer(
+            id: id,
+            name: handle.displayName,
+            normalizedName: CompetitionName.normalized(handle.displayName),
+            rememberedStance: .orthodox,
+            reach: BilateralReach(left: 0.68, right: 0.70),
+            calibrationVersion: CompetitionPlayer.calibrationVersion,
+            calibratedAt: Date(timeIntervalSince1970: 10),
+            createdAt: Date(timeIntervalSince1970: 1),
+            lastSeenAt: Date(timeIntervalSince1970: 10),
+            experienceLevel: .beginner,
+            publicHandle: handle
+        )
+    }
+
+    private func perfectReactiveEvidence() -> CompetitionEvidence {
+        CompetitionEvidence(
+            mode: .reactiveStrike,
+            steps: (0..<CompetitionMode.reactiveStrike.totalSteps).map { index in
+                CompetitionStepEvidence(
+                    index: index,
+                    valid: true,
+                    centreErrorMeters: 0,
+                    reactionTime: 0.3,
+                    requiredHand: nil,
+                    returnedToGuard: true
+                )
+            },
+            completedRepetitions: 0,
+            activeElapsedTime: nil,
+            trackingStatus: .complete
+        )
     }
 }

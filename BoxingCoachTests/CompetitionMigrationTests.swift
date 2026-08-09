@@ -29,6 +29,8 @@ struct CompetitionMigrationTests {
         #expect(event.statusRawValue == EventEditionStatus.closed.rawValue)
         #expect(event.openedAt == Date(timeIntervalSince1970: 1))
         #expect(event.closedAt == Date(timeIntervalSince1970: 30))
+        #expect(event.scoringVersion == 1)
+        #expect(event.calibrationVersion == CompetitionPlayer.calibrationVersion)
 
         #expect(participants.map(\.id) == fixture.players.map(\.id))
         #expect(participants.map(\.name) == fixture.players.map(\.name))
@@ -40,6 +42,10 @@ struct CompetitionMigrationTests {
         #expect(participants.map(\.calibratedAt) == fixture.players.map(\.calibratedAt))
         #expect(participants.map(\.createdAt) == fixture.players.map(\.createdAt))
         #expect(participants.map(\.lastSeenAt) == fixture.players.map(\.lastSeenAt))
+        #expect(participants.map(\.experienceLevelRawValue) == [
+            ExperienceLevel.beginner.rawValue,
+            ExperienceLevel.beginner.rawValue
+        ])
         #expect(participants.map(\.eventID) == [event.id, event.id])
         #expect(participants.map(\.publicDisplayCode) == ["0000", "0001"])
         #expect(Set(participants.compactMap(\.publicDisplayCode)).count == participants.count)
@@ -59,7 +65,10 @@ struct CompetitionMigrationTests {
         #expect(submissions.map(\.endedAt) == fixture.submissions.map(\.endedAt))
         #expect(submissions.map(\.trackingStatusRawValue) == fixture.submissions.map(\.trackingStatus.rawValue))
         #expect(submissions.allSatisfy { $0.eventID == event.id })
+        #expect(submissions.map(\.scoringVersion) == [1, 1, 1])
+        #expect(submissions.map(\.calibrationVersion) == [1, nil, 1])
         #expect(submissions.map(\.publicDisplayName) == fixture.submissions.map(\.playerName))
+        #expect(submissions.map(\.publicDisplayCode) == ["0000", "0001", "0000"])
 
         let migrated = submissions.compactMap(\.snapshot)
         let after = CompetitionLeaderboard.standings(mode: .reactiveStrike, submissions: migrated)
@@ -92,6 +101,70 @@ struct CompetitionMigrationTests {
         #expect(try context.fetchCount(
             FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>()
         ) == fixture.submissions.count)
+    }
+
+    @Test("A failed V1 migration save leaves the original store intact and retryable")
+    func failedMigrationSavePreservesV1Store() throws {
+        let fixture = try MigrationFixture.make()
+        defer { fixture.remove() }
+        try fixture.writeV1Store()
+
+        let schema = Schema(versionedSchema: CompetitionSchemaV2.self)
+        let configuration = ModelConfiguration(
+            "CompetitionMigrationForcedFailure",
+            schema: schema,
+            url: fixture.storeURL,
+            allowsSave: true,
+            cloudKitDatabase: .none
+        )
+        #expect(throws: (any Error).self) {
+            _ = try ModelContainer(
+                for: schema,
+                migrationPlan: FailingCompetitionMigrationPlan.self,
+                configurations: [configuration]
+            )
+        }
+
+        let unchanged = try fixture.readV1Store()
+        #expect(unchanged.players == fixture.players)
+        #expect(unchanged.submissions == fixture.submissions)
+        let storeFileNames = try FileManager.default.contentsOfDirectory(
+            at: fixture.directoryURL,
+            includingPropertiesForKeys: nil
+        ).filter { $0.pathExtension == "store" }.map(\.lastPathComponent).sorted()
+        #expect(storeFileNames == [fixture.storeURL.lastPathComponent])
+
+        let retried = try CompetitionModelContainer.make(storeURL: fixture.storeURL)
+        let retryContext = ModelContext(retried)
+        #expect(try retryContext.fetchCount(
+            FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>()
+        ) == fixture.players.count)
+        #expect(try retryContext.fetchCount(
+            FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>()
+        ) == fixture.submissions.count)
+    }
+}
+
+private struct ForcedMigrationSaveError: Error {}
+
+private enum FailingCompetitionMigrationPlan: SchemaMigrationPlan {
+    static var schemas: [any VersionedSchema.Type] {
+        [CompetitionSchemaV1.self, CompetitionSchemaV2.self]
+    }
+
+    static var stages: [MigrationStage] {
+        [
+            .custom(
+                fromVersion: CompetitionSchemaV1.self,
+                toVersion: CompetitionSchemaV2.self,
+                willMigrate: nil,
+                didMigrate: { context in
+                    try CompetitionLegacyMigration.migrate(context) { _ in
+                        throw ForcedMigrationSaveError()
+                    }
+                }
+            )
+        ]
     }
 }
 
@@ -127,9 +200,9 @@ private struct MigrationFixture {
             name: "Blair",
             normalizedName: "blair",
             rememberedStance: .southpaw,
-            reach: BilateralReach(left: 0.61, right: 0.63),
-            calibrationVersion: 1,
-            calibratedAt: Date(timeIntervalSince1970: 4),
+            reach: nil,
+            calibrationVersion: nil,
+            calibratedAt: nil,
             createdAt: Date(timeIntervalSince1970: 2),
             lastSeenAt: Date(timeIntervalSince1970: 8)
         )
@@ -149,7 +222,9 @@ private struct MigrationFixture {
                 playerName: "Blair",
                 score: 88,
                 startedAt: 11,
-                endedAt: 21
+                endedAt: 21,
+                meanCentreErrorMeters: nil,
+                speedTieBreakSeconds: nil
             ),
             submission(
                 id: "00000000-0000-0000-0000-000000000313",
@@ -184,6 +259,26 @@ private struct MigrationFixture {
         try context.save()
     }
 
+    func readV1Store() throws -> (players: [CompetitionPlayer], submissions: [CompetitionSubmission]) {
+        let schema = Schema(versionedSchema: CompetitionSchemaV1.self)
+        let configuration = ModelConfiguration(
+            "CompetitionMigrationFixtureV1Readback",
+            schema: schema,
+            url: storeURL,
+            allowsSave: true,
+            cloudKitDatabase: .none
+        )
+        let container = try ModelContainer(for: schema, configurations: [configuration])
+        let context = ModelContext(container)
+        let players = try context.fetch(FetchDescriptor<CompetitionPlayerRecord>())
+            .map(\.snapshot)
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+        let submissions = try context.fetch(FetchDescriptor<CompetitionSubmissionRecord>())
+            .compactMap(\.snapshot)
+            .sorted { $0.id.uuidString < $1.id.uuidString }
+        return (players, submissions)
+    }
+
     func remove() {
         try? FileManager.default.removeItem(at: directoryURL)
     }
@@ -194,7 +289,9 @@ private struct MigrationFixture {
         playerName: String,
         score: Int,
         startedAt: TimeInterval,
-        endedAt: TimeInterval
+        endedAt: TimeInterval,
+        meanCentreErrorMeters: Float? = 0.02,
+        speedTieBreakSeconds: TimeInterval? = 0.31
     ) -> CompetitionSubmission {
         CompetitionSubmission(
             id: UUID(uuidString: id)!,
@@ -206,8 +303,8 @@ private struct MigrationFixture {
             validSteps: 7,
             totalSteps: 8,
             completedRepetitions: 0,
-            meanCentreErrorMeters: 0.02,
-            speedTieBreakSeconds: 0.31,
+            meanCentreErrorMeters: meanCentreErrorMeters,
+            speedTieBreakSeconds: speedTieBreakSeconds,
             startedAt: Date(timeIntervalSince1970: startedAt),
             endedAt: Date(timeIntervalSince1970: endedAt),
             trackingStatus: .complete

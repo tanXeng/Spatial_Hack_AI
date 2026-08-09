@@ -181,7 +181,9 @@ enum CompetitionMigrationPlan: SchemaMigrationPlan {
                 fromVersion: CompetitionSchemaV1.self,
                 toVersion: CompetitionSchemaV2.self,
                 willMigrate: nil,
-                didMigrate: CompetitionLegacyMigration.migrate
+                didMigrate: { context in
+                    try CompetitionLegacyMigration.migrate(context)
+                }
             )
         ]
     }
@@ -193,9 +195,13 @@ enum CompetitionModelContainer {
 
     static func make(inMemory: Bool) throws -> ModelContainer {
         let schema = Schema(versionedSchema: CompetitionSchemaV2.self)
-        let configuration: ModelConfiguration
+        return try make(schema: schema, configuration: configuration(inMemory: inMemory))
+    }
+
+    static func configuration(inMemory: Bool) -> ModelConfiguration {
+        let schema = Schema(versionedSchema: CompetitionSchemaV2.self)
         if inMemory {
-            configuration = ModelConfiguration(
+            return ModelConfiguration(
                 configurationName,
                 schema: schema,
                 isStoredInMemoryOnly: true,
@@ -203,16 +209,14 @@ enum CompetitionModelContainer {
                 groupContainer: .automatic,
                 cloudKitDatabase: .none
             )
-        } else {
-            configuration = ModelConfiguration(
-                configurationName,
-                schema: schema,
-                url: legacyStoreURL,
-                allowsSave: true,
-                cloudKitDatabase: .none
-            )
         }
-        return try make(schema: schema, configuration: configuration)
+        return ModelConfiguration(
+            configurationName,
+            schema: schema,
+            url: legacyStoreURL,
+            allowsSave: true,
+            cloudKitDatabase: .none
+        )
     }
 
     static func make(storeURL: URL, allowsSave: Bool = true) throws -> ModelContainer {
@@ -334,6 +338,13 @@ nonisolated enum CompetitionLegacyMigration {
     private static let legacyScoringVersion = 1
 
     static func migrate(_ context: ModelContext) throws {
+        try migrate(context, save: { try $0.save() })
+    }
+
+    static func migrate(
+        _ context: ModelContext,
+        save: (ModelContext) throws -> Void
+    ) throws {
         do {
             let existingEvents = try context.fetch(
                 FetchDescriptor<CompetitionSchemaV2.EventEditionRecord>()
@@ -394,7 +405,7 @@ nonisolated enum CompetitionLegacyMigration {
                 submission.publicDisplayCode = displayCode
             }
 
-            try context.save()
+            try save(context)
         } catch {
             context.rollback()
             throw error

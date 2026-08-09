@@ -185,6 +185,23 @@ final class CompetitionPersistenceTests: XCTestCase {
 @Suite("Competition SwiftData V2 persistence")
 @MainActor
 struct CompetitionSwiftDataV2PersistenceTests {
+    @Test("Production disk configuration retains the shipped V1 store URL")
+    func productionDiskConfigurationUsesShippedStoreURL() {
+        let configuration = CompetitionModelContainer.configuration(inMemory: false)
+        let shippedV1Configuration = ModelConfiguration(
+            "BoxingCoachCompetitionV1",
+            schema: Schema(versionedSchema: CompetitionSchemaV1.self),
+            isStoredInMemoryOnly: false,
+            allowsSave: true,
+            groupContainer: .automatic,
+            cloudKitDatabase: .none
+        )
+
+        #expect(configuration.name == CompetitionModelContainer.configurationName)
+        #expect(configuration.url == shippedV1Configuration.url)
+        #expect(configuration.url.lastPathComponent == "BoxingCoachCompetitionV1.store")
+    }
+
     @Test("Current V2 schema round-trips participant and submission snapshots")
     func currentSchemaRoundTripsCompetitionValues() async throws {
         let container = try CompetitionModelContainer.make(inMemory: true)

@@ -109,3 +109,37 @@ struct LabeledMetricRow: View {
         .accessibilityValue(spokenValue ?? value)
     }
 }
+
+struct StancePickerCard: View {
+    let stance: Stance
+    let controlsDisabled: Bool
+    let onStanceChange: (Stance) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            Text("Stance")
+                .font(.headline)
+
+            Picker(
+                "Stance",
+                selection: Binding(
+                    get: { stance },
+                    set: { onStanceChange($0) }
+                )
+            ) {
+                ForEach(Stance.allCases) { stance in
+                    Text(stance.title).tag(stance)
+                }
+            }
+            .pickerStyle(.segmented)
+            .disabled(controlsDisabled)
+
+            Text(stance.footDescription)
+                .font(.subheadline)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(18)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+    }
+}

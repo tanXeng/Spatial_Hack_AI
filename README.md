@@ -91,7 +91,7 @@ Reactive Strike begins by capturing both guard positions and, when needed, measu
 outward extension from each arm. It uses the shorter comfortable reach so every target remains
 available to either hand. Calibration and target placement use the live head-derived body frame
 rather than world Z or a fixed room height, so the drill is invariant to where the user stands or
-faces. Air and Bag modes retain their distinct spawn volumes after scaling.
+faces. Air Mode and Combination Mode use body-relative target placement after reach calibration.
 
 Combination Mode adds five numbered combinations with Orthodox/Southpaw hand mapping. It shows
 one target at a time and accepts a step only after the required physical hand leaves guard with
@@ -107,9 +107,10 @@ cannot directly evaluate shoulder roll, hip rotation, foot placement, or impact 
 
 The unit target covers event validation, scoring boundaries, ranking/ties/awards, persistence,
 exact-once saves, recovery checksums, name-only player lookup, export privacy, calibrated fist evidence,
-tracking pause recovery, swept collisions, flow routing, and the legacy training engines. Live
-hand tracking and punch feel still require an Apple Vision Pro; the simulator cannot supply ARKit
-hand anchors.
+tracking pause recovery, swept collisions, calibration geometry, Air Mode bounds, stance and
+combination validation, flow routing, legacy uppercut lookup, and the mirrored uppercut trajectory.
+Live hand tracking and
+punch feel still require an Apple Vision Pro; the simulator cannot supply ARKit hand anchors.
 
 ## Repository policy
 

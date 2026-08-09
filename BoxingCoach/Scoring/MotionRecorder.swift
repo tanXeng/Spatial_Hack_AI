@@ -17,11 +17,18 @@ struct RecordedAttempt: Sendable {
     /// interpolation, which is worse than admitting the capture failed — the user would be
     /// coached on motion they never made.
     var isUsable: Bool {
-        samples.count >= 8 && trackedFraction >= 0.6 && duration > 0.08
+        samples.count >= 8 && trackedFraction >= 0.45 && duration > 0.08
     }
 
     var peakReach: Float {
         samples.map(\.reachFraction).max() ?? 0
+    }
+
+    /// True when the attempt ends still near full extension (return phase not captured).
+    func endsNearExtension(threshold: Float = 0.90) -> Bool {
+        let peak = peakReach
+        guard peak > 0.06, let last = samples.last else { return false }
+        return last.reachFraction >= peak * threshold
     }
 
     /// Technique-aware magnitude used by the Extension score and to decide which arm threw.
@@ -215,7 +222,7 @@ final class MotionRecorder {
 
         // Baseline is the resting guard extension. Anything meaningfully above it is the punch.
         let baseline = reaches.min() ?? 0
-        guard peak - baseline > 0.08 else { return samples }
+        guard peak - baseline > 0.06 else { return samples }
         let threshold = baseline + (peak - baseline) * 0.15
 
         var start = peakIndex

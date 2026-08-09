@@ -90,7 +90,22 @@ final class HandTrackingService {
     private var fistPrototypes: [BodySide: (closed: Float, open: Float)] = [:]
 
     /// How long to reuse the last tracked pose when ARKit momentarily loses a hand.
-    private let staleHandDuration: TimeInterval = 0.2
+    private let defaultStaleHandDuration: TimeInterval = 0.2
+    private let attemptCaptureStaleDuration: TimeInterval = 0.35
+    private var attemptCaptureCount = 0
+
+    private var effectiveStaleHandDuration: TimeInterval {
+        attemptCaptureCount > 0 ? attemptCaptureStaleDuration : defaultStaleHandDuration
+    }
+
+    /// Extends stale-hand grace while Aura Punch captures the scored throw.
+    func beginAttemptCapture() {
+        attemptCaptureCount += 1
+    }
+
+    func endAttemptCapture() {
+        attemptCaptureCount = max(0, attemptCaptureCount - 1)
+    }
 
     /// Head pose in world space, from the device anchor. `nil` until world tracking settles.
     private(set) var deviceTransform: simd_float4x4?
@@ -109,11 +124,11 @@ final class HandTrackingService {
         switch side {
         case .left:
             if let leftHand { return leftHand }
-            if now - leftHandLastGoodTime <= staleHandDuration { return leftHandLastGood }
+            if now - leftHandLastGoodTime <= effectiveStaleHandDuration { return leftHandLastGood }
             return nil
         case .right:
             if let rightHand { return rightHand }
-            if now - rightHandLastGoodTime <= staleHandDuration { return rightHandLastGood }
+            if now - rightHandLastGoodTime <= effectiveStaleHandDuration { return rightHandLastGood }
             return nil
         }
     }

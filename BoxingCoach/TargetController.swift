@@ -35,7 +35,7 @@ final class TargetController {
         let mesh = MeshResource.generateSphere(radius: radius)
         let material = SimpleMaterial(color: idleColor, isMetallic: false)
         let entity = ModelEntity(mesh: mesh, materials: [material])
-        entity.name = "ReactiveStrikeTarget"
+        entity.name = "PunchTarget"
         entity.position = position
 
         root?.addChild(entity)
@@ -48,6 +48,12 @@ final class TargetController {
         guard let activeTarget else { return }
         let color = result == .hit ? hitColor : missColor
         activeTarget.model?.materials = [SimpleMaterial(color: color, isMetallic: false)]
+    }
+
+    func updateActiveTargetPosition(_ position: SIMD3<Float>) {
+        guard let activeTarget else { return }
+        activeTarget.position = position
+        activeTargetPosition = position
     }
 
     func removeActiveTarget() {

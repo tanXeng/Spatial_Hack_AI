@@ -2,10 +2,8 @@ import Foundation
 import simd
 
 /// Reactive Strike modes from the project brief.
-/// Bag Mode does not recognize a real bag yet — targets spawn in a tighter "bag zone" volume.
 enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Hashable, Sendable {
     case air
-    case bag
     case combination
 
     var id: String { rawValue }
@@ -13,7 +11,6 @@ enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Hashable, Sendable 
     var title: String {
         switch self {
         case .air: return "Air Mode"
-        case .bag: return "Bag Mode"
         case .combination: return "Combination Mode"
         }
     }
@@ -21,16 +18,13 @@ enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Hashable, Sendable 
     var subtitle: String {
         switch self {
         case .air: return "Targets float in front of you"
-        case .bag: return "Targets appear in a punching-bag zone"
         case .combination: return "Throw a stance-aware punch sequence"
         }
     }
 
     var reachProfile: ReachProfile {
         switch self {
-        case .air: return .air
-        case .bag: return .bagZone
-        case .combination: return .air
+        case .air, .combination: return .air
         }
     }
 }
@@ -64,16 +58,6 @@ struct ReachProfile: Sendable, Equatable {
         verticalMax: 0.24
     )
 
-    /// Tighter forward volume approximating a standing bag (no bag recognition yet).
-    static let bagZone = ReachProfile(
-        forwardMin: 0.60,
-        forwardMax: 0.70,
-        lateralMin: -0.18,
-        lateralMax: 0.18,
-        verticalMin: -0.28,
-        verticalMax: 0.28
-    )
-
     /// Returns a random target in body space. Convert it through the current `BodyFrame` before
     /// handing it to RealityKit.
     func randomBodyTargetPosition() -> SIMD3<Float> {
@@ -83,9 +67,7 @@ struct ReachProfile: Sendable, Equatable {
         return SIMD3(lateral, vertical, forward)
     }
 
-    /// Scales this exact profile to a measured forward reach while preserving its shape. In
-    /// particular, calibrating Bag Mode cannot silently replace its tighter lateral/forward zone
-    /// with Air Mode bounds.
+    /// Scales this exact profile to a measured forward reach while preserving its shape.
     func calibrated(measuredForwardReach: Float) -> ReachProfile {
         let usableReach = min(max(measuredForwardReach * 0.94, 0.35), 0.95)
         let originalMaximum = max(forwardMax, 0.01)

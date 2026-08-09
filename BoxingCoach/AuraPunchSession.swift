@@ -67,18 +67,34 @@ final class AuraPunchSession {
     /// leaving a frozen arm and no way forward except quitting the feature.
     var followHoldTimeout: TimeInterval = 6
 
-    /// How long the user's attempt is captured for. The recorder trims the idle time at either
-    /// end, so this only needs to be comfortably longer than a punch.
-    var attemptWindow: TimeInterval = 3.0
+    /// How long the user's attempt is captured for. Used only as a safety ceiling if hit detection stalls.
+    var attemptWindow: TimeInterval = 4.0
+
+    var targetVisualRadius: Float = 0.07
+    var targetHitRadius: Float = 0.12
+    var scoredPunchCount = 3
+
+    private let scoredPunchSafetyTimeout: TimeInterval = 20
+    private let interScoredPunchDelay: TimeInterval = 0.45
+    /// How long to keep recording after a target hit so retraction can be scored.
+    private let postHitCaptureDuration: TimeInterval = 1.0
+    /// Follow-through ends once reach drops below this fraction of the hit peak.
+    private let retractionReachFraction: Float = 0.85
 
     // MARK: Observable state
 
     private(set) var phase: AuraPunchPhase = .idle
     private(set) var statusMessage = "Ready"
+    /// Large headline shown in the immersive coaching banner during the drill.
+    private(set) var coachingHeadline = "GET READY"
+    /// Supporting line under the headline in the immersive coaching banner.
+    private(set) var coachingDetail = "Raise your guard to begin"
     private(set) var errorMessage: String?
     private(set) var score: TechniqueScore?
     private(set) var feedback: CoachingFeedback?
     private(set) var currentDemoRep = 0
+    /// Active scored punch during the 3-punch round (0 when not scoring).
+    private(set) var currentScoredPunch = 0
     /// Live reach fraction during the attempt, for the UI's punch meter.
     private(set) var liveReach: Float = 0
 
@@ -97,12 +113,18 @@ final class AuraPunchSession {
     ]
     private let scorer = TechniqueScorer()
     private let feedbackGenerator: FeedbackGenerating
+    private let targets = TargetController()
 
     private var demoArm: ArmSilhouetteEntity?
     private var mirrorArm: ArmSilhouetteEntity?
     private weak var sceneRoot: Entity?
 
     private var loopTask: Task<Void, Never>?
+
+    /// Reused briefly when head tracking flickers mid-attempt so hand samples are not discarded.
+    private var cachedBodyFrame: BodyFrame?
+    private var cachedBodyFrameTime: TimeInterval = 0
+    private let bodyFrameCacheDuration: TimeInterval = 0.25
 
     /// Frame interval for the pose loop. Hand tracking runs at ~90 Hz; polling faster just burns
     /// cycles re-reading the same anchor.
@@ -131,9 +153,12 @@ final class AuraPunchSession {
         let mirror = ArmSilhouetteEntity(side: punchingSide, tint: .mirror)
         mirror.attach(to: root)
         mirrorArm = mirror
+
+        targets.attach(to: root)
     }
 
     func detach() {
+        targets.removeActiveTarget()
         demoArm?.removeFromScene()
         mirrorArm?.removeFromScene()
         demoArm = nil
@@ -150,6 +175,7 @@ final class AuraPunchSession {
         feedback = nil
         errorMessage = nil
         currentDemoRep = 0
+        currentScoredPunch = 0
         liveReach = 0
 
         // Rebuild the ghost arms for the currently selected technique — switching from a jab to a
@@ -173,8 +199,10 @@ final class AuraPunchSession {
         loopTask?.cancel()
         loopTask = nil
         for recorder in recorders.values { recorder.cancel() }
+        targets.removeActiveTarget()
         demoArm?.isVisible = false
         mirrorArm?.isVisible = false
+        currentScoredPunch = 0
         phase = .idle
         statusMessage = "Stopped"
     }
@@ -204,28 +232,7 @@ final class AuraPunchSession {
         await runCountdown()
         guard !Task.isCancelled else { return }
 
-        let capture = await recordAttempt(solver: solver)
-        guard !Task.isCancelled else { return }
-
-        guard let capture else {
-            fail("Couldn't see a punch. Keep both hands in view and throw again.")
-            return
-        }
-
-        // Score against a reference mirrored onto the arm they actually used, so a jab thrown off
-        // the wrong hand is graded as a jab and reported as a hand fault — rather than being
-        // compared to the opposite arm and failing every geometry metric for the wrong reason.
-        let scoringReference = ReferencePunchLibrary.punch(
-            for: technique,
-            stance: stance,
-            measurements: measurements,
-            side: capture.side
-        )
-        await finish(
-            attempt: capture.attempt,
-            reference: scoringReference,
-            thrownSide: capture.side
-        )
+        await runScoredTargetRound(solver: solver)
     }
 
     /// Blocks until head and hand tracking are both usable, or gives up.
@@ -234,7 +241,11 @@ final class AuraPunchSession {
     /// wrist, and the whole arm is reconstructed between them.
     private func acquireTracking() async -> Bool {
         phase = .acquiring
-        statusMessage = "Hold your guard up so we can see your hands…"
+        setCoaching(
+            headline: "GET READY",
+            detail: "Raise your guard — the hologram will show you the punch",
+            status: "Hold your guard up so we can see your hands…"
+        )
 
         await hands.start()
         guard hands.isRunning else {
@@ -318,7 +329,12 @@ final class AuraPunchSession {
             let handLabel = technique.hand == .either ? " — \(side.rawValue) \(technique.name.lowercased())" : ""
 
             let pace = rep == 1 ? "" : " — faster"
-            statusMessage = "Rep \(rep) of \(reps)\(pace)\(handLabel): follow the ghost out"
+            setCoaching(
+                headline: "FOLLOW THE HOLOGRAM",
+                detail: "Rep \(rep) of \(reps)\(pace)\(handLabel) — aim for the target",
+                status: "Rep \(rep) of \(reps)\(pace)\(handLabel): follow the hologram out"
+            )
+            spawnLandingTarget(reference: reference, side: side, solver: solver)
             await playGhost(
                 reference: reference,
                 side: side,
@@ -326,21 +342,33 @@ final class AuraPunchSession {
                 from: 0,
                 to: reference.peakTime,
                 speedFactor: speedFactor,
-                phaseMessage: statusMessage
+                phaseMessage: statusMessage,
+                trackLandingTarget: true
             )
             if Task.isCancelled { return }
 
-            statusMessage = "Extend all the way — the ghost is waiting"
+            setCoaching(
+                headline: "MATCH THE HOLOGRAM",
+                detail: "Extend all the way — hit the target",
+                status: "Extend all the way — the hologram is waiting"
+            )
             await holdGhost(
                 reference: reference,
                 side: side,
                 solver: solver,
                 at: reference.peakTime,
-                phaseMessage: statusMessage
+                phaseMessage: statusMessage,
+                trackLandingTarget: true
             )
             if Task.isCancelled { return }
 
-            statusMessage = "Bring it back with the ghost"
+            targets.removeActiveTarget()
+
+            setCoaching(
+                headline: "RETURN WITH THE HOLOGRAM",
+                detail: "Bring it back together",
+                status: "Bring it back with the hologram"
+            )
             await playGhost(
                 reference: reference,
                 side: side,
@@ -348,23 +376,30 @@ final class AuraPunchSession {
                 from: reference.peakTime,
                 to: reference.duration,
                 speedFactor: speedFactor,
-                phaseMessage: statusMessage
+                phaseMessage: statusMessage,
+                trackLandingTarget: false
             )
             if Task.isCancelled { return }
 
-            statusMessage = "Back to guard"
+            setCoaching(
+                headline: "BACK TO GUARD",
+                detail: "Match the hologram's guard",
+                status: "Back to guard"
+            )
             await holdGhost(
                 reference: reference,
                 side: side,
                 solver: solver,
                 at: reference.duration,
-                phaseMessage: statusMessage
+                phaseMessage: statusMessage,
+                trackLandingTarget: false
             )
             if Task.isCancelled { return }
 
             speedFactor = max(minimumGuidedSpeedFactor, speedFactor * guidedSpeedUp)
         }
 
+        targets.removeActiveTarget()
         demoArm?.isVisible = false
         demoArm?.setTint(.demo)
         liveReach = 0
@@ -381,7 +416,8 @@ final class AuraPunchSession {
         from start: TimeInterval,
         to end: TimeInterval,
         speedFactor: Double,
-        phaseMessage: String
+        phaseMessage: String,
+        trackLandingTarget: Bool = false
     ) async {
         let span = max(0, end - start)
         guard span > 0 else {
@@ -409,6 +445,9 @@ final class AuraPunchSession {
                     at: start + span * progress
                 )
                 updateLiveReach(side: side, solver: solver)
+                if trackLandingTarget {
+                    updateLandingTarget(reference: reference, side: side, solver: solver)
+                }
                 lastTick = now
                 try? await Task.sleep(for: frameInterval)
                 continue
@@ -429,6 +468,9 @@ final class AuraPunchSession {
                 at: start + span * progress
             )
             updateLiveReach(side: side, solver: solver)
+            if trackLandingTarget {
+                updateLandingTarget(reference: reference, side: side, solver: solver)
+            }
 
             if progress >= 1 { return }
             try? await Task.sleep(for: frameInterval)
@@ -446,7 +488,8 @@ final class AuraPunchSession {
         side: BodySide,
         solver: ArmPoseSolver,
         at referenceTime: TimeInterval,
-        phaseMessage: String
+        phaseMessage: String,
+        trackLandingTarget: Bool = false
     ) async {
         guard let targetFist = reference.sample(at: referenceTime)?.fist else { return }
         let goal = HoldGoal(targetFist: targetFist, tolerance: followPositionTolerance)
@@ -467,6 +510,9 @@ final class AuraPunchSession {
             }
 
             poseGhost(reference: reference, side: side, solver: solver, at: referenceTime)
+            if trackLandingTarget {
+                updateLandingTarget(reference: reference, side: side, solver: solver)
+            }
 
             if let fist = updateLiveReach(side: side, solver: solver), goal.isMet(by: fist) {
                 return
@@ -530,110 +576,151 @@ final class AuraPunchSession {
         phase = .countdown
         for count in [3, 2, 1] {
             if Task.isCancelled { return }
-            statusMessage = "Your turn in \(count)…"
+            setCoaching(
+                headline: "YOUR TURN",
+                detail: count == 1 ? "\(scoredPunchCount) punches — hit each target" : "Starting in \(count)…",
+                status: "Your turn in \(count)…"
+            )
             try? await Task.sleep(for: .seconds(1))
         }
     }
 
-    /// Captures the user's attempt on **both** arms, recording dropouts explicitly rather than
-    /// skipping frames.
-    ///
-    /// Both hands are recorded because the app cannot assume the user threw with the hand it asked
-    /// for — recording only the expected arm would turn a cross thrown off the lead hand into a
-    /// capture of a stationary guard, which scores as a failed punch instead of the hand mistake
-    /// it actually was. The arm with the strongest technique-specific extension is taken as the
-    /// one that threw: radial reach for most punches, ordered low-to-high rise for an uppercut.
-    ///
-    /// Returns `nil` when neither arm produced a gradeable punch.
-    private func recordAttempt(
-        solver: ArmPoseSolver
-    ) async -> (side: BodySide, attempt: RecordedAttempt)? {
+    private func runScoredTargetRound(solver: ArmPoseSolver) async {
         phase = .attempting
-        statusMessage = "Throw it!"
+        currentScoredPunch = 0
+
+        let expectedSide = technique.hand.side(for: stance)
+        let reference = ReferencePunchLibrary.punch(
+            for: technique,
+            stance: stance,
+            measurements: measurements,
+            side: expectedSide
+        )
+
+        var scores: [TechniqueScore] = []
+
+        for punchIndex in 1...scoredPunchCount {
+            guard !Task.isCancelled else { return }
+
+            currentScoredPunch = punchIndex
+            setCoaching(
+                headline: "HIT THE TARGET",
+                detail: "Punch \(punchIndex) of \(scoredPunchCount) — hit the target",
+                status: "Punch \(punchIndex) of \(scoredPunchCount) — hit the target!"
+            )
+
+            guard let frame = currentBodyFrame(solver: solver),
+                  let landing = landingWorldPosition(
+                    reference: reference,
+                    side: expectedSide,
+                    solver: solver,
+                    frame: frame,
+                    at: reference.peakTime
+                  )
+            else {
+                continue
+            }
+
+            targets.spawnTarget(at: landing, radius: targetVisualRadius)
+
+            let capture = await capturePunchUntilHit(
+                solver: solver,
+                reference: reference,
+                side: expectedSide
+            )
+
+            if let capture {
+                let punchReference = ReferencePunchLibrary.punch(
+                    for: technique,
+                    stance: stance,
+                    measurements: measurements,
+                    side: capture.side
+                )
+                if let computed = scorer.score(
+                    attempt: capture.attempt,
+                    reference: punchReference,
+                    technique: technique,
+                    thrownSide: capture.side,
+                    stance: stance
+                ) {
+                    scores.append(computed)
+                }
+            }
+
+            try? await Task.sleep(for: .milliseconds(220))
+            targets.removeActiveTarget()
+
+            if punchIndex < scoredPunchCount {
+                try? await Task.sleep(for: .seconds(interScoredPunchDelay))
+            }
+        }
+
+        currentScoredPunch = 0
+        mirrorArm?.isVisible = false
+
+        guard let aggregated = TechniqueScore.averaging(scores, techniqueID: technique.id) else {
+            fail("Couldn't see a punch. Keep both hands in view and hit each target.")
+            return
+        }
+
+        await finishAggregated(aggregated)
+    }
+
+    /// Records motion until the user's fist reaches the active target, then through retraction.
+    private func capturePunchUntilHit(
+        solver: ArmPoseSolver,
+        reference: ReferencePunch,
+        side: BodySide
+    ) async -> (side: BodySide, attempt: RecordedAttempt)? {
         let throwMessage = statusMessage
 
+        cachedBodyFrame = nil
+        cachedBodyFrameTime = 0
+
         let startTime = CACurrentMediaTime()
+        hands.beginAttemptCapture()
+        defer { hands.endAttemptCapture() }
+
         for recorder in recorders.values { recorder.begin(at: startTime) }
 
-        var activeElapsed: TimeInterval = 0
-        var lastTick = CACurrentMediaTime()
-        var punchingSide: BodySide?
+        let armingDeadline = CACurrentMediaTime() + scoredPunchSafetyTimeout
+        var hitDetected = false
+        var hitPeakReach: Float = 0
+        var followThroughDeadline: TimeInterval = 0
 
-        while activeElapsed < attemptWindow {
+        while true {
             if Task.isCancelled { break }
 
             let now = CACurrentMediaTime()
+            if !hitDetected, now >= armingDeadline { break }
+            if hitDetected, now >= followThroughDeadline { break }
 
-            guard let frame = currentBodyFrame(solver: solver) else {
-                for recorder in recorders.values { recorder.recordDropout(at: now) }
-                mirrorArm?.isVisible = false
-                lastTick = now
-                try? await Task.sleep(for: frameInterval)
-                continue
+            updateLandingTarget(reference: reference, side: side, solver: solver)
+
+            if !hitDetected,
+               let hitPosition = targets.activeTargetPosition,
+               let fist = hands.nearestFistPosition(to: hitPosition),
+               distance(fist, hitPosition) <= targetHitRadius {
+                hitDetected = true
+                targets.flash(result: .hit)
+                followThroughDeadline = now + postHitCaptureDuration
             }
 
-            var leadingPose: ArmPose?
-            var leadingReach: Float = -1
-            var leadingSide: BodySide?
+            let leadingReach = recordAttemptFrame(
+                solver: solver,
+                startTime: startTime,
+                throwMessage: throwMessage,
+                at: now
+            )
 
-            for side in [BodySide.left, .right] {
-                guard let recorder = recorders[side] else { continue }
-                guard let hand = hands.observation(for: side) else {
-                    recorder.recordDropout(at: now)
-                    continue
+            if let leadingReach {
+                if hitDetected {
+                    hitPeakReach = max(hitPeakReach, leadingReach)
+                    if hitPeakReach > 0,
+                       leadingReach < hitPeakReach * retractionReachFraction {
+                        break
+                    }
                 }
-
-                let pose = solver.solve(hand: hand, frame: frame)
-                let sample = solver.normalize(
-                    pose: pose,
-                    guardHand: hands.observation(for: side.opposite)?.fistPosition,
-                    frame: frame,
-                    startTime: startTime
-                )
-                recorder.record(sample)
-
-                if sample.reachFraction > leadingReach {
-                    leadingReach = sample.reachFraction
-                    leadingPose = pose
-                    leadingSide = side
-                }
-            }
-
-            punchingSide = leadingSide ?? punchingSide
-
-            if let punchingSide, nonPunchingGuardStatus(punchingSide: punchingSide, solver: solver) == false {
-                statusMessage = GuardCoach.waitMessage
-                if let leadingPose {
-                    liveReach = leadingReach
-                    mirrorArm?.isVisible = true
-                    mirrorArm?.pose(
-                        shoulder: leadingPose.shoulder,
-                        elbow: leadingPose.elbow,
-                        fist: leadingPose.fist
-                    )
-                }
-                lastTick = now
-                try? await Task.sleep(for: frameInterval)
-                continue
-            }
-
-            if statusMessage == GuardCoach.waitMessage {
-                statusMessage = throwMessage
-            }
-
-            activeElapsed += now - lastTick
-            lastTick = now
-
-            if let leadingPose {
-                liveReach = leadingReach
-                mirrorArm?.isVisible = true
-                mirrorArm?.pose(
-                    shoulder: leadingPose.shoulder,
-                    elbow: leadingPose.elbow,
-                    fist: leadingPose.fist
-                )
-            } else {
-                mirrorArm?.isVisible = false
             }
 
             try? await Task.sleep(for: frameInterval)
@@ -641,52 +728,188 @@ final class AuraPunchSession {
 
         mirrorArm?.isVisible = false
 
+        guard hitDetected else {
+            for recorder in recorders.values { recorder.cancel() }
+            return nil
+        }
+
+        return selectedCapturedAttempt(for: technique.id)
+    }
+
+    /// Records one frame of both arms; returns the leading reach fraction if any hand tracked.
+    @discardableResult
+    private func recordAttemptFrame(
+        solver: ArmPoseSolver,
+        startTime: TimeInterval,
+        throwMessage: String,
+        at now: TimeInterval
+    ) -> Float? {
+        guard let frame = bodyFrameForAttempt(solver: solver, at: now) else {
+            for handSide in [BodySide.left, .right] {
+                guard let recorder = recorders[handSide] else { continue }
+                if hands.observation(for: handSide) == nil {
+                    recorder.recordDropout(at: now)
+                }
+            }
+            mirrorArm?.isVisible = false
+            return nil
+        }
+
+        var leadingPose: ArmPose?
+        var leadingReach: Float = -1
+        var leadingSide: BodySide?
+
+        for handSide in [BodySide.left, .right] {
+            guard let recorder = recorders[handSide] else { continue }
+            guard let hand = hands.observation(for: handSide) else {
+                recorder.recordDropout(at: now)
+                continue
+            }
+
+            let pose = solver.solve(hand: hand, frame: frame)
+            let sample = solver.normalize(
+                pose: pose,
+                guardHand: hands.observation(for: handSide.opposite)?.fistPosition,
+                frame: frame,
+                startTime: startTime
+            )
+            recorder.record(sample)
+
+            if sample.reachFraction > leadingReach {
+                leadingReach = sample.reachFraction
+                leadingPose = pose
+                leadingSide = handSide
+            }
+        }
+
+        if let leadingSide, nonPunchingGuardStatus(punchingSide: leadingSide, solver: solver) == false {
+            statusMessage = GuardCoach.waitMessage
+            if let leadingPose, leadingReach >= 0 {
+                liveReach = leadingReach
+                mirrorArm?.isVisible = true
+                mirrorArm?.pose(
+                    shoulder: leadingPose.shoulder,
+                    elbow: leadingPose.elbow,
+                    fist: leadingPose.fist
+                )
+            }
+            return leadingReach >= 0 ? leadingReach : nil
+        }
+
+        if statusMessage == GuardCoach.waitMessage {
+            statusMessage = throwMessage
+        }
+
+        if let leadingPose, leadingReach >= 0 {
+            liveReach = leadingReach
+            mirrorArm?.isVisible = true
+            mirrorArm?.pose(
+                shoulder: leadingPose.shoulder,
+                elbow: leadingPose.elbow,
+                fist: leadingPose.fist
+            )
+            return leadingReach
+        }
+
+        mirrorArm?.isVisible = false
+        return nil
+    }
+
+    private func selectedCapturedAttempt(
+        for techniqueID: String
+    ) -> (side: BodySide, attempt: RecordedAttempt)? {
         let captured = recorders.mapValues { $0.finish() }
         guard let thrown = captured.max(by: {
-            $0.value.extensionMagnitude(for: technique.id)
-                < $1.value.extensionMagnitude(for: technique.id)
+            $0.value.extensionMagnitude(for: techniqueID)
+                < $1.value.extensionMagnitude(for: techniqueID)
         }),
-              thrown.value.extensionMagnitude(for: technique.id) > 0 else {
+              thrown.value.extensionMagnitude(for: techniqueID) > 0 else {
             return nil
         }
         return (thrown.key, thrown.value)
     }
 
-    private func finish(
-        attempt: RecordedAttempt,
-        reference: ReferencePunch,
-        thrownSide: BodySide
-    ) async {
+    private func finishAggregated(_ aggregated: TechniqueScore) async {
         phase = .scoring
         statusMessage = "Scoring…"
 
-        guard let computed = scorer.score(
-            attempt: attempt,
-            reference: reference,
-            technique: technique,
-            thrownSide: thrownSide,
-            stance: stance
-        ) else {
-            // Refusing to score a bad capture is deliberate: a confident number built on
-            // interpolated motion would coach the user on a punch they never threw.
-            fail("Couldn't track the punch itself cleanly enough to score it. Throw when ready — guard at your cheeks is fine.")
-            return
-        }
-
-        score = computed
-        feedback = await feedbackGenerator.feedback(for: computed, technique: technique)
+        score = aggregated
+        feedback = await feedbackGenerator.feedback(for: aggregated, technique: technique)
 
         phase = .results
-        statusMessage = computed.wrongHand
-            ? "Round complete — that was your \(computed.thrownHandName) hand"
+        statusMessage = aggregated.wrongHand
+            ? "Round complete — that was your \(aggregated.thrownHandName) hand"
             : "Round complete"
     }
 
     // MARK: Helpers
 
+    private func landingWorldPosition(
+        reference: ReferencePunch,
+        side: BodySide,
+        solver: ArmPoseSolver,
+        frame: BodyFrame,
+        at referenceTime: TimeInterval
+    ) -> SIMD3<Float>? {
+        guard let sample = reference.sample(at: referenceTime) else { return nil }
+        return solver.denormalize(sample.fist, side: side, frame: frame)
+    }
+
+    private func spawnLandingTarget(
+        reference: ReferencePunch,
+        side: BodySide,
+        solver: ArmPoseSolver
+    ) {
+        guard let frame = currentBodyFrame(solver: solver),
+              let landing = landingWorldPosition(
+                reference: reference,
+                side: side,
+                solver: solver,
+                frame: frame,
+                at: reference.peakTime
+              ) else { return }
+        targets.spawnTarget(at: landing, radius: targetVisualRadius)
+    }
+
+    private func updateLandingTarget(
+        reference: ReferencePunch,
+        side: BodySide,
+        solver: ArmPoseSolver
+    ) {
+        guard let frame = currentBodyFrame(solver: solver),
+              let landing = landingWorldPosition(
+                reference: reference,
+                side: side,
+                solver: solver,
+                frame: frame,
+                at: reference.peakTime
+              ) else { return }
+        targets.updateActiveTargetPosition(landing)
+    }
+
     private func currentBodyFrame(solver: ArmPoseSolver) -> BodyFrame? {
         guard let head = hands.deviceTransform else { return nil }
         return solver.bodyFrame(headTransform: head)
+    }
+
+    private func bodyFrameForAttempt(solver: ArmPoseSolver, at time: TimeInterval) -> BodyFrame? {
+        if let frame = currentBodyFrame(solver: solver) {
+            cachedBodyFrame = frame
+            cachedBodyFrameTime = time
+            return frame
+        }
+        if let cachedBodyFrame, time - cachedBodyFrameTime <= bodyFrameCacheDuration {
+            return cachedBodyFrame
+        }
+        return nil
+    }
+
+    private func setCoaching(headline: String, detail: String, status: String? = nil) {
+        coachingHeadline = headline
+        coachingDetail = detail
+        if let status {
+            statusMessage = status
+        }
     }
 
     /// `true` = guard up, `false` = dropped, `nil` = guard hand not visible (do not pause).
@@ -708,6 +931,8 @@ final class AuraPunchSession {
         errorMessage = message
         statusMessage = "Couldn't complete the rep"
         phase = .idle
+        currentScoredPunch = 0
+        targets.removeActiveTarget()
         demoArm?.isVisible = false
         mirrorArm?.isVisible = false
     }

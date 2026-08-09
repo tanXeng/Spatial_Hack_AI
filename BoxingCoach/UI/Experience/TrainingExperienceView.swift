@@ -130,11 +130,14 @@ struct TrainingExperienceView: View {
 
     private var auraStatusLine: String {
         let aura = session.auraPunch
+        if aura.phase == .attempting, aura.currentScoredPunch > 0 {
+            return "Punch \(aura.currentScoredPunch) of \(aura.scoredPunchCount) — hit the target!"
+        }
         if aura.phase == .idle, aura.errorMessage == nil {
             if aura.statusMessage == "Stopped" {
                 return "Training stopped · Start again when you're ready"
             }
-            return "Stand facing forward with both hands up, then tap Start Rep"
+            return "Tap Start Rep when you're in guard"
         }
         return aura.statusMessage
     }

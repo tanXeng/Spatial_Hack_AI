@@ -885,6 +885,10 @@ nonisolated struct PunchEvidenceSideSelector: Sendable {
             resetSpeculation()
             return .invalid(.ambiguousHandSelection)
         }
+        if Self.hasCrossedWrongHandInvalids(events) {
+            resetSpeculation()
+            return .invalid(.ambiguousHandSelection)
+        }
 
         if var pendingSelection {
             if let selectedSide = selectableSides.first {
@@ -898,8 +902,20 @@ nonisolated struct PunchEvidenceSideSelector: Sendable {
                 }
             }
 
-            let invalidReasons = Self.invalidReasons(from: events)
-            if let reason = invalidReasons.first {
+            if let reason = Self.invalidReason(
+                for: pendingSelection.side,
+                from: events
+            ) {
+                resetSpeculation()
+                return .invalid(reason)
+            }
+            if let reason = Self.invalidReason(
+                for: pendingSelection.side.opposite,
+                from: events
+            ), !Self.isMirrorWrongHandInvalid(
+                reason,
+                pendingSide: pendingSelection.side
+            ) {
                 resetSpeculation()
                 return .invalid(reason)
             }
@@ -987,6 +1003,41 @@ nonisolated struct PunchEvidenceSideSelector: Sendable {
             guard case let .invalid(reason)? = events[side] else { return nil }
             return reason
         }
+    }
+
+    nonisolated private static func invalidReason(
+        for side: BodySide,
+        from events: [BodySide: PunchEvidenceValidator.Event]
+    ) -> PunchEvidenceValidator.InvalidReason? {
+        guard case let .invalid(reason)? = events[side] else { return nil }
+        return reason
+    }
+
+    /// The unselected speculative reducer sees the provisional fist as its "wrong" hand. That
+    /// mirror invalid is an artifact of dual speculation, not evidence against the selected chain.
+    nonisolated private static func isMirrorWrongHandInvalid(
+        _ reason: PunchEvidenceValidator.InvalidReason,
+        pendingSide: BodySide
+    ) -> Bool {
+        guard case let .wrongHand(expected, actual) = reason else { return false }
+        return expected == pendingSide.opposite && actual == pendingSide
+    }
+
+    /// If both speculative reducers report the other physical hand contacting, both fists crossed
+    /// the target in the same coherent window. Preserve that as typed ambiguity instead of leaking
+    /// whichever dictionary-ordered wrong-hand invalid happened to be inspected first.
+    nonisolated private static func hasCrossedWrongHandInvalids(
+        _ events: [BodySide: PunchEvidenceValidator.Event]
+    ) -> Bool {
+        for side in [BodySide.left, .right] {
+            guard let reason = invalidReason(for: side, from: events),
+                  case let .wrongHand(expected, actual) = reason,
+                  expected == side,
+                  actual == side.opposite else {
+                return false
+            }
+        }
+        return true
     }
 
     nonisolated private mutating func commitSelection(

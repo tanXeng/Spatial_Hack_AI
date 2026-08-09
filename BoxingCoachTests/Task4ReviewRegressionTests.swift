@@ -48,6 +48,18 @@ struct Task4ReviewRegressionTests {
                 lossDuration: 0.349
             ) == .resume(pausedDuration: 0.349)
         )
+        #expect(
+            CompetitionTrackingOutagePolicy.decision(
+                trackingAvailable: true,
+                lossDuration: 0.350
+            ) == .recover
+        )
+        #expect(
+            CompetitionTrackingOutagePolicy.decision(
+                trackingAvailable: true,
+                lossDuration: 0.351
+            ) == .recover
+        )
 
         let deadline = Date(timeIntervalSinceReferenceDate: 20)
         let resumed = CompetitionTrackingOutagePolicy.compensatedDeadline(
@@ -55,6 +67,24 @@ struct Task4ReviewRegressionTests {
             pausedDuration: 0.349
         )
         #expect(resumed.timeIntervalSinceReferenceDate == 20.349)
+    }
+
+    @Test("Competition elapsed time counts each tracking outage exactly once")
+    func competitionElapsedTimeExcludesCompleteOutagesWithoutDoubleCounting() {
+        var clock = CompetitionElapsedClock()
+
+        clock.beginPause(at: 1.000)
+        clock.beginPause(at: 1.100) // Repeated missing polls do not restart the outage.
+        #expect(abs(clock.endPause(at: 1.349) - 0.349) < 0.000_001)
+        #expect(clock.endPause(at: 1.500) == 0) // The same short outage cannot count twice.
+
+        clock.beginPause(at: 2.000)
+        clock.beginPause(at: 2.350) // Entering stable recovery keeps the original loss origin.
+        #expect(abs(clock.endPause(at: 2.700) - 0.700) < 0.000_001)
+        #expect(abs(clock.pausedDuration - 1.049) < 0.000_001)
+        #expect(
+            abs(clock.activeElapsed(startedAt: 0, endedAt: 5) - 3.951) < 0.000_001
+        )
     }
 
     @Test("A generic evidence retry retains the exact target position and entity")

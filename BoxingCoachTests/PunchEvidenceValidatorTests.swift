@@ -921,6 +921,99 @@ struct PunchEvidenceValidatorTests {
         #expect(selector.requiredHand == .left)
     }
 
+    @Test("A provisional fast contact commits and remains eligible for coverage admission")
+    func reactiveSelectionPreservesProvisionalContactThroughCoverage() {
+        var selector = PunchEvidenceSideSelector(
+            technique: .hook,
+            stance: .orthodox,
+            guardPositions: [.left: guardPosition, .right: guardPosition],
+            targetPosition: targetPosition,
+            targetRadius: targetRadius,
+            generation: 7,
+            continuityEpoch: 11
+        )
+
+        _ = selector.observe(frame(left: guardPosition, right: guardPosition, timestamp: 1.00))
+        #expect(
+            selector.observe(
+                asynchronousFrame(
+                    left: SIMD3<Float>(0, 0, 0.20),
+                    leftTimestamp: 1.050,
+                    right: guardPosition,
+                    rightTimestamp: 1.030
+                )
+            ) == .waiting
+        )
+        #expect(selector.trackingHand == .left)
+
+        #expect(
+            selector.observe(
+                asynchronousFrame(
+                    left: SIMD3<Float>(0, 0, 0.75),
+                    leftTimestamp: 1.060,
+                    right: guardPosition,
+                    rightTimestamp: 1.060
+                )
+            ) == .selected(side: .left, event: .contact)
+        )
+        #expect(selector.requiredHand == .left)
+        #expect(
+            selector.observe(
+                frame(left: guardPosition, right: guardPosition, timestamp: 1.100)
+            ) == .selected(side: .left, event: .readyForCoverage)
+        )
+
+        let completion = selector.complete(
+            coverage: .init(
+                trackedFraction: 0.95,
+                generation: 7,
+                continuityEpoch: 11
+            )
+        )
+        guard case let .selected(side, .validated(evidence)) = completion else {
+            Issue.record("Expected provisional contact to admit coverage, got \(completion)")
+            return
+        }
+        #expect(side == .left)
+        #expect(evidence.side == .left)
+        #expect(evidence.trackedFraction == 0.95)
+    }
+
+    @Test("Dual contact during provisional selection remains typed ambiguity")
+    func reactiveSelectionTypesProvisionalDualContactAsAmbiguous() {
+        var selector = PunchEvidenceSideSelector(
+            technique: .hook,
+            stance: .orthodox,
+            guardPositions: [.left: guardPosition, .right: guardPosition],
+            targetPosition: targetPosition,
+            targetRadius: targetRadius,
+            generation: 7,
+            continuityEpoch: 11
+        )
+
+        _ = selector.observe(frame(left: guardPosition, right: guardPosition, timestamp: 1.00))
+        _ = selector.observe(
+            asynchronousFrame(
+                left: SIMD3<Float>(0, 0, 0.20),
+                leftTimestamp: 1.050,
+                right: guardPosition,
+                rightTimestamp: 1.030
+            )
+        )
+
+        #expect(
+            selector.observe(
+                asynchronousFrame(
+                    left: SIMD3<Float>(0, 0, 0.75),
+                    leftTimestamp: 1.060,
+                    right: SIMD3<Float>(0, 0, 0.75),
+                    rightTimestamp: 1.060
+                )
+            ) == .invalid(.ambiguousHandSelection)
+        )
+        #expect(selector.requiredHand == nil)
+    }
+
     @Test("Invalid punch actions retry and cannot be deferred, scored, or ranked")
     func invalidAttemptPolicyNeverAdmitsSatisfyingFeedbackOrMetrics() throws {
         let reason = PunchEvidenceValidator.InvalidReason.missingRetraction

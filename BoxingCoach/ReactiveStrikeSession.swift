@@ -39,12 +39,10 @@ nonisolated enum CompetitionTrackingOutagePolicy {
         lossDuration: TimeInterval
     ) -> Decision {
         guard lossDuration.isFinite, lossDuration >= 0 else { return .recover }
-        if trackingAvailable {
-            return .resume(pausedDuration: lossDuration)
+        guard lossDuration < CompetitionTrackingRecoveryGate.lossGraceSeconds else {
+            return .recover
         }
-        return lossDuration >= CompetitionTrackingRecoveryGate.lossGraceSeconds
-            ? .recover
-            : .wait
+        return trackingAvailable ? .resume(pausedDuration: lossDuration) : .wait
     }
 
     static func compensatedDeadline(
@@ -53,6 +51,47 @@ nonisolated enum CompetitionTrackingOutagePolicy {
     ) -> Date {
         guard pausedDuration.isFinite, pausedDuration > 0 else { return deadline }
         return deadline.addingTimeInterval(pausedDuration)
+    }
+}
+
+/// Measures ranked active time from a monotonic clock while treating repeated loss polls and the
+/// subsequent stable-recovery gate as one pause. `beginPause` is idempotent until `endPause`, so a
+/// long outage keeps its original loss origin and cannot be double-counted when recovery begins.
+nonisolated struct CompetitionElapsedClock: Sendable {
+    private(set) var pausedDuration: TimeInterval = 0
+    private var pauseStartedAt: TimeInterval?
+
+    mutating func beginPause(at timestamp: TimeInterval) {
+        guard pauseStartedAt == nil, timestamp.isFinite, timestamp >= 0 else { return }
+        pauseStartedAt = timestamp
+    }
+
+    @discardableResult
+    mutating func endPause(at timestamp: TimeInterval) -> TimeInterval {
+        guard let pauseStartedAt,
+              timestamp.isFinite,
+              timestamp >= pauseStartedAt else {
+            return 0
+        }
+        let duration = timestamp - pauseStartedAt
+        let accumulated = pausedDuration + duration
+        guard accumulated.isFinite else { return 0 }
+        self.pauseStartedAt = nil
+        pausedDuration = accumulated
+        return duration
+    }
+
+    func activeElapsed(
+        startedAt: TimeInterval,
+        endedAt: TimeInterval
+    ) -> TimeInterval {
+        guard startedAt.isFinite,
+              endedAt.isFinite,
+              endedAt >= startedAt,
+              pausedDuration.isFinite else {
+            return 0
+        }
+        return max(0, endedAt - startedAt - pausedDuration)
     }
 }
 
@@ -153,7 +192,7 @@ final class ReactiveStrikeSession {
     private var capturesCompetitionEvidence = false
     private var calibrationOnly = false
     private var competitionStartedAt: TimeInterval?
-    private var competitionPausedDuration: TimeInterval = 0
+    private var competitionElapsedClock = CompetitionElapsedClock()
     private var trackingResumeRequested = false
     private let coachAudio: CoachAudioPlayer
     let voiceCoach: CoachVoiceCoach
@@ -307,7 +346,7 @@ final class ReactiveStrikeSession {
         competitionTrackingStatus = .complete
         competitionActiveElapsedTime = nil
         competitionStartedAt = nil
-        competitionPausedDuration = 0
+        competitionElapsedClock = CompetitionElapsedClock()
         competitionRequiresRecalibration = false
         wasStoppedBeforeCompletion = false
         guardPositionsBody.removeAll()
@@ -359,7 +398,7 @@ final class ReactiveStrikeSession {
         competitionTrackingStatus = .complete
         competitionActiveElapsedTime = nil
         competitionStartedAt = nil
-        competitionPausedDuration = 0
+        competitionElapsedClock = CompetitionElapsedClock()
         competitionRequiresRecalibration = false
         wasStoppedBeforeCompletion = false
         lastFeedback = "Ready"
@@ -492,9 +531,9 @@ final class ReactiveStrikeSession {
         targets.removeActiveTarget()
         clearAttemptState()
         if let startedAt = competitionStartedAt {
-            competitionActiveElapsedTime = max(
-                0,
-                ProcessInfo.processInfo.systemUptime - startedAt - competitionPausedDuration
+            competitionActiveElapsedTime = competitionElapsedClock.activeElapsed(
+                startedAt: startedAt,
+                endedAt: ProcessInfo.processInfo.systemUptime
             )
         }
         phase = .finished
@@ -834,6 +873,9 @@ final class ReactiveStrikeSession {
                     && hands.freshObservation(for: .right) != nil
                     && hands.deviceTransform != nil
                 if !hasFreshPair {
+                    competitionElapsedClock.beginPause(
+                        at: ProcessInfo.processInfo.systemUptime
+                    )
                     trackingLostAt = trackingLostAt ?? now
                     if now.timeIntervalSince(trackingLostAt!)
                         >= CompetitionTrackingRecoveryGate.lossGraceSeconds {
@@ -845,6 +887,9 @@ final class ReactiveStrikeSession {
                 }
                 if let trackingLostAt {
                     shiftAttemptStart(by: now.timeIntervalSince(trackingLostAt))
+                    competitionElapsedClock.endPause(
+                        at: ProcessInfo.processInfo.systemUptime
+                    )
                     lastTick = now
                 }
                 trackingLostAt = nil
@@ -1061,7 +1106,7 @@ final class ReactiveStrikeSession {
     private func recoverCompetitionTracking() async -> Bool {
         guard capturesCompetitionEvidence, phase == .running else { return false }
 
-        let pausedAt = ProcessInfo.processInfo.systemUptime
+        competitionElapsedClock.beginPause(at: ProcessInfo.processInfo.systemUptime)
         targets.removeActiveTarget()
         clearAttemptState()
         isTrackingPaused = true
@@ -1069,10 +1114,7 @@ final class ReactiveStrikeSession {
         lastFeedback = "Tracking paused · Hold both fists in guard and look forward"
 
         defer {
-            competitionPausedDuration += max(
-                0,
-                ProcessInfo.processInfo.systemUptime - pausedAt
-            )
+            competitionElapsedClock.endPause(at: ProcessInfo.processInfo.systemUptime)
             isTrackingPaused = false
             trackingReadyToResume = false
         }
@@ -1289,16 +1331,24 @@ final class ReactiveStrikeSession {
                         if let trackingLostAt {
                             let resumedAt = Date()
                             let lossDuration = resumedAt.timeIntervalSince(trackingLostAt)
-                            if case let .resume(pausedDuration) = CompetitionTrackingOutagePolicy
-                                .decision(
-                                    trackingAvailable: true,
-                                    lossDuration: lossDuration
-                                ) {
+                            switch CompetitionTrackingOutagePolicy.decision(
+                                trackingAvailable: true,
+                                lossDuration: lossDuration
+                            ) {
+                            case let .resume(pausedDuration):
                                 deadline = CompetitionTrackingOutagePolicy.compensatedDeadline(
                                     deadline,
                                     pausedDuration: pausedDuration
                                 )
                                 shiftAttemptStart(by: pausedDuration)
+                                competitionElapsedClock.endPause(
+                                    at: ProcessInfo.processInfo.systemUptime
+                                )
+                            case .recover:
+                                guard await recoverCompetitionTracking() else { return }
+                                continue evidenceRetryLoop
+                            case .wait:
+                                break
                             }
                         }
                         trackingLostAt = nil
@@ -1310,6 +1360,9 @@ final class ReactiveStrikeSession {
                         continue evidenceRetryLoop
                     case .competitionRecovery:
                         let now = Date()
+                        competitionElapsedClock.beginPause(
+                            at: ProcessInfo.processInfo.systemUptime
+                        )
                         trackingLostAt = trackingLostAt ?? now
                         let lossDuration = now.timeIntervalSince(trackingLostAt!)
                         if CompetitionTrackingOutagePolicy.decision(

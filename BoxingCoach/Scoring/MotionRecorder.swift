@@ -128,7 +128,7 @@ final class MotionRecorder {
         // includes seconds of cheek-height guard while the user waits to throw, and that pose
         // often sits in the Vision Pro's side/bottom camera blind spot. Counting those idle frames
         // against the 60 % threshold rejected technically fine punches with a tracking error.
-        // Guard discipline during the punch is scored separately via the guard-hand sub-metric.
+        // Guard discipline during the punch is coached live via `GuardCoach`, not scored here.
         let trackedFraction: Float
         if trimmed.isEmpty {
             trackedFraction = 0

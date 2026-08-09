@@ -1,7 +1,7 @@
 import Foundation
 import simd
 
-/// The five things a punch is graded on.
+/// The four things a punch is graded on (guard is coached live, not scored).
 ///
 /// Deliberately named and separated rather than collapsed into one number: "68/100" tells a
 /// beginner nothing they can act on, whereas "your elbow flared" is a thing they can go fix on
@@ -195,7 +195,6 @@ struct TechniqueScorer: Sendable {
             extensionMetric(attempt: attempt, reference: reference),
             pathMetric(alignment: alignment),
             elbowMetric(attempt: attempt, reference: reference, alignment: alignment),
-            guardMetric(attempt: attempt, reference: reference, alignment: alignment),
             retractionMetric(attempt: attempt, reference: reference)
         ]
 

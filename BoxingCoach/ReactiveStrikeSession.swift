@@ -42,6 +42,7 @@ final class ReactiveStrikeSession {
     let auraPunch: AuraPunchSession
 
     private let poseSolver = ArmPoseSolver()
+    private let measurements = BodyMeasurements.averageAdult
     private var calibratedReaches: [ReactiveStrikeMode: [BodySide: Float]] = [:]
     private var guardPositionsBody: [BodySide: SIMD3<Float>] = [:]
     private var drillTask: Task<Void, Never>?
@@ -424,10 +425,29 @@ final class ReactiveStrikeSession {
 
         beginAttempt(fistAtSpawn: hands.nearestFistPosition(to: worldPosition))
         lastFeedback = "Punch!"
-        let deadline = Date().addingTimeInterval(config.timeout)
+
+        var activeElapsed: TimeInterval = 0
+        var lastTick = Date()
 
         while !Task.isCancelled, phase == .running, activeAttemptID != nil {
-            if Date() >= deadline {
+            let now = Date()
+
+            if let punchingSide = nearestPunchingSide(to: worldPosition),
+               nonPunchingGuardStatus(punchingSide: punchingSide) == false {
+                lastFeedback = GuardCoach.waitMessage
+                lastTick = now
+                try? await Task.sleep(for: .milliseconds(16))
+                continue
+            }
+
+            if lastFeedback == GuardCoach.waitMessage {
+                lastFeedback = "Punch!"
+            }
+
+            activeElapsed += now.timeIntervalSince(lastTick)
+            lastTick = now
+
+            if activeElapsed >= config.timeout {
                 await finishAttempt(
                     result: .miss,
                     hitTime: nil,
@@ -749,5 +769,29 @@ final class ReactiveStrikeSession {
             )
         }
         return "Done · \(accuracyPercent)% accuracy"
+    }
+
+    private func nearestPunchingSide(to point: SIMD3<Float>) -> BodySide? {
+        switch (hands.leftFistPosition, hands.rightFistPosition) {
+        case let (left?, right?):
+            return distance(left, point) <= distance(right, point) ? .left : .right
+        case (nil, .some):
+            return .right
+        case (.some, nil):
+            return .left
+        case (nil, nil):
+            return nil
+        }
+    }
+
+    private func nonPunchingGuardStatus(punchingSide: BodySide) -> Bool? {
+        guard let frame = currentBodyFrame() else { return nil }
+        let guardSide = punchingSide.opposite
+        return GuardCoach.isGuardUp(
+            guardFistWorld: hands.observation(for: guardSide)?.fistPosition,
+            frame: frame,
+            measurements: measurements,
+            guardSide: guardSide
+        )
     }
 }

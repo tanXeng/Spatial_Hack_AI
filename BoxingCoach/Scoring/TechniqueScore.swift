@@ -229,8 +229,8 @@ struct TechniqueScorer: Sendable {
     /// someone for exceeding it would mostly be punishing them for having longer arms than
     /// `BodyMeasurements.averageAdult` assumes.
     private func extensionMetric(attempt: RecordedAttempt, reference: ReferencePunch) -> SubMetric {
-        let referencePeak = reference.samples.map(\.reachFraction).max() ?? 1
-        let attemptPeak = attempt.peakReach
+        let referencePeak = reference.extensionMagnitude
+        let attemptPeak = attempt.extensionMagnitude(for: reference.techniqueID)
         let shortfall = max(0, referencePeak - attemptPeak)
 
         let percent = referencePeak > 0 ? Int((attemptPeak / referencePeak * 100).rounded()) : 0

@@ -15,17 +15,53 @@ struct ReferencePunch: Sendable {
         samples.last?.time ?? 0
     }
 
+    /// The authored moment the punch lands.
+    ///
+    /// Most punches land at maximum shoulder-to-fist distance. An uppercut is the important
+    /// exception: loading beside the hip can be radially farther from the shoulder than the
+    /// centreline finish. Treating radial distance as its peak makes the guide hold at the hip and
+    /// play the actual strike during "bring it back," so its landing is the first highest sample.
+    private var peakSample: MotionSample? {
+        if techniqueID == Technique.uppercut.id,
+           let highestY = samples.map(\.fist.y).max() {
+            return samples.first { abs($0.fist.y - highestY) < 1e-5 }
+        }
+        return samples.max(by: { $0.reachFraction < $1.reachFraction })
+    }
+
     /// Reach at the moment of full extension. The follow-along guide holds the ghost here, and
     /// the user's own reach is judged against it rather than against a hardcoded 1.0 — a hook
     /// peaks near 0.70 by design, so an absolute threshold would be unreachable for it.
     var peakReach: Float {
-        samples.map(\.reachFraction).max() ?? 1
+        peakSample?.reachFraction ?? 1
+    }
+
+    /// Technique-aware magnitude used by the Extension sub-score. Straights and hooks retain their
+    /// radial shoulder-to-fist peak; an uppercut measures the ordered rise from its earlier hip load
+    /// to its later chin landing, because the load is actually farther from the shoulder radially.
+    var extensionMagnitude: Float {
+        PunchExtensionSemantics.magnitude(samples: samples, techniqueID: techniqueID)
     }
 
     /// Time of full extension — the boundary between the outward and return halves of the punch.
     var peakTime: TimeInterval {
-        guard let peak = samples.max(by: { $0.reachFraction < $1.reachFraction }) else { return 0 }
-        return peak.time
+        peakSample?.time ?? 0
+    }
+
+    /// Whether this sample should receive the guide's landing emphasis.
+    ///
+    /// Radial reach remains the useful cue for straights and hooks. For an uppercut it would also
+    /// light the radially longer hip load, so that punch instead checks full 3D proximity to the
+    /// semantic landing sample selected above.
+    func shouldEmphasize(_ sample: MotionSample) -> Bool {
+        if techniqueID == Technique.uppercut.id {
+            guard let landing = peakSample else { return false }
+            let distanceToLanding = simd_distance(sample.fist, landing.fist)
+            return distanceToLanding.isFinite && distanceToLanding <= 0.10
+        }
+
+        let emphasisThreshold = max(peakReach, 0.001) * 0.85
+        return sample.reachFraction.isFinite && sample.reachFraction >= emphasisThreshold
     }
 
     /// Interpolated pose at an arbitrary time. Used to drive the demo silhouette, which renders
@@ -102,7 +138,7 @@ enum ReferencePunchLibrary {
             return recorded
         }
 
-        let keyframes = keyframes(for: technique, side: side, measurements: measurements)
+        let keyframes = keyframes(for: technique, side: side)
         return ReferencePunch(
             techniqueID: technique.id,
             side: side,
@@ -121,10 +157,11 @@ enum ReferencePunchLibrary {
     //     for straights and ~0.70 for hooks — nobody hyperextends, and scoring against 1.0
     //     would mark a technically correct punch down.
 
+    /// Authored purely in normalized units — no `BodyMeasurements` needed. The uppercut briefly
+    /// took them to derive a centerline offset; `resample` still scales bone lengths per user.
     private static func keyframes(
         for technique: Technique,
-        side: BodySide,
-        measurements: BodyMeasurements
+        side: BodySide
     ) -> [ReferenceKeyframe] {
         let lateral = side.lateralSign
         let inward = -lateral
@@ -183,20 +220,38 @@ enum ReferencePunchLibrary {
                 ReferenceKeyframe(time: 0.58, fist: guardFist, elbowPole: elbowDown, guardHand: guardHand)
             ]
 
-        case "uppercut", "left-uppercut", "right-uppercut":
-            // Small dip, then drive upward. The elbow stays pinned near the ribs throughout —
-            // hence a pole pointing down and *inward* rather than down and outward. The peak X
-            // exactly cancels this side's half-shoulder offset, so both hands land on the same
-            // body centerline instead of remaining displaced left or right.
-            let elbowTucked = SIMD3<Float>(inward * 0.30, -1.0, -0.20)
-            let centerlineX = inward * (measurements.shoulderWidth * 0.5 / max(measurements.armReach, 1e-3))
-            let dipX = guardFist.x + (centerlineX - guardFist.x) * 0.55
+        case "uppercut":
+            // Drops to hip height on the punching side, then drives up and *inward* to finish
+            // near the body's centerline — where a real uppercut lands, on the opponent's chin.
+            // The diagonal is the punch: ~0.24 of inward travel across a ~0.98 climb, about 14°
+            // off vertical.
+            //
+            // Both ends have been wrong in a previous revision, in opposite directions, so keep
+            // them straight:
+            //
+            //   • The *load* must sit low and lateral. An early version loaded at the midline
+            //     barely below shoulder height, which read as the punch starting from the middle
+            //     of the chest.
+            //   • The *peak* must converge inward. Correcting the load by removing the inward
+            //     travel altogether over-corrected: the punch then rose vertically over its own
+            //     shoulder and read as being thrown out to the side.
+            //
+            // What actually caused the original sideways swing was the elbow, not the fist path:
+            // the pole pointed inward, nearly antiparallel to the direction of travel, so the IK
+            // stripped most of it away as the along-axis component and what survived drove the
+            // elbow about 2 cm *past* the centerline at shoulder height — the exact opposite of
+            // this punch's own "elbow close to your ribs" cue. Pointing the pole down, slightly
+            // outward and back keeps the elbow inside the body through the whole inward climb
+            // (it finishes ~4 cm short of the midline, below the shoulder).
+            let elbowTucked = SIMD3<Float>(lateral * 0.20, -1.0, -0.25)
+            let loaded = SIMD3<Float>(inward * 0.04, -0.62, 0.20)
+            let peak = SIMD3<Float>(inward * 0.28, 0.36, 0.42)
             return [
                 ReferenceKeyframe(time: 0.00, fist: guardFist, elbowPole: elbowTucked, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.14, fist: SIMD3(dipX, -0.08, 0.32), elbowPole: elbowTucked, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.34, fist: SIMD3(centerlineX, 0.48, 0.56), elbowPole: elbowTucked, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.44, fist: SIMD3(centerlineX, 0.46, 0.54), elbowPole: elbowTucked, guardHand: guardHand),
-                ReferenceKeyframe(time: 0.70, fist: guardFist, elbowPole: elbowTucked, guardHand: guardHand)
+                ReferenceKeyframe(time: 0.16, fist: loaded, elbowPole: elbowTucked, guardHand: guardHand),
+                ReferenceKeyframe(time: 0.36, fist: peak, elbowPole: elbowTucked, guardHand: guardHand),
+                ReferenceKeyframe(time: 0.46, fist: peak, elbowPole: elbowTucked, guardHand: guardHand),
+                ReferenceKeyframe(time: 0.72, fist: guardFist, elbowPole: elbowTucked, guardHand: guardHand)
             ]
 
         default:

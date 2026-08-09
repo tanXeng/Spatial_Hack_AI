@@ -330,6 +330,40 @@ struct TrainingAudioCoordinatorTests {
         #expect(capturingBackend.playedResources == [.coach(.pauseAck)])
     }
 
+    @Test("Failed safety playback recovery keeps Resume Audio visible")
+    func safetyRecoveryFailureRequiresExplicitRecovery() async {
+        let backend = RecordingTrainingAudioBackend()
+        backend.recoverPlaybackFailuresRemaining = 1
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: StubTrainingAudioResources(available: [.coach(.pauseAck)])
+        )
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
+        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .captureReady)
+
+        let outcome = coordinator.handleImmediately(.coachCue(.init(
+            kind: .safety,
+            clip: .pauseAck,
+            caption: "Stop now."
+        )))
+        let visibility = ImmersiveAudioControlVisibility(
+            allowsVoiceCoaching: false,
+            requiresExplicitRecovery: coordinator.presentation.requiresExplicitRecovery
+        )
+
+        #expect(outcome == .backendUnavailable)
+        #expect(coordinator.presentation.isCapturing == false)
+        #expect(coordinator.presentation.status == .awaitingExplicitRecovery)
+        #expect(coordinator.presentation.requiresExplicitRecovery)
+        #expect(coordinator.presentation.caption == "Stop now.")
+        #expect(visibility.showsPushToTalk == false)
+        #expect(visibility.showsRecoveryAction)
+
+        #expect(coordinator.handleImmediately(.audioRecoveryConfirmed) == .handled)
+        #expect(coordinator.presentation.requiresExplicitRecovery == false)
+        #expect(coordinator.presentation.status == .ready)
+    }
+
     @Test("Tracking and explicit audio recovery suppress narration without replacing safety captions")
     func pausedSafetyStatesBlockOrdinaryNarration() async {
         let backend = RecordingTrainingAudioBackend()
@@ -612,6 +646,85 @@ struct TrainingAudioCoordinatorTests {
         #expect(speechClient.isRecording == false)
         #expect(backend.commands.filter { $0 == .attachScene }.count == 1)
         #expect(backend.commands.filter { $0 == .detachScene }.count == 1)
+    }
+
+    @Test("The live immersive finalizer preserves capture owned by the restored window")
+    func immersiveFinalizerPreservesRestoredWindowCapture() async {
+        let backend = RecordingTrainingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: StubTrainingAudioResources()
+        )
+        let speechClient = RecordingSpeechRecognitionClient()
+        let session = ReactiveStrikeSession(
+            feedbackGenerator: MockFeedbackGenerator(),
+            audioCoordinator: coordinator,
+            speechClient: speechClient
+        )
+        let flow = TrainingFlowCoordinator()
+        flow.immersiveSceneDidBecomeReady(session: session)
+        session.controlWindowDidOpen()
+        session.voiceCoach.beginPushToTalk()
+        await speechClient.waitForStartCount(1)
+
+        flow.immersiveSceneDidClose(session: session)
+
+        #expect(session.isImmersiveSpaceOpen == false)
+        #expect(session.voiceCoach.isListening)
+        #expect(session.voiceCoach.isCaptureReady)
+        #expect(speechClient.isRecording)
+        #expect(coordinator.presentation.status == .capturing)
+        #expect(backend.commands.filter { $0 == .detachScene }.isEmpty)
+
+        session.controlWindowDidClose()
+    }
+
+    @Test("Starting training revokes window capture before the control scene disappears")
+    func trainingHandoffRevokesWindowCaptureWithoutDetachingAudio() async {
+        let backend = RecordingTrainingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: StubTrainingAudioResources()
+        )
+        let speechClient = RecordingSpeechRecognitionClient()
+        let session = ReactiveStrikeSession(
+            feedbackGenerator: MockFeedbackGenerator(),
+            audioCoordinator: coordinator,
+            speechClient: speechClient
+        )
+        let flow = TrainingFlowCoordinator()
+        let selection = TrainingSelection.reactive(
+            mode: .air,
+            combination: nil,
+            stance: .orthodox
+        )
+        flow.navigate(to: .experience(selection))
+        session.controlWindowDidOpen()
+        session.voiceCoach.beginPushToTalk()
+        await speechClient.waitForStartCount(1)
+        flow.immersiveSceneDidBecomeReady(session: session)
+        var hideCount = 0
+
+        await flow.startExperience(
+            selection,
+            session: session,
+            supportsMultipleScenes: true,
+            openImmersive: { _ in .opened },
+            dismissImmersive: {},
+            hideControlWindow: { hideCount += 1 }
+        )
+
+        #expect(hideCount == 1)
+        #expect(session.voiceCoach.isListening == false)
+        #expect(session.voiceCoach.isCaptureReady == false)
+        #expect(speechClient.isRecording == false)
+        #expect(coordinator.presentation.isCapturing == false)
+        #expect(backend.commands.filter { $0 == .endCapture }.count == 1)
+        #expect(backend.commands.filter { $0 == .attachScene }.count == 1)
+        #expect(backend.commands.filter { $0 == .detachScene }.isEmpty)
+
+        session.controlWindowDidClose()
+        flow.immersiveSceneDidClose(session: session)
     }
 
     @Test("Impact playback is capped at four simultaneous voices")

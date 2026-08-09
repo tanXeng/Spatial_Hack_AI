@@ -276,6 +276,10 @@ final class ReactiveStrikeSession {
         audioCoordinator.handleImmediately(.sceneDidDetach(.controlWindow))
     }
 
+    func prepareForTrainingStart() {
+        audioCoordinator.handleImmediately(.trainingWillBegin)
+    }
+
     @discardableResult
     func resumeAudio() -> TrainingAudioEventOutcome {
         audioCoordinator.handleImmediately(.audioRecoveryConfirmed)
@@ -414,11 +418,13 @@ final class ReactiveStrikeSession {
         }
     }
 
-    func stopDrill() {
+    func stopDrill(preservingVoiceCapture: Bool = false) {
         // Also covers a system-driven immersive dismissal. Aura Punch must stop here too or its
         // pose loop would keep running against tracking providers that no longer have a scene.
-        auraPunch.stop()
-        audioCoordinator.handleImmediately(.trainingDidStop)
+        auraPunch.stop(preservingVoiceCapture: preservingVoiceCapture)
+        audioCoordinator.handleImmediately(.trainingDidStop(
+            preservingVoiceCapture: preservingVoiceCapture
+        ))
 
         drillTask?.cancel()
         drillTask = nil

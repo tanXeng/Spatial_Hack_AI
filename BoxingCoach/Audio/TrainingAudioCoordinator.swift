@@ -167,8 +167,10 @@ final class TrainingAudioCoordinator {
             return handleSystemEvent(systemEvent)
         case .audioRecoveryConfirmed:
             return recoverAfterExplicitConfirmation()
-        case .trainingDidStop:
-            return stopTrainingAudio()
+        case .trainingWillBegin:
+            return prepareForTrainingStart()
+        case let .trainingDidStop(preservingVoiceCapture):
+            return stopTrainingAudio(preservingVoiceCapture: preservingVoiceCapture)
         case let .sceneDidDetach(owner):
             return detachScene(owner)
         }
@@ -327,7 +329,8 @@ final class TrainingAudioCoordinator {
                 backendReady = true
             } catch {
                 backendReady = false
-                presentation.status = .unavailable
+                presentation.status = .awaitingExplicitRecovery
+                presentation.requiresExplicitRecovery = true
                 Self.logger.error(
                     "Safety cue playback recovery failed: \(error.localizedDescription, privacy: .public)"
                 )
@@ -587,8 +590,24 @@ final class TrainingAudioCoordinator {
         return .handled
     }
 
-    private func stopTrainingAudio() -> TrainingAudioEventOutcome {
+    private func prepareForTrainingStart() -> TrainingAudioEventOutcome {
+        let coordinatorCaptureNeedsEnding = capturePreparation != nil || presentation.isCapturing
         captureRevocationHandler?()
+        guard sceneAttached else { return .ignoredWhileDetached }
+        guard coordinatorCaptureNeedsEnding else { return .handled }
+        return endVoiceCapture()
+    }
+
+    private func stopTrainingAudio(
+        preservingVoiceCapture: Bool
+    ) -> TrainingAudioEventOutcome {
+        if preservingVoiceCapture,
+           capturePreparation != nil || presentation.isCapturing {
+            return .handled
+        }
+        if !preservingVoiceCapture {
+            captureRevocationHandler?()
+        }
         guard sceneAttached else { return .ignoredWhileDetached }
         generation &+= 1
         let wasCapturing = presentation.isCapturing

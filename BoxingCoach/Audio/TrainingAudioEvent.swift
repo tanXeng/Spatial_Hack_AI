@@ -121,7 +121,8 @@ nonisolated enum TrainingAudioEvent: Equatable, Sendable {
     case voiceCaptureDidEnd
     case audioSystemEvent(TrainingAudioSystemEvent)
     case audioRecoveryConfirmed
-    case trainingDidStop
+    case trainingWillBegin
+    case trainingDidStop(preservingVoiceCapture: Bool)
     case sceneDidDetach(TrainingAudioSceneOwner)
 }
 

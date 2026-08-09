@@ -203,6 +203,7 @@ final class TrainingFlowCoordinator {
 
         // Apply the committed selection only after the scene is usable. A failed retry therefore
         // leaves the previous score/results intact instead of erasing useful feedback.
+        session.prepareForTrainingStart()
         switch selection {
         case .reactive(let mode, let combination, let stance):
             session.configure(mode: mode, combination: combination, stance: stance)
@@ -376,7 +377,7 @@ final class TrainingFlowCoordinator {
         guard immersiveState != .closed || session.isImmersiveSpaceOpen else { return }
         immersiveState = .closed
         session.immersiveSpaceDidClose()
-        session.stopDrill()
+        session.stopDrill(preservingVoiceCapture: true)
         session.hands.stop()
     }
 }

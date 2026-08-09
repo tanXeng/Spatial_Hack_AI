@@ -7,6 +7,22 @@ nonisolated struct SpeechRecognitionResult: Sendable, Equatable {
     var duration: TimeInterval
 }
 
+nonisolated struct SpeechRecognitionSessionUpdate: Sendable, Equatable {
+    let transcript: String?
+    let isFinal: Bool
+}
+
+@MainActor
+protocol SpeechRecognitionSessionBackend: AnyObject {
+    var isAvailable: Bool { get }
+
+    func start(
+        updateHandler: @escaping @MainActor @Sendable (SpeechRecognitionSessionUpdate) -> Void
+    ) throws
+    func finishAudio()
+    func cancel()
+}
+
 @MainActor
 protocol SpeechRecognizing: AnyObject {
     func requestPermissions() async -> Bool
@@ -15,45 +31,23 @@ protocol SpeechRecognizing: AnyObject {
     func cancel()
 }
 
-/// On-device speech-to-text for push-to-talk voice commands.
+/// Owns the framework objects for one speech-recognition stream. The semantic client binds every
+/// callback from this backend to the capture generation that created it.
 @MainActor
-final class SpeechRecognitionClient: SpeechRecognizing {
+final class SystemSpeechRecognitionSessionBackend: SpeechRecognitionSessionBackend {
     private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private let audioEngine = AVAudioEngine()
     private var request: SFSpeechAudioBufferRecognitionRequest?
     private var recognitionTask: SFSpeechRecognitionTask?
-    private var startedAt: Date?
-    private var latestTranscript = ""
-    private var receivedFinal = false
     private var hasInstalledTap = false
-    private(set) var isRecording = false
 
-    func requestPermissions() async -> Bool {
-        let speechStatus = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status)
-            }
-        }
-        guard speechStatus == .authorized else { return false }
-
-        let micStatus = await withCheckedContinuation { continuation in
-            AVAudioApplication.requestRecordPermission { granted in
-                continuation.resume(returning: granted)
-            }
-        }
-        return micStatus
+    var isAvailable: Bool {
+        speechRecognizer?.isAvailable == true
     }
 
-    func start() throws {
-        guard speechRecognizer?.isAvailable == true else {
-            throw SpeechError.recognizerUnavailable
-        }
-        guard !isRecording else { return }
-
-        latestTranscript = ""
-        receivedFinal = false
-        startedAt = Date()
-
+    func start(
+        updateHandler: @escaping @MainActor @Sendable (SpeechRecognitionSessionUpdate) -> Void
+    ) throws {
         let request = SFSpeechAudioBufferRecognitionRequest()
         request.shouldReportPartialResults = true
         self.request = request
@@ -61,40 +55,58 @@ final class SpeechRecognitionClient: SpeechRecognizing {
         let inputNode = audioEngine.inputNode
         let recordingFormat = Self.recordingFormat(for: inputNode)
         removeInputTapIfNeeded()
-        try inputNode.installAudioTap(
-            onBus: 0,
-            bufferSize: 1024,
-            format: recordingFormat,
-            tapProvider: { buffer, _ in
-                guard let writable = Self.writableCopy(of: buffer) else { return }
-                request.append(writable)
-            }
-        )
-        hasInstalledTap = true
-
-        audioEngine.prepare()
         do {
+            try inputNode.installAudioTap(
+                onBus: 0,
+                bufferSize: 1024,
+                format: recordingFormat,
+                tapProvider: { buffer, _ in
+                    guard let writable = Self.writableCopy(of: buffer) else { return }
+                    request.append(writable)
+                }
+            )
+            hasInstalledTap = true
+
+            audioEngine.prepare()
             try audioEngine.start()
         } catch {
-            removeInputTapIfNeeded()
-            finishRecognitionTask()
+            cancel()
             throw error
         }
-        isRecording = true
 
-        recognitionTask = speechRecognizer?.recognitionTask(with: request) { [weak self] result, error in
+        recognitionTask = speechRecognizer?.recognitionTask(with: request) { result, error in
+            let update = SpeechRecognitionSessionUpdate(
+                transcript: result?.bestTranscription.formattedString,
+                isFinal: result?.isFinal == true || error != nil
+            )
             Task { @MainActor in
-                guard let self else { return }
-                if let result {
-                    self.latestTranscript = result.bestTranscription.formattedString
-                    if result.isFinal {
-                        self.receivedFinal = true
-                    }
-                } else if error != nil {
-                    self.receivedFinal = true
-                }
+                updateHandler(update)
             }
         }
+    }
+
+    func finishAudio() {
+        request?.endAudio()
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        removeInputTapIfNeeded()
+    }
+
+    func cancel() {
+        recognitionTask?.cancel()
+        recognitionTask = nil
+        request = nil
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        removeInputTapIfNeeded()
+    }
+
+    private func removeInputTapIfNeeded() {
+        guard hasInstalledTap else { return }
+        audioEngine.inputNode.removeTap(onBus: 0)
+        hasInstalledTap = false
     }
 
     nonisolated private static func writableCopy(
@@ -127,60 +139,6 @@ final class SpeechRecognitionClient: SpeechRecognizing {
         return copy
     }
 
-    func stop() async -> SpeechRecognitionResult {
-        let duration = startedAt.map { Date().timeIntervalSince($0) } ?? 0
-        guard isRecording else {
-            return SpeechRecognitionResult(transcript: "", duration: duration)
-        }
-
-        isRecording = false
-        request?.endAudio()
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
-        removeInputTapIfNeeded()
-
-        let deadline = ContinuousClock.now + .milliseconds(1_000)
-        while !receivedFinal, ContinuousClock.now < deadline {
-            do {
-                try await Task.sleep(for: .milliseconds(50))
-            } catch {
-                cancel()
-                return SpeechRecognitionResult(transcript: "", duration: duration)
-            }
-        }
-
-        let transcript = latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
-        finishRecognitionTask()
-        startedAt = nil
-
-        return SpeechRecognitionResult(transcript: transcript, duration: duration)
-    }
-
-    func cancel() {
-        isRecording = false
-        finishRecognitionTask()
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
-        removeInputTapIfNeeded()
-        latestTranscript = ""
-        receivedFinal = false
-        startedAt = nil
-    }
-
-    private func finishRecognitionTask() {
-        recognitionTask?.cancel()
-        recognitionTask = nil
-        request = nil
-    }
-
-    private func removeInputTapIfNeeded() {
-        guard hasInstalledTap else { return }
-        audioEngine.inputNode.removeTap(onBus: 0)
-        hasInstalledTap = false
-    }
-
     private static func recordingFormat(for inputNode: AVAudioInputNode) -> AVAudioFormat {
         let outputFormat = inputNode.outputFormat(forBus: 0)
         if outputFormat.sampleRate > 0 {
@@ -191,6 +149,119 @@ final class SpeechRecognitionClient: SpeechRecognizing {
             return inputFormat
         }
         return AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
+    }
+}
+
+/// On-device speech-to-text for push-to-talk voice commands.
+@MainActor
+final class SpeechRecognitionClient: SpeechRecognizing {
+    private let backend: any SpeechRecognitionSessionBackend
+    private var startedAt: Date?
+    private var latestTranscript = ""
+    private var receivedFinal = false
+    private var nextCaptureGeneration: UInt64 = 0
+    private var activeCaptureGeneration: UInt64?
+    private(set) var isRecording = false
+
+    convenience init() {
+        self.init(backend: SystemSpeechRecognitionSessionBackend())
+    }
+
+    init(backend: any SpeechRecognitionSessionBackend) {
+        self.backend = backend
+    }
+
+    func requestPermissions() async -> Bool {
+        let speechStatus = await withCheckedContinuation { continuation in
+            SFSpeechRecognizer.requestAuthorization { status in
+                continuation.resume(returning: status)
+            }
+        }
+        guard speechStatus == .authorized else { return false }
+
+        let micStatus = await withCheckedContinuation { continuation in
+            AVAudioApplication.requestRecordPermission { granted in
+                continuation.resume(returning: granted)
+            }
+        }
+        return micStatus
+    }
+
+    func start() throws {
+        guard backend.isAvailable else {
+            throw SpeechError.recognizerUnavailable
+        }
+        guard activeCaptureGeneration == nil else { return }
+
+        nextCaptureGeneration &+= 1
+        let captureGeneration = nextCaptureGeneration
+        activeCaptureGeneration = captureGeneration
+        latestTranscript = ""
+        receivedFinal = false
+        startedAt = Date()
+
+        do {
+            try backend.start { [weak self] update in
+                guard let self,
+                      self.activeCaptureGeneration == captureGeneration else { return }
+                if let transcript = update.transcript {
+                    self.latestTranscript = transcript
+                }
+                if update.isFinal {
+                    self.receivedFinal = true
+                }
+            }
+            isRecording = true
+        } catch {
+            activeCaptureGeneration = nil
+            backend.cancel()
+            latestTranscript = ""
+            receivedFinal = false
+            startedAt = nil
+            throw error
+        }
+    }
+
+    func stop() async -> SpeechRecognitionResult {
+        let duration = startedAt.map { Date().timeIntervalSince($0) } ?? 0
+        guard isRecording,
+              let captureGeneration = activeCaptureGeneration else {
+            return SpeechRecognitionResult(transcript: "", duration: duration)
+        }
+
+        isRecording = false
+        backend.finishAudio()
+
+        let deadline = ContinuousClock.now + .milliseconds(1_000)
+        while activeCaptureGeneration == captureGeneration,
+              !receivedFinal,
+              ContinuousClock.now < deadline {
+            do {
+                try await Task.sleep(for: .milliseconds(50))
+            } catch {
+                cancel()
+                return SpeechRecognitionResult(transcript: "", duration: duration)
+            }
+        }
+
+        guard activeCaptureGeneration == captureGeneration else {
+            return SpeechRecognitionResult(transcript: "", duration: duration)
+        }
+        let transcript = latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
+        activeCaptureGeneration = nil
+        backend.cancel()
+        startedAt = nil
+
+        return SpeechRecognitionResult(transcript: transcript, duration: duration)
+    }
+
+    func cancel() {
+        activeCaptureGeneration = nil
+        isRecording = false
+        backend.cancel()
+        latestTranscript = ""
+        receivedFinal = false
+        startedAt = nil
     }
 
     enum SpeechError: LocalizedError {

@@ -19,6 +19,7 @@ nonisolated struct TrainingTrack: Identifiable, Hashable, Sendable, Codable {
     let demonstrationRate: Float
     let guidedRehearsalCount: Int
     let explanationDetail: ExplanationDetail
+    let usesTimerPressure: Bool
     let scoringPolicy: ScoringPolicy
 
     private static let sharedScoringPolicy = ScoringPolicy(
@@ -34,6 +35,7 @@ nonisolated struct TrainingTrack: Identifiable, Hashable, Sendable, Codable {
         demonstrationRate: 0.65,
         guidedRehearsalCount: 3,
         explanationDetail: .plainLanguage,
+        usesTimerPressure: false,
         scoringPolicy: sharedScoringPolicy
     )
 
@@ -44,6 +46,7 @@ nonisolated struct TrainingTrack: Identifiable, Hashable, Sendable, Codable {
         demonstrationRate: 0.85,
         guidedRehearsalCount: 5,
         explanationDetail: .technical,
+        usesTimerPressure: false,
         scoringPolicy: sharedScoringPolicy
     )
 }

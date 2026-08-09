@@ -41,8 +41,16 @@ struct BoxingCoachRootView: View {
                         onBack: flow.backFromSetup
                     )
 
-                case .auraSetup:
+                case .auraTrackSetup:
+                    AuraTrackSetupView(
+                        controlsDisabled: flow.controlsDisabled,
+                        onSelect: flow.chooseAuraTrack,
+                        onBack: flow.backFromSetup
+                    )
+
+                case .auraSetup(let track):
                     AuraSetupView(
+                        track: track,
                         stance: flow.draftStance,
                         controlsDisabled: flow.controlsDisabled,
                         onStanceChange: flow.setDraftStance,
@@ -294,7 +302,7 @@ struct BoxingCoachRootView: View {
                 drillPhase: .idle,
                 techniqueName: nil
             ))
-        case .auraSetup:
+        case .auraTrackSetup, .auraSetup:
             session.voiceCoach.updateContext(CoachVoiceContext(
                 feature: .auraPunch,
                 auraPhase: .idle,
@@ -303,7 +311,7 @@ struct BoxingCoachRootView: View {
             ))
         case .experience(let selection):
             switch selection {
-            case .aura(let technique, _):
+            case .aura(_, let technique, _):
                 session.voiceCoach.updateContext(CoachVoiceContext(
                     feature: .auraPunch,
                     auraPhase: session.auraPunch.phase,

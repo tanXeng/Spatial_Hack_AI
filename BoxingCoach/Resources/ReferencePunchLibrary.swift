@@ -135,19 +135,66 @@ enum ReferencePunchLibrary {
         for technique: Technique,
         stance: Stance,
         measurements: BodyMeasurements,
-        side overrideSide: BodySide? = nil
+        side overrideSide: BodySide? = nil,
+        conservativeReach: Float? = nil
     ) -> ReferencePunch {
         let side = overrideSide ?? technique.hand.side(for: stance)
 
         if let recorded = recordedPunch(for: technique, side: side) {
-            return recorded
+            return fitted(
+                recorded,
+                measurements: measurements,
+                conservativeReach: conservativeReach
+            )
         }
 
         let keyframes = keyframes(for: technique, side: side)
-        return ReferencePunch(
+        return fitted(
+            ReferencePunch(
             techniqueID: technique.id,
             side: side,
             samples: resample(keyframes, side: side, measurements: measurements)
+            ),
+            measurements: measurements,
+            conservativeReach: conservativeReach
+        )
+    }
+
+    /// Fits every authored joint/path sample at or inside the shorter measured arm extension.
+    /// A longer measurement never enlarges the estimated skeleton; a shorter one scales the
+    /// reference uniformly, preserving shape while keeping both hero punches comfortably inside
+    /// measured reach.
+    private static func fitted(
+        _ reference: ReferencePunch,
+        measurements: BodyMeasurements,
+        conservativeReach: Float?
+    ) -> ReferencePunch {
+        guard let conservativeReach,
+              conservativeReach.isFinite,
+              conservativeReach > 0,
+              measurements.armReach.isFinite,
+              measurements.armReach > 0,
+              let authoredMaximum = reference.samples.map(\.reachFraction).max(),
+              authoredMaximum.isFinite,
+              authoredMaximum > 0
+        else { return reference }
+
+        let normalizedLimit = conservativeReach / measurements.armReach
+        let scale = min(1, normalizedLimit / authoredMaximum)
+        guard scale < 1 else { return reference }
+
+        return ReferencePunch(
+            techniqueID: reference.techniqueID,
+            side: reference.side,
+            samples: reference.samples.map { sample in
+                MotionSample(
+                    time: sample.time,
+                    fist: sample.fist * scale,
+                    elbow: sample.elbow * scale,
+                    guardHand: sample.guardHand.map { $0 * scale },
+                    isTracked: sample.isTracked
+                )
+            }
         )
     }
 

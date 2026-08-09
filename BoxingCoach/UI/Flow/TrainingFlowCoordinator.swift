@@ -25,7 +25,7 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 
 enum TrainingSelection: Hashable, Sendable {
     case reactive(mode: ReactiveStrikeMode, combination: Combination?, stance: Stance)
-    case aura(technique: Technique, stance: Stance)
+    case aura(track: TrainingTrack, technique: Technique, stance: Stance)
     case reachCalibration
     case competitionCalibration(playerID: UUID)
     case competition(playerID: UUID, mode: CompetitionMode, stance: Stance, reach: BilateralReach)
@@ -43,7 +43,8 @@ enum TrainingFlowRoute: Hashable, Sendable {
     case features
     case reactiveSetup
     case combinationSetup
-    case auraSetup
+    case auraTrackSetup
+    case auraSetup(TrainingTrack)
     case experience(TrainingSelection)
 }
 
@@ -86,6 +87,7 @@ final class TrainingFlowCoordinator {
     private(set) var draftStance: Stance = .orthodox
     private(set) var commandGeneration: UInt64 = 1
     private(set) var pendingVoiceConfirmation: TrainingCommandConfirmation?
+    private(set) var draftTrack: TrainingTrack = .firstRound
 
     private var immersiveState: ImmersiveSceneState = .closed
     private var isControlWindowVisible = false
@@ -117,7 +119,7 @@ final class TrainingFlowCoordinator {
         case .reactiveStrike:
             setRoute(.reactiveSetup)
         case .auraPunch:
-            setRoute(.auraSetup)
+            setRoute(.auraTrackSetup)
         }
     }
 
@@ -152,10 +154,21 @@ final class TrainingFlowCoordinator {
         ))
     }
 
-    func chooseAuraTechnique(_ technique: Technique) {
-        guard transition == .idle, technique.isImplemented else { return }
+    func chooseAuraTrack(_ track: TrainingTrack) {
+        guard transition == .idle else { return }
         presentationError = nil
-        setRoute(.experience(.aura(technique: technique, stance: draftStance)))
+        draftTrack = track
+        setRoute(.auraSetup(track))
+    }
+
+    func chooseAuraTechnique(_ technique: Technique) {
+        guard transition == .idle,
+              technique.isImplemented,
+              route == .auraSetup(draftTrack) else { return }
+        presentationError = nil
+        setRoute(.experience(
+            .aura(track: draftTrack, technique: technique, stance: draftStance)
+        ))
     }
 
     func backFromSetup() {
@@ -163,6 +176,8 @@ final class TrainingFlowCoordinator {
         presentationError = nil
         if route == .combinationSetup {
             setRoute(.reactiveSetup)
+        } else if case .auraSetup = route {
+            setRoute(.auraTrackSetup)
         } else {
             setRoute(.features)
         }
@@ -227,10 +242,12 @@ final class TrainingFlowCoordinator {
             }
             session.startDrill()
 
-        case .aura(let technique, let stance):
+        case .aura(let track, let technique, let stance):
+            session.auraPunch.track = track
             session.auraPunch.technique = technique
             session.auraPunch.stance = stance
             session.auraPunch.reset()
+            session.auraPunch.persistedReach = BilateralReach(session.latestCalibratedReaches)
             session.auraPunch.start()
 
         case .reachCalibration:
@@ -335,10 +352,11 @@ final class TrainingFlowCoordinator {
             draftStance = stance
             session.resetForNewRound()
             setRoute(mode == .combination ? .combinationSetup : .reactiveSetup)
-        case .aura(_, let stance):
+        case .aura(let track, _, let stance):
             draftStance = stance
+            draftTrack = track
             session.auraPunch.reset()
-            setRoute(.auraSetup)
+            setRoute(.auraSetup(track))
 
         case .reachCalibration, .competitionCalibration, .competition:
             session.resetForNewRound()

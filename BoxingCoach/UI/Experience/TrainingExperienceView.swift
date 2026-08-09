@@ -29,8 +29,8 @@ struct TrainingExperienceView: View {
         switch selection {
         case .reactive(let mode, let combination, let stance):
             reactiveExperience(mode: mode, combination: combination, stance: stance)
-        case .aura(let technique, let stance):
-            auraExperience(technique: technique, stance: stance)
+        case .aura(let track, let technique, let stance):
+            auraExperience(track: track, technique: technique, stance: stance)
         case .reachCalibration:
             reachCalibrationExperience(backLabel: "Home")
         case .competitionCalibration:
@@ -103,13 +103,17 @@ struct TrainingExperienceView: View {
         }
     }
 
-    private func auraExperience(technique: Technique, stance: Stance) -> some View {
+    private func auraExperience(
+        track: TrainingTrack,
+        technique: Technique,
+        stance: Stance
+    ) -> some View {
         let aura = session.auraPunch
 
         return TrainingDetailScaffold(
             backLabel: "Change Technique",
             title: technique.name,
-            subtitle: "\(stance.title) · \(technique.hand.requirementDescription(for: stance))",
+            subtitle: "\(track.title) · \(stance.title) · \(technique.hand.requirementDescription(for: stance))",
             controlsDisabled: controlsDisabled,
             onBack: onChangeSelection
         ) {
@@ -120,7 +124,12 @@ struct TrainingExperienceView: View {
                     PunchExtensionMeter(value: aura.liveReach)
                 }
 
-                if aura.phase == .results, let score = aura.score {
+                if aura.phase == .results, let proof = aura.proofMetric {
+                    auraProofCard(proof)
+                    if let feedback = aura.feedback {
+                        auraFeedbackCard(feedback)
+                    }
+                } else if aura.phase == .results, let score = aura.score {
                     if let feedback = aura.feedback {
                         switch AuraResultPresentation(feedback: feedback) {
                         case .score:
@@ -186,7 +195,9 @@ struct TrainingExperienceView: View {
     private var auraStatusLine: String {
         let aura = session.auraPunch
         if aura.phase == .attempting, aura.currentScoredPunch > 0 {
-            return "Punch \(aura.currentScoredPunch) of \(aura.scoredPunchCount) — hit the target!"
+            return [aura.cyclePresentation.progress, aura.cyclePresentation.instruction]
+                .compactMap { $0 }
+                .joined(separator: " · ")
         }
         if aura.phase == .idle, aura.errorMessage == nil {
             if aura.statusMessage == "Stopped" {
@@ -195,6 +206,42 @@ struct TrainingExperienceView: View {
             return "Tap Start Rep when you're in guard"
         }
         return aura.statusMessage
+    }
+
+    private func auraProofCard(_ proof: CoachingProofMetric) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Like-for-like proof")
+                .font(.headline)
+
+            LabeledMetricRow(
+                title: proof.kind.title,
+                value: "\(Int(proof.baseline.rounded())) → \(Int(proof.retest.rounded()))"
+            )
+            LabeledMetricRow(
+                title: "Change",
+                value: proof.delta > 0
+                    ? "+\(Int(proof.delta.rounded()))"
+                    : "\(Int(proof.delta.rounded()))"
+            )
+            LabeledMetricRow(
+                title: "Tracking",
+                value: "\(Int((proof.trackedFraction * 100).rounded()))%"
+            )
+            Text("Evidence: \(proof.evidenceLabel.rawValue)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Text(proof.sourceBadge)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(proof.kind.title) proof")
+        .accessibilityValue(
+            "Baseline \(Int(proof.baseline.rounded())), retest \(Int(proof.retest.rounded())), change \(Int(proof.delta.rounded())), \(Int((proof.trackedFraction * 100).rounded())) percent tracked, \(proof.evidenceLabel.rawValue)"
+        )
     }
 
     private var reactiveResultsCard: some View {

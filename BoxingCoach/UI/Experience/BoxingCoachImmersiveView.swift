@@ -123,8 +123,10 @@ struct BoxingCoachImmersiveView: View {
                 .tint(.red)
                 .controlSize(isAuraExperience ? .large : .regular)
                 .font(isAuraExperience ? .title3.weight(.semibold) : .body)
+                .frame(minWidth: 60, minHeight: 60)
                 .disabled(flow.controlsDisabled)
                 .accessibilityHint("Ends the current training session and returns to results")
+                .accessibilityInputLabels(["End Training", "Stop Training"])
                 .padding(isAuraExperience ? 18 : 14)
                 .glassBackgroundEffect()
             }
@@ -224,7 +226,7 @@ struct BoxingCoachImmersiveView: View {
 
     private func refreshVoiceCoachContext() {
         switch flow.route {
-        case .experience(.aura(let technique, _)):
+        case .experience(.aura(_, let technique, _)):
             session.voiceCoach.updateContext(CoachVoiceContext(
                 feature: .auraPunch,
                 auraPhase: session.auraPunch.phase,
@@ -268,10 +270,11 @@ struct BoxingCoachImmersiveView: View {
 
     private var auraBannerStyle: ImmersiveInstructionBannerStyle {
         guard isAuraExperience else { return .compact }
-        switch session.auraPunch.phase {
-        case .guiding, .countdown, .attempting:
+        switch session.auraPunch.learningStage {
+        case .learnWatch, .learnOutbound, .learnLanding, .learnReturn,
+             .guidedRehearsal, .baseline, .correctiveDrill, .retest, .transfer:
             return .coaching
-        default:
+        case .fit, .correction, .proof, .complete:
             return .prominent
         }
     }
@@ -313,8 +316,19 @@ struct BoxingCoachImmersiveView: View {
 
     private var currentInstruction: ImmersiveInstruction {
         switch flow.route {
-        case .experience(.aura(let technique, _)):
+        case .experience(.aura(_, let technique, _)):
             let action = technique.name.lowercased()
+            let aura = session.auraPunch
+            if aura.isTrackingPaused {
+                return ImmersiveInstruction(
+                    stage: "TRACKING PAUSED",
+                    message: "Hold both closed fists in guard and look forward",
+                    symbol: "pause.circle.fill",
+                    action: "Recover tracking",
+                    progress: aura.cyclePresentation.progress,
+                    metric: nil
+                )
+            }
             switch session.auraPunch.phase {
             case .idle:
                 if session.auraPunch.statusMessage == "Stopped" {
@@ -336,16 +350,26 @@ struct BoxingCoachImmersiveView: View {
                     symbol: "hand.raised.fill"
                 )
             case .guiding, .countdown, .attempting:
+                let presentation = aura.cyclePresentation
                 return ImmersiveInstruction(
-                    stage: session.auraPunch.coachingHeadline,
-                    message: session.auraPunch.coachingDetail,
-                    symbol: auraCoachingSymbol
+                    stage: presentation.stage,
+                    message: aura.coachingDetail,
+                    symbol: auraCoachingSymbol,
+                    action: presentation.action,
+                    progress: presentation.progress,
+                    metric: presentation.metric
                 )
             case .scoring:
+                let presentation = aura.cyclePresentation
                 return ImmersiveInstruction(
-                    stage: "REP COMPLETE",
-                    message: "Hold your guard while we score your \(action)",
-                    symbol: "waveform.path.ecg"
+                    stage: presentation.stage,
+                    message: aura.coachingDetail.isEmpty
+                        ? "Hold your guard while we compare your \(action)"
+                        : aura.coachingDetail,
+                    symbol: "waveform.path.ecg",
+                    action: presentation.action,
+                    progress: presentation.progress,
+                    metric: presentation.metric
                 )
             case .results:
                 return ImmersiveInstruction(
@@ -374,14 +398,17 @@ struct BoxingCoachImmersiveView: View {
     }
 
     private var auraCoachingSymbol: String {
-        switch session.auraPunch.phase {
-        case .guiding:
+        switch session.auraPunch.learningStage {
+        case .learnWatch:
             return "eye.fill"
-        case .countdown:
-            return "timer"
-        case .attempting:
-            return "figure.boxing"
-        default:
+        case .correction, .correctiveDrill:
+            return "scope"
+        case .proof, .complete:
+            return "chart.line.uptrend.xyaxis"
+        case .fit:
+            return "ruler"
+        case .learnOutbound, .learnLanding, .learnReturn, .guidedRehearsal,
+             .baseline, .retest, .transfer:
             return "figure.boxing"
         }
     }

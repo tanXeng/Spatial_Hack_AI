@@ -145,7 +145,46 @@ struct CombinationSetupView: View {
     }
 }
 
+struct AuraTrackSetupView: View {
+    let controlsDisabled: Bool
+    let onSelect: (TrainingTrack) -> Void
+    let onBack: () -> Void
+
+    private let tracks: [TrainingTrack] = [.firstRound, .technicalCamp]
+
+    var body: some View {
+        TrainingDetailScaffold(
+            backLabel: "Features",
+            title: "Choose Your Track",
+            subtitle: "Your track changes coaching pace and wording, never scoring",
+            controlsDisabled: controlsDisabled,
+            onBack: onBack
+        ) {
+            VStack(spacing: 12) {
+                ForEach(tracks) { track in
+                    Button {
+                        onSelect(track)
+                    } label: {
+                        selectionRow(
+                            title: track.title,
+                            subtitle: track.introCopy
+                        )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(controlsDisabled)
+                    .frame(minHeight: 60)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(track.title), \(track.introCopy)")
+                    .accessibilityHint("Chooses this coaching track, then opens technique selection")
+                    .accessibilityInputLabels([track.title])
+                }
+            }
+        }
+    }
+}
+
 struct AuraSetupView: View {
+    let track: TrainingTrack
     let stance: Stance
     let controlsDisabled: Bool
     let onStanceChange: (Stance) -> Void
@@ -154,9 +193,9 @@ struct AuraSetupView: View {
 
     var body: some View {
         TrainingDetailScaffold(
-            backLabel: "Features",
+            backLabel: "Tracks",
             title: "Aura Punch",
-            subtitle: "Choose your stance and a punch to learn",
+            subtitle: "\(track.title) · Choose your stance and a punch to learn",
             controlsDisabled: controlsDisabled,
             onBack: onBack
         ) {
@@ -176,6 +215,7 @@ struct AuraSetupView: View {
                         }
                         .buttonStyle(.plain)
                         .disabled(controlsDisabled || !technique.isImplemented)
+                        .frame(minHeight: 60)
                         .opacity(technique.isImplemented ? 1 : 0.5)
                         .accessibilityElement(children: .ignore)
                         .accessibilityLabel(
@@ -184,6 +224,7 @@ struct AuraSetupView: View {
                         .accessibilityHint(
                             technique.isImplemented ? "Opens the training experience" : "Coming soon"
                         )
+                        .accessibilityInputLabels([technique.name])
                     }
                 }
             }

@@ -3,6 +3,32 @@ import XCTest
 
 @MainActor
 final class TrainingFlowCoordinatorTests: XCTestCase {
+    func testAuraRequiresTrackSelectionBeforeTechniqueSelection() {
+        let flow = TrainingFlowCoordinator()
+
+        flow.chooseFeature(.auraPunch)
+        XCTAssertEqual(flow.route, .auraTrackSetup)
+
+        flow.chooseAuraTechnique(.jab)
+        XCTAssertEqual(flow.route, .auraTrackSetup)
+
+        flow.chooseAuraTrack(.technicalCamp)
+        XCTAssertEqual(flow.route, .auraSetup(.technicalCamp))
+
+        flow.setDraftStance(.southpaw)
+        flow.chooseAuraTechnique(.uppercut)
+        XCTAssertEqual(
+            flow.route,
+            .experience(
+                .aura(
+                    track: .technicalCamp,
+                    technique: .uppercut,
+                    stance: .southpaw
+                )
+            )
+        )
+    }
+
     func testAirRoutesDirectlyToExperienceWhileCombinationRoutesToSetup() {
         let flow = TrainingFlowCoordinator()
 

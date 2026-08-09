@@ -583,6 +583,7 @@ final class ReactiveStrikeSession {
 
     func resetForParticipantHandoff() {
         resetForNewRound()
+        auraPunch.reset()
         hands.stop()
         targets.removeActiveTarget()
         calibratedReaches.removeAll()

@@ -4,6 +4,9 @@ struct ImmersiveInstruction: Equatable {
     let stage: String
     let message: String
     let symbol: String
+    var action: String? = nil
+    var progress: String? = nil
+    var metric: String? = nil
 }
 
 enum ImmersiveInstructionBannerStyle {
@@ -29,6 +32,7 @@ enum ImmersiveInstructionBannerLayout {
 /// selection window inside the immersive experience.
 struct ImmersiveInstructionBanner: View {
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
 
     let instruction: ImmersiveInstruction
     var style: ImmersiveInstructionBannerStyle = .compact
@@ -47,9 +51,9 @@ struct ImmersiveInstructionBanner: View {
         .glassBackgroundEffect(in: RoundedRectangle(cornerRadius: cornerRadius))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(instruction.stage)
-        .accessibilityValue(instruction.message)
+        .accessibilityValue(accessibilityValue)
         .accessibilityAddTraits(.updatesFrequently)
-        .animation(.easeInOut(duration: 0.2), value: instruction)
+        .animation(reduceMotion ? nil : .easeInOut(duration: 0.2), value: instruction)
     }
 
     private var standardBody: some View {
@@ -71,6 +75,8 @@ struct ImmersiveInstructionBanner: View {
                     .lineLimit(messageLineLimit)
                     .minimumScaleFactor(0.85)
                     .fixedSize(horizontal: false, vertical: true)
+
+                supportingDetails
             }
 
             Spacer(minLength: 8)
@@ -97,7 +103,34 @@ struct ImmersiveInstructionBanner: View {
                 .lineLimit(messageLineLimit)
                 .minimumScaleFactor(0.85)
                 .fixedSize(horizontal: false, vertical: true)
+
+            supportingDetails
         }
+    }
+
+    @ViewBuilder
+    private var supportingDetails: some View {
+        if let progress = instruction.progress {
+            Text(progress)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
+        }
+        if let metric = instruction.metric {
+            Text(metric)
+                .font(.headline.monospacedDigit())
+                .foregroundStyle(.cyan)
+        }
+        if let action = instruction.action {
+            Label(action, systemImage: "arrow.right.circle.fill")
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.tint)
+        }
+    }
+
+    private var accessibilityValue: String {
+        [instruction.message, instruction.progress, instruction.metric, instruction.action]
+            .compactMap { $0 }
+            .joined(separator: ". ")
     }
 
     private var bannerWidth: CGFloat {

@@ -312,6 +312,9 @@ nonisolated struct ProofComparison: Sendable {
                 field: "trackingCoverage"
             )
         }
+        guard !baseline.score.wrongHand, !retest.score.wrongHand else {
+            throw LearningEvidenceRejectionReason.proofIncompatible(field: "wrongHand")
+        }
         guard baseline.technique == retest.technique,
               baseline.stance == retest.stance,
               baseline.side == retest.side

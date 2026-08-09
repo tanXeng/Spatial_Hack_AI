@@ -187,6 +187,47 @@ struct FeedbackGeneratorTests {
         #expect(await transport.requestCount() == 0)
     }
 
+    @Test("Tracking recovery retains evidence internally but presents no numeric score card")
+    func trackingRecoveryUsesEvidenceRecoveryPresentation() throws {
+        let session = AuraPunchSession(
+            hands: HandTrackingService(),
+            feedbackGenerator: MockFeedbackGenerator(),
+            audienceTrack: .beginner,
+            coachAudio: SilentCoachAudioPlayer()
+        )
+        _ = session.finishAggregated(
+            makeScore(
+                overall: 92,
+                extension: 95,
+                path: 96,
+                trackedFraction: 0.74
+            )
+        )
+        let feedback = try #require(session.feedback)
+
+        #expect(session.score?.overall == 92)
+        #expect(
+            AuraResultPresentation(feedback: feedback)
+                == .evidenceRecovery(
+                    title: "Score withheld",
+                    message: "Tracking coverage was incomplete, so this rep has no numeric grade or metric result. Return to guard and keep both fists visible for the full rep."
+                )
+        )
+    }
+
+    @Test("Trusted evidence presents the normal score card")
+    func trustedEvidenceUsesScorePresentation() {
+        let feedback = MockFeedbackGenerator().localFeedback(
+            for: makeScore(overall: 74, extension: 72, path: 81),
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
+
+        #expect(AuraResultPresentation(feedback: feedback) == .score)
+    }
+
     @Test("Nonfinite score input produces safe nonnumeric recovery feedback")
     func nonfiniteScoreDoesNotTrapNumericFormatting() {
         let feedback = MockFeedbackGenerator().localFeedback(

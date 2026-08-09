@@ -55,7 +55,6 @@ nonisolated struct CorrectionSelector: Sendable {
             score: score,
             technique: technique,
             stance: stance,
-            qualityOverrides: [:],
             previousFocus: previousFocus,
             proof: nil
         )
@@ -66,14 +65,10 @@ nonisolated struct CorrectionSelector: Sendable {
         proof: ProofComparison,
         previousFocus: SubMetricKind? = nil
     ) -> CorrectionDecision {
-        let quality = Dictionary(
-            uniqueKeysWithValues: proof.retest.metricMeasurements.map { ($0.kind, $0.quality) }
-        )
         return select(
             score: proof.retest.score,
             technique: proof.retest.technique,
             stance: proof.retest.stance,
-            qualityOverrides: quality,
             previousFocus: previousFocus,
             proof: proof
         )
@@ -83,7 +78,6 @@ nonisolated struct CorrectionSelector: Sendable {
         score: TechniqueScore,
         technique: Technique,
         stance: Stance,
-        qualityOverrides: [SubMetricKind: MeasurementQuality],
         previousFocus: SubMetricKind?,
         proof: ProofComparison?
     ) -> CorrectionDecision {
@@ -169,7 +163,7 @@ nonisolated struct CorrectionSelector: Sendable {
                 stance: stance,
                 metric: nil,
                 quality: MeasurementQuality.conservativeAggregation(
-                    available.map { qualityOverrides[$0.kind] ?? $0.quality }
+                    available.map { quality(for: $0, proof: proof) }
                 ),
                 retainedPreviousFocus: false,
                 improvementDelta: nil
@@ -182,10 +176,22 @@ nonisolated struct CorrectionSelector: Sendable {
             technique: technique,
             stance: stance,
             metric: selected.kind,
-            quality: qualityOverrides[selected.kind] ?? selected.quality,
+            quality: quality(for: selected, proof: proof),
             retainedPreviousFocus: retainedMetric != nil,
             improvementDelta: proof?.metricDelta(for: selected.kind)
         )
+    }
+
+    /// A proof delta is derived from both attempts, so its label must represent both sources.
+    nonisolated private func quality(
+        for retestMetric: SubMetric,
+        proof: ProofComparison?
+    ) -> MeasurementQuality? {
+        guard let proof else { return retestMetric.quality }
+        return MeasurementQuality.conservativeAggregation([
+            proof.baseline.score.metric(retestMetric.kind)?.quality,
+            proof.retest.score.metric(retestMetric.kind)?.quality,
+        ])
     }
 
     nonisolated private func decision(

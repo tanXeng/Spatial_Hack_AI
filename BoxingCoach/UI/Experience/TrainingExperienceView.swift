@@ -1,5 +1,22 @@
 import SwiftUI
 
+/// Pure policy separating trusted score presentation from evidence-recovery presentation.
+nonisolated enum AuraResultPresentation: Equatable, Sendable {
+    case score
+    case evidenceRecovery(title: String, message: String)
+
+    init(feedback: CoachingFeedback) {
+        if feedback.correctionCode == .trackingRecovery {
+            self = .evidenceRecovery(
+                title: "Score withheld",
+                message: "Tracking coverage was incomplete, so this rep has no numeric grade or metric result. Return to guard and keep both fists visible for the full rep."
+            )
+        } else {
+            self = .score
+        }
+    }
+}
+
 struct TrainingExperienceView: View {
     let selection: TrainingSelection
     let session: ReactiveStrikeSession
@@ -104,17 +121,25 @@ struct TrainingExperienceView: View {
                 }
 
                 if aura.phase == .results, let score = aura.score {
-                    if let note = score.wrongHandNote {
-                        Label(note, systemImage: "hand.raised.slash")
-                            .font(.callout.weight(.medium))
-                            .foregroundStyle(.orange)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .padding()
-                            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
-                    }
-
-                    auraScoreCard(score)
                     if let feedback = aura.feedback {
+                        switch AuraResultPresentation(feedback: feedback) {
+                        case .score:
+                            if let note = score.wrongHandNote {
+                                Label(note, systemImage: "hand.raised.slash")
+                                    .font(.callout.weight(.medium))
+                                    .foregroundStyle(.orange)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding()
+                                    .background(
+                                        .regularMaterial,
+                                        in: RoundedRectangle(cornerRadius: 16)
+                                    )
+                            }
+                            auraScoreCard(score)
+                        case let .evidenceRecovery(title, message):
+                            auraEvidenceRecoveryCard(title: title, message: message)
+                        }
+
                         auraFeedbackCard(feedback)
                     }
                 }
@@ -235,6 +260,20 @@ struct TrainingExperienceView: View {
                     value: auraMetricDisplay(metric.score)
                 )
             }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func auraEvidenceRecoveryCard(title: String, message: String) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label(title, systemImage: "viewfinder.trianglebadge.exclamationmark")
+                .font(.headline)
+                .foregroundStyle(.orange)
+            Text(message)
+                .font(.body)
+                .foregroundStyle(.secondary)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()

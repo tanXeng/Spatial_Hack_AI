@@ -39,6 +39,8 @@ struct CorrectionSelectorTests {
         #expect(decision.code == .wrongHand)
         #expect(decision.drill == .correctHand)
         #expect(decision.localCue.contains("left hand"))
+        #expect(decision.improvementDelta == nil)
+        #expect(!decision.celebratesImprovement)
     }
 
     @Test("The weakest available metric below 85 selects its allow-listed correction")
@@ -228,17 +230,28 @@ struct CorrectionSelectorTests {
         #expect(!decision.celebratesImprovement)
     }
 
-    @Test("A wrong-hand retest cannot celebrate an otherwise large proof delta")
-    func wrongHandDecisionCannotCelebrate() throws {
-        let baseline = try makeAttempt(overall: 60, path: 65)
-        let retest = try makeAttempt(overall: 78, path: 76, wrongHand: true)
-        let proof = try ProofComparison(baseline: baseline, retest: retest)
+    @Test(
+        "Proof rejects a wrong-hand baseline or retest",
+        arguments: ["baseline", "retest"]
+    )
+    func proofRejectsWrongHandAttempt(stage: String) throws {
+        let baseline = try makeAttempt(
+            overall: 60,
+            path: 65,
+            wrongHand: stage == "baseline"
+        )
+        let retest = try makeAttempt(
+            overall: 78,
+            path: 76,
+            wrongHand: stage == "retest"
+        )
 
-        let decision = selector.select(proof: proof, previousFocus: .path)
-
-        #expect(decision.kind == .wrongHand)
-        #expect(decision.improvementDelta == nil)
-        #expect(!decision.celebratesImprovement)
+        #expect {
+            try ProofComparison(baseline: baseline, retest: retest)
+        } throws: { error in
+            error as? LearningEvidenceRejectionReason
+                == .proofIncompatible(field: "wrongHand")
+        }
     }
 
     @Test("An unavailable-focus retest requests recovery without celebrating")
@@ -320,6 +333,30 @@ struct CorrectionSelectorTests {
         let proof = try ProofComparison(baseline: baseline, retest: retest)
 
         #expect(proof.metricDelta(for: .path) == 11)
+    }
+
+    @Test(
+        "Proof delta provenance conservatively combines baseline and retest",
+        arguments: ProofProvenanceCase.all
+    )
+    func proofDeltaUsesBothProvenanceContributors(testCase: ProofProvenanceCase) throws {
+        let baseline = try makeAttempt(
+            overall: 70,
+            path: 65,
+            pathQuality: testCase.baseline
+        )
+        let retest = try makeAttempt(
+            overall: 77,
+            path: 73,
+            pathQuality: testCase.retest
+        )
+        let proof = try ProofComparison(baseline: baseline, retest: retest)
+
+        let decision = selector.select(proof: proof, previousFocus: .path)
+
+        #expect(decision.kind == .metric(.path))
+        #expect(decision.improvementDelta == 8)
+        #expect(decision.evidenceLabel == testCase.expected)
     }
 
     @Test("Averaging measured and unknown available metrics keeps provenance unknown")
@@ -465,7 +502,7 @@ struct CorrectionSelectorTests {
         overall: Float,
         path: Float?,
         elbow: Float? = nil,
-        pathQuality: MeasurementQuality = .measured,
+        pathQuality: MeasurementQuality? = .measured,
         trackedFraction: Float = 0.96,
         wrongHand: Bool = false,
         referenceVersion: UInt64 = 1,
@@ -473,7 +510,9 @@ struct CorrectionSelectorTests {
         calibrationVersion: UInt64 = 1
     ) throws -> TechniqueAttemptEvidence {
         var metrics = [metric(.path, path, quality: pathQuality)]
-        var quality: [SubMetricKind: MeasurementQuality] = [.path: pathQuality]
+        var quality: [SubMetricKind: MeasurementQuality] = [
+            .path: pathQuality ?? .measured
+        ]
         if let elbow {
             metrics.append(metric(.elbow, elbow, quality: .inferred))
             quality[.elbow] = .inferred
@@ -504,5 +543,31 @@ struct CorrectionSelectorTests {
             scoringVersion: scoringVersion,
             calibrationVersion: calibrationVersion
         )
+    }
+}
+
+nonisolated struct ProofProvenanceCase: Sendable, CustomTestStringConvertible {
+    let baseline: MeasurementQuality?
+    let retest: MeasurementQuality?
+    let expected: CorrectionEvidenceLabel
+
+    static let all: [Self] = [
+        Self(baseline: .measured, retest: .measured, expected: .measured),
+        Self(baseline: .measured, retest: .inferred, expected: .estimated),
+        Self(baseline: .inferred, retest: .measured, expected: .estimated),
+        Self(baseline: .inferred, retest: .inferred, expected: .estimated),
+        Self(baseline: nil, retest: .measured, expected: .sourceUnavailable),
+        Self(baseline: .measured, retest: nil, expected: .sourceUnavailable),
+        Self(baseline: nil, retest: .inferred, expected: .sourceUnavailable),
+        Self(baseline: .inferred, retest: nil, expected: .sourceUnavailable),
+        Self(baseline: nil, retest: nil, expected: .sourceUnavailable),
+    ]
+
+    var testDescription: String {
+        "baseline_\(label(baseline))_retest_\(label(retest))"
+    }
+
+    private func label(_ quality: MeasurementQuality?) -> String {
+        quality?.rawValue ?? "unknown"
     }
 }

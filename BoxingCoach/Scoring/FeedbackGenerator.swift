@@ -18,22 +18,28 @@ nonisolated enum CoachCorrectiveDrill: String, Sendable, Equatable {
     case repeatShape = "repeat_shape"
 }
 
-/// Optional prose returned by the relay. It contains no score, correction, or drill fields.
+/// Optional, explicitly supplemental prose returned by the relay.
+///
+/// It contains no headline, corrective cue, score, correction, or drill fields, so applying it
+/// cannot displace the deterministic coaching instruction.
 nonisolated struct CoachPhrasing: Sendable, Equatable {
-    let headline: String
-    let primaryFix: String
+    let explanation: String
     let encouragement: String
 }
 
 /// Natural-language coaching for one attempt.
 nonisolated struct CoachingFeedback: Sendable, Equatable {
     /// One line summarizing how the punch went.
-    var headline: String
+    let headline: String
     /// The single most valuable correction for the next rep.
-    var primaryFix: String
+    let primaryFix: String
     /// Something the user did well, so feedback isn't purely negative.
-    var encouragement: String
-    /// Persisted provenance for the words currently shown.
+    let encouragement: String
+    /// Optional AI context shown only after the trusted local guidance.
+    let supplementalExplanation: String?
+    /// Optional AI encouragement shown only inside the supplemental section.
+    let supplementalEncouragement: String?
+    /// Whether the result is local-only or enriched with a separately presented AI supplement.
     let source: CoachingFeedbackSource
     /// Deterministic correction selected before any relay work begins.
     let correctionCode: CoachCorrectionCode
@@ -44,9 +50,11 @@ nonisolated struct CoachingFeedback: Sendable, Equatable {
 
     func applying(_ phrasing: CoachPhrasing) -> CoachingFeedback {
         CoachingFeedback(
-            headline: phrasing.headline,
-            primaryFix: phrasing.primaryFix,
-            encouragement: phrasing.encouragement,
+            headline: headline,
+            primaryFix: primaryFix,
+            encouragement: encouragement,
+            supplementalExplanation: phrasing.explanation,
+            supplementalEncouragement: phrasing.encouragement,
             source: .aiPhrasing,
             correctionCode: correctionCode,
             drill: drill
@@ -93,6 +101,8 @@ nonisolated struct MockFeedbackGenerator: FeedbackGenerating {
             headline: headline(for: score, technique: technique),
             primaryFix: correction.localCue,
             encouragement: encouragement(for: score),
+            supplementalExplanation: nil,
+            supplementalEncouragement: nil,
             source: .offlineCoach,
             correctionCode: correction.code,
             drill: correction.drill
@@ -253,9 +263,11 @@ nonisolated struct RelayFeedbackGenerator: FeedbackGenerating {
 
         do {
             let response = try await client.response(for: facts)
+            // The exact relay contract still validates `spokenCue`, but a free-form cue can never
+            // replace the deterministic correction. Only clearly supplemental fields cross into
+            // visible feedback state.
             return CoachPhrasing(
-                headline: response.spokenCue,
-                primaryFix: response.whyItMatters,
+                explanation: response.whyItMatters,
                 encouragement: response.encouragement
             )
         } catch {

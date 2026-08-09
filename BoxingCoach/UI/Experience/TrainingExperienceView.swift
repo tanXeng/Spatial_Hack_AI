@@ -247,13 +247,11 @@ struct TrainingExperienceView: View {
                 Text("Coach")
                     .font(.headline)
                 Spacer()
-                if feedback.isOffline {
-                    Text("Offline")
-                        .font(.caption.weight(.semibold))
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 6)
-                        .background(Color.secondary.opacity(0.18), in: Capsule())
-                }
+                Text(feedback.isOffline ? "Offline" : "AI supplement")
+                    .font(.caption.weight(.semibold))
+                    .padding(.horizontal, 10)
+                    .padding(.vertical, 6)
+                    .background(Color.secondary.opacity(0.18), in: Capsule())
             }
 
             Text(feedback.headline)
@@ -264,6 +262,19 @@ struct TrainingExperienceView: View {
             Text(feedback.encouragement)
                 .font(.footnote)
                 .foregroundStyle(.secondary)
+
+            if let explanation = feedback.supplementalExplanation,
+               let supplementalEncouragement = feedback.supplementalEncouragement {
+                Divider()
+                Text("AI perspective")
+                    .font(.caption.weight(.semibold))
+                Text(explanation)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+                Text(supplementalEncouragement)
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()

@@ -60,10 +60,13 @@ struct CoachRelayClientTests {
             requiredHandName: "left hand"
         )
 
+        let local = generator.localFeedback(for: score, technique: .jab)
         let feedback = await generator.feedback(for: score, technique: .jab)
 
         #expect(feedback.isOffline == false)
-        #expect(feedback.headline.hasPrefix("Drive your jab"))
+        #expect(feedback.headline == local.headline)
+        #expect(feedback.primaryFix == local.primaryFix)
+        #expect(feedback.supplementalExplanation?.hasPrefix("Full extension") == true)
     }
 
     @Test("Outbound facts use the literal privacy allow-list")

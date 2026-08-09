@@ -23,8 +23,7 @@ struct FeedbackGeneratorTests {
         await gate.resolve(
             score: 64,
             with: CoachPhrasing(
-                headline: "AI headline",
-                primaryFix: "AI explanation",
+                explanation: "AI explanation",
                 encouragement: "AI encouragement"
             )
         )
@@ -32,7 +31,11 @@ struct FeedbackGeneratorTests {
 
         let enhanced = try #require(session.feedback)
         #expect(enhanced.source == .aiPhrasing)
-        #expect(enhanced.headline == "AI headline")
+        #expect(enhanced.headline == local.headline)
+        #expect(enhanced.primaryFix == local.primaryFix)
+        #expect(enhanced.encouragement == local.encouragement)
+        #expect(enhanced.supplementalExplanation == "AI explanation")
+        #expect(enhanced.supplementalEncouragement == "AI encouragement")
         #expect(session.score?.overall == 64)
         #expect(enhanced.correctionCode == local.correctionCode)
         #expect(enhanced.drill == local.drill)
@@ -57,8 +60,7 @@ struct FeedbackGeneratorTests {
         await gate.resolve(
             score: 64,
             with: CoachPhrasing(
-                headline: "Stale headline",
-                primaryFix: "Stale explanation",
+                explanation: "Stale explanation",
                 encouragement: "Stale encouragement"
             )
         )
@@ -119,21 +121,54 @@ struct FeedbackGeneratorTests {
         #expect(session.feedback == local)
     }
 
-    @Test("Validated relay prose replaces only local words")
-    func validatedRelayProseReplacesOnlyWords() async {
+    @Test("Validated relay prose supplements trusted local guidance")
+    func validatedRelayProseSupplementsLocalGuidance() async {
         let transport = ScriptedRelayTransport(scenario: .success)
         let clock = ManualRelayClock()
         let generator = makeRelayGenerator(transport: transport, clock: clock)
 
-        let feedback = await generator.feedback(
-            for: makeScore(overall: 64, extension: 52),
-            technique: .jab
-        )
+        let score = makeScore(overall: 64, extension: 52)
+        let local = generator.localFeedback(for: score, technique: .jab)
+        let feedback = await generator.feedback(for: score, technique: .jab)
 
         #expect(feedback.source == .aiPhrasing)
-        #expect(feedback.headline == "Drive through the target and return to guard.")
+        #expect(feedback.headline == local.headline)
+        #expect(feedback.primaryFix == local.primaryFix)
+        #expect(feedback.encouragement == local.encouragement)
+        #expect(
+            feedback.supplementalExplanation
+                == "Full extension improves reach while a quick return protects your chin."
+        )
+        #expect(feedback.supplementalEncouragement == "Your punch stayed on a clean line.")
         #expect(feedback.correctionCode == .extensionReach)
         #expect(feedback.drill == .fullExtension)
+    }
+
+    @Test("Matching-code contradictory prose remains supplemental to trusted guidance")
+    func contradictoryRelayProseCannotReplaceTrustedGuidance() async {
+        let generator = makeRelayGenerator(
+            transport: ScriptedRelayTransport(scenario: .contradictoryProse),
+            clock: ManualRelayClock()
+        )
+        let score = makeScore(overall: 64, extension: 52)
+        let local = generator.localFeedback(for: score, technique: .jab)
+
+        let feedback = await generator.feedback(for: score, technique: .jab)
+
+        #expect(feedback.source == .aiPhrasing)
+        #expect(feedback.headline == local.headline)
+        #expect(feedback.primaryFix == local.primaryFix)
+        #expect(feedback.encouragement == local.encouragement)
+        #expect(feedback.correctionCode == local.correctionCode)
+        #expect(feedback.drill == local.drill)
+        #expect(
+            feedback.supplementalExplanation
+                == "Short reach is safer, so the low extension score is wrong."
+        )
+        #expect(
+            feedback.supplementalEncouragement
+                == "Skip full extension and practice a shorter punch."
+        )
     }
 
     @Test("Missing endpoint remains offline without starting transport or deadline")
@@ -291,6 +326,7 @@ struct FeedbackGeneratorTests {
 
 nonisolated enum ScriptedRelayScenario: Sendable, Equatable, CustomTestStringConvertible {
     case success
+    case contradictoryProse
     case refusal
     case httpStatus(Int)
     case malformedJSON
@@ -301,6 +337,7 @@ nonisolated enum ScriptedRelayScenario: Sendable, Equatable, CustomTestStringCon
     var testDescription: String {
         switch self {
         case .success: "success"
+        case .contradictoryProse: "matching_code_contradictory_prose"
         case .refusal: "refusal"
         case .httpStatus(let value): "http_\(value)"
         case .malformedJSON: "malformed_json"
@@ -354,6 +391,10 @@ private actor ScriptedRelayTransport: CoachRelayTransport {
         ]
 
         switch scenario {
+        case .contradictoryProse:
+            response["spokenCue"] = "Keep your arm bent and ignore the extension drill."
+            response["whyItMatters"] = "Short reach is safer, so the low extension score is wrong."
+            response["encouragement"] = "Skip full extension and practice a shorter punch."
         case .extraField:
             response["provider"] = "must be rejected"
         case .wrongRequestID:
@@ -526,8 +567,7 @@ private actor PhrasingGate {
 
 private extension CoachPhrasing {
     static let late = CoachPhrasing(
-        headline: "Late headline",
-        primaryFix: "Late explanation",
+        explanation: "Late explanation",
         encouragement: "Late encouragement"
     )
 }

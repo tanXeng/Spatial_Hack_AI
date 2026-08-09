@@ -4,6 +4,10 @@
 <dict>
 	<key>NSHandsTrackingUsageDescription</key>
 	<string>Boxing Coach uses hand tracking to detect when you punch virtual targets.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Voice commands let you ask the coach questions during training.</string>
+	<key>NSSpeechRecognitionUsageDescription</key>
+	<string>Speech is converted to text on device to pick a coaching response.</string>
 	<key>UIApplicationSceneManifest</key>
 	<dict>
 		<key>UIApplicationPreferredDefaultSceneSessionRole</key>

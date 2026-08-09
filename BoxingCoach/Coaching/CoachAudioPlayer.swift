@@ -13,6 +13,7 @@ final class CoachAudioPlayer {
     private var queue: [CoachClipID] = []
     private var isPlaying = false
     private var sessionConfigured = false
+    private var voiceCaptureActive = false
     private var interruptionObserver: NSObjectProtocol?
 
     deinit {
@@ -53,6 +54,46 @@ final class CoachAudioPlayer {
         isPlaying = false
         player?.stop()
         player = nil
+    }
+
+    var isClipPlaying: Bool { isPlaying }
+
+    /// Switches the audio session for push-to-talk capture while keeping coach playback available.
+    func prepareForVoiceCapture() throws {
+        registerForInterruptionsIfNeeded()
+        playbackDelegate.onFinish = { [weak self] in
+            Task { @MainActor in
+                self?.playNextFromQueue()
+            }
+        }
+
+        let session = AVAudioSession.sharedInstance()
+        if voiceCaptureActive, session.category == .playAndRecord, session.mode == .voiceChat {
+            try session.setActive(true, options: .notifyOthersOnDeactivation)
+            sessionConfigured = true
+            return
+        }
+
+        try session.setActive(false, options: .notifyOthersOnDeactivation)
+        try session.setCategory(
+            .playAndRecord,
+            mode: .voiceChat,
+            options: [.mixWithOthers, .duckOthers]
+        )
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+        voiceCaptureActive = true
+        sessionConfigured = true
+    }
+
+    func restorePlaybackMode() {
+        voiceCaptureActive = false
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers, .duckOthers])
+            try session.setActive(true)
+        } catch {
+            Self.logger.error("Failed to restore playback mode: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func enqueue(_ id: CoachClipID) {

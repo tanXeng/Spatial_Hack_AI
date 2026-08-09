@@ -85,29 +85,49 @@ final class ReachProfileTests: XCTestCase {
         )
     }
 
-    func testCalibratedProfilesPreserveShape() {
+    func testCalibratedProfilesPutEveryTargetInTheLastTenthOfReach() {
         let measuredReach: Float = 0.80
-        let expectedUsableReach = measuredReach * 0.94
         let originalAir = ReachProfile.air
         let air = originalAir.calibrated(measuredForwardReach: measuredReach)
 
-        XCTAssertEqual(air.forwardMax, expectedUsableReach, accuracy: 1e-6)
+        XCTAssertEqual(air.forwardMax, measuredReach, accuracy: 1e-6)
+        XCTAssertEqual(
+            forwardWidth(of: air),
+            measuredReach * originalAir.forwardBandFraction,
+            accuracy: 1e-6
+        )
 
-        XCTAssertEqual(
-            air.forwardMin / air.forwardMax,
-            originalAir.forwardMin / originalAir.forwardMax,
-            accuracy: 1e-6
-        )
-        XCTAssertEqual(
-            lateralWidth(of: air) / air.forwardMax,
-            lateralWidth(of: originalAir) / originalAir.forwardMax,
-            accuracy: 1e-6
-        )
+        XCTAssertEqual(air.lateralMin, originalAir.lateralMin, accuracy: 1e-6)
+        XCTAssertEqual(air.lateralMax, originalAir.lateralMax, accuracy: 1e-6)
 
         XCTAssertEqual(air.verticalMin, originalAir.verticalMin)
         XCTAssertEqual(air.verticalMax, originalAir.verticalMax)
+    }
 
-        XCTAssertGreaterThanOrEqual(air.forwardMin / air.forwardMax, 0.82)
+    func testCalibratedTargetsAlwaysSitNearFullReach() {
+        for measuredReach in stride(from: Float(0.40), through: 0.90, by: 0.05) {
+            let air = ReachProfile.air.calibrated(measuredForwardReach: measuredReach)
+            let expectedNearEdge = measuredReach * (1 - ReachProfile.air.forwardBandFraction)
+
+            XCTAssertEqual(air.forwardMax, measuredReach, accuracy: 1e-6)
+            XCTAssertEqual(air.forwardMin, expectedNearEdge, accuracy: 1e-6)
+            XCTAssertLessThan(air.forwardMin, air.forwardMax)
+        }
+    }
+
+    func testSpawnBandScalesWithMeasuredBody() {
+        let short = ReachProfile.air.calibrated(measuredForwardReach: 0.50)
+        let long = ReachProfile.air.calibrated(measuredForwardReach: 0.80)
+
+        XCTAssertEqual(short.forwardMin, 0.45, accuracy: 1e-6)
+        XCTAssertEqual(short.forwardMax, 0.50, accuracy: 1e-6)
+        XCTAssertEqual(long.forwardMin, 0.72, accuracy: 1e-6)
+        XCTAssertEqual(long.forwardMax, 0.80, accuracy: 1e-6)
+        XCTAssertEqual(
+            short.forwardMin / short.forwardMax,
+            long.forwardMin / long.forwardMax,
+            accuracy: 1e-6
+        )
     }
 
     func testCalibrationClampsUsableReachWithoutChangingProfileIdentity() {
@@ -115,9 +135,56 @@ final class ReachProfileTests: XCTestCase {
         let longAir = ReachProfile.air.calibrated(measuredForwardReach: 2.0)
 
         XCTAssertEqual(shortAir.forwardMax, 0.35, accuracy: 1e-6)
+        XCTAssertGreaterThanOrEqual(shortAir.forwardMin, ReachProfile.minimumForwardSpawn)
+        XCTAssertLessThan(shortAir.forwardMin, shortAir.forwardMax)
         XCTAssertEqual(longAir.forwardMax, 0.95, accuracy: 1e-6)
         XCTAssertEqual(longAir.verticalMin, ReachProfile.air.verticalMin)
         XCTAssertEqual(longAir.verticalMax, ReachProfile.air.verticalMax)
+    }
+
+    func testSettledReachMeasuresHeldExtensionInsteadOfOutboundRamp() throws {
+        let samples = rampThenHold(from: 0.40, to: 0.66, rampDuration: 0.35, holdDuration: 0.40)
+        let settled = try XCTUnwrap(ReachCalibration.settledForwardReach(from: samples))
+
+        XCTAssertEqual(settled, 0.66, accuracy: 0.01)
+
+        let legacy = try XCTUnwrap(
+            ReachCalibration.robustForwardReach(
+                from: samples.prefix(while: { $0.time <= 0.25 }).map(\.forward)
+            )
+        )
+        XCTAssertLessThan(legacy, settled - 0.05)
+    }
+
+    func testSettledReachRejectsMotionWithoutAHold() {
+        let rampOnly = rampThenHold(from: 0.40, to: 0.66, rampDuration: 0.35, holdDuration: 0)
+        XCTAssertNil(ReachCalibration.settledForwardReach(from: rampOnly))
+
+        let tooBriefHold = rampThenHold(
+            from: 0.40,
+            to: 0.66,
+            rampDuration: 0.35,
+            holdDuration: ReachCalibration.plateauDuration - 0.10
+        )
+        XCTAssertNil(ReachCalibration.settledForwardReach(from: tooBriefHold))
+    }
+
+    func testSettledReachIgnoresEarlyTouchAndUsesLaterHold() throws {
+        var samples = rampThenHold(from: 0.40, to: 0.655, rampDuration: 0.08, holdDuration: 0.03)
+        let retreat = rampThenHold(from: 0.40, to: 0.40, rampDuration: 0.10, holdDuration: 0)
+        let realHold = rampThenHold(from: 0.41, to: 0.66, rampDuration: 0.30, holdDuration: 0.40)
+
+        let spikeEnd = samples.last?.time ?? 0
+        samples += retreat.map {
+            ReachSample(forward: $0.forward, time: $0.time + spikeEnd + 0.02)
+        }
+        let retreatEnd = samples.last?.time ?? 0
+        samples += realHold.map {
+            ReachSample(forward: $0.forward, time: $0.time + retreatEnd + 0.02)
+        }
+
+        let settled = try XCTUnwrap(ReachCalibration.settledForwardReach(from: samples))
+        XCTAssertEqual(settled, 0.66, accuracy: 0.01)
     }
 
     func testGuardClearancePreventsStationaryAutoHitAndFailsClosedWithoutSpace() throws {
@@ -195,6 +262,38 @@ final class ReachProfileTests: XCTestCase {
 
     private func lateralWidth(of profile: ReachProfile) -> Float {
         profile.lateralMax - profile.lateralMin
+    }
+
+    private func forwardWidth(of profile: ReachProfile) -> Float {
+        profile.forwardMax - profile.forwardMin
+    }
+
+    private func rampThenHold(
+        from: Float,
+        to: Float,
+        rampDuration: TimeInterval,
+        holdDuration: TimeInterval
+    ) -> [ReachSample] {
+        let step = 1.0 / 90.0
+        var samples: [ReachSample] = []
+        var time: TimeInterval = 0
+
+        while time < rampDuration {
+            let progress = rampDuration > 0 ? Float(time / rampDuration) : 1
+            samples.append(ReachSample(forward: from + (to - from) * progress, time: time))
+            time += step
+        }
+
+        let holdEnd = rampDuration + holdDuration
+        var jitterIndex = 0
+        while time <= holdEnd {
+            let jitter: Float = jitterIndex.isMultiple(of: 2) ? 0.005 : -0.005
+            samples.append(ReachSample(forward: to - 0.005 + jitter, time: time))
+            jitterIndex += 1
+            time += step
+        }
+
+        return samples
     }
 
     private func makeFrame(origin: SIMD3<Float>, yaw: Float) -> BodyFrame {

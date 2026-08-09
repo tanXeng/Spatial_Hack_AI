@@ -26,10 +26,12 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 enum TrainingSelection: Hashable, Sendable {
     case reactive(mode: ReactiveStrikeMode, combination: Combination?, stance: Stance)
     case aura(technique: Technique, stance: Stance)
+    case competitionCalibration(playerID: UUID)
+    case competition(playerID: UUID, mode: CompetitionMode, stance: Stance, reach: BilateralReach)
 
     var feature: TrainingFeature {
         switch self {
-        case .reactive: return .reactiveStrike
+        case .reactive, .competitionCalibration, .competition: return .reactiveStrike
         case .aura: return .auraPunch
         }
     }
@@ -82,6 +84,12 @@ final class TrainingFlowCoordinator {
 
     var controlsDisabled: Bool {
         transition != .idle
+    }
+
+    func navigate(to route: TrainingFlowRoute) {
+        guard transition == .idle else { return }
+        presentationError = nil
+        self.route = route
     }
 
     func chooseFeature(_ feature: TrainingFeature) {
@@ -206,6 +214,16 @@ final class TrainingFlowCoordinator {
             session.auraPunch.stance = stance
             session.auraPunch.reset()
             session.auraPunch.start()
+
+        case .competitionCalibration:
+            session.configureCompetitionCalibration()
+            session.resetForNewRound(keepingCompetitionConfiguration: true)
+            session.startDrill()
+
+        case .competition(_, let mode, let stance, let reach):
+            session.configureCompetition(mode: mode, stance: stance, reach: reach)
+            session.resetForNewRound(keepingCompetitionConfiguration: true)
+            session.startDrill()
         }
 
         transition = .idle
@@ -293,6 +311,10 @@ final class TrainingFlowCoordinator {
             draftStance = stance
             session.auraPunch.reset()
             route = .auraSetup
+
+        case .competitionCalibration, .competition:
+            session.resetForNewRound()
+            route = .features
         }
 
         presentationError = nil

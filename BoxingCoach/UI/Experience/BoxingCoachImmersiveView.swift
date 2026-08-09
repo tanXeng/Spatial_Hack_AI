@@ -53,16 +53,29 @@ struct BoxingCoachImmersiveView: View {
             }
 
             Attachment(id: controlsAttachmentID) {
-                Button("End Training", systemImage: "stop.circle") {
-                    endTraining()
+                VStack(spacing: 12) {
+                    if showsVoiceCoach {
+                        CoachPushToTalkButton(
+                            isListening: session.voiceCoach.isListening,
+                            isCaptureReady: session.voiceCoach.isCaptureReady,
+                            isRouting: session.voiceCoach.isRouting,
+                            isDisabled: flow.controlsDisabled,
+                            onPress: { session.voiceCoach.beginPushToTalk() },
+                            onRelease: { session.voiceCoach.endPushToTalk() }
+                        )
+                    }
+
+                    Button("End Training", systemImage: "stop.circle") {
+                        endTraining()
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(isAuraExperience ? .large : .regular)
+                    .font(isAuraExperience ? .title3.weight(.semibold) : .body)
+                    .disabled(flow.controlsDisabled)
+                    .accessibilityHint("Ends the current training session and returns to results")
                 }
-                .buttonStyle(.borderedProminent)
-                .controlSize(isAuraExperience ? .large : .regular)
-                .font(isAuraExperience ? .title3.weight(.semibold) : .body)
-                .disabled(flow.controlsDisabled)
                 .padding(isAuraExperience ? 18 : 14)
                 .glassBackgroundEffect()
-                .accessibilityHint("Ends the current training session and returns to results")
             }
         }
         .onChange(of: session.phase) { _, phase in
@@ -106,6 +119,55 @@ struct BoxingCoachImmersiveView: View {
         }
         .task {
             session.auraPunch.prepareCoachAudio()
+            session.voiceCoach.prepare()
+            refreshVoiceCoachContext()
+        }
+        .onChange(of: flow.route) { _, _ in refreshVoiceCoachContext() }
+        .onChange(of: session.phase) { _, _ in refreshVoiceCoachContext() }
+        .onChange(of: session.auraPunch.phase) { _, _ in refreshVoiceCoachContext() }
+    }
+
+    private var showsVoiceCoach: Bool {
+        switch flow.route {
+        case .experience(.aura):
+            switch session.auraPunch.phase {
+            case .guiding, .countdown, .attempting, .scoring:
+                return true
+            default:
+                return false
+            }
+        case .experience(.reactive):
+            switch session.phase {
+            case .calibrating, .running:
+                return true
+            default:
+                return false
+            }
+        case .experience(.competitionCalibration), .experience(.competition):
+            return false
+        default:
+            return false
+        }
+    }
+
+    private func refreshVoiceCoachContext() {
+        switch flow.route {
+        case .experience(.aura(let technique, _)):
+            session.voiceCoach.updateContext(CoachVoiceContext(
+                feature: .auraPunch,
+                auraPhase: session.auraPunch.phase,
+                drillPhase: nil,
+                techniqueName: technique.name
+            ))
+        case .experience(.reactive):
+            session.voiceCoach.updateContext(CoachVoiceContext(
+                feature: .reactiveStrike,
+                auraPhase: nil,
+                drillPhase: session.phase,
+                techniqueName: nil
+            ))
+        default:
+            session.voiceCoach.updateContext(CoachVoiceContext.idle)
         }
     }
 

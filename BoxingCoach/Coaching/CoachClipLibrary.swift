@@ -14,6 +14,9 @@ enum CoachClipID: String, CaseIterable, Sendable {
     case resultsGood = "results_good"
     case resultsNeedsWork = "results_needs_work"
     case guardUp = "guard_up"
+    case calibrateReach = "calibrate_reach"
+    case extendOtherArm = "extend_other_arm"
+    case reachCalibrated = "reach_calibrated"
 
     // Phase 2 — voice Q&A (catalogued now, not auto-played in Phase 1).
     case qaWhatFix = "qa_what_fix"

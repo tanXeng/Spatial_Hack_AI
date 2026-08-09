@@ -14,6 +14,34 @@ struct TrainingExperienceView: View {
             reactiveExperience(mode: mode, combination: combination, stance: stance)
         case .aura(let technique, let stance):
             auraExperience(technique: technique, stance: stance)
+        case .competitionCalibration:
+            competitionCalibrationExperience
+        case .competition(_, let mode, let stance, _):
+            reactiveExperience(
+                mode: mode == .combination ? .combination : .air,
+                combination: mode == .combination ? .jabCrossHookCross : nil,
+                stance: stance
+            )
+        }
+    }
+
+    private var competitionCalibrationExperience: some View {
+        TrainingDetailScaffold(
+            backLabel: "Competition",
+            title: "Reach Calibration",
+            subtitle: "Measure both comfortable reaches",
+            controlsDisabled: controlsDisabled,
+            onBack: onChangeSelection
+        ) {
+            VStack(spacing: 16) {
+                TrainingStatusCard(message: reactiveStatusLine)
+                errorCards(engineError: session.errorMessage)
+                Button(session.phase == .finished ? "Calibrate Again" : "Start Calibration") {
+                    onStart()
+                }
+                .disabled(session.phase == .running || session.phase == .calibrating || controlsDisabled)
+                .buttonStyle(.borderedProminent)
+            }
         }
     }
 

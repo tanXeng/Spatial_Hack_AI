@@ -6,19 +6,18 @@ import SwiftUI
 struct BoxingCoachRootView: View {
     @Environment(ReactiveStrikeSession.self) private var session
     @Environment(TrainingFlowCoordinator.self) private var flow
+    @Environment(CompetitionStore.self) private var competitionStore
     @Environment(\.openImmersiveSpace) private var openImmersiveSpace
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
     @Environment(\.dismissWindow) private var dismissWindow
+    @AccessibilityFocusState private var joinCompetitionFocused: Bool
 
     var body: some View {
         Group {
             switch flow.route {
             case .features:
-                FeatureSelectionView(
-                    controlsDisabled: flow.controlsDisabled,
-                    onSelect: flow.chooseFeature
-                )
+                featureSelection
 
             case .reactiveSetup:
                 ReactiveSetupView(
@@ -69,11 +68,61 @@ struct BoxingCoachRootView: View {
         .onChange(of: flow.route) {
             AccessibilityNotification.ScreenChanged().post()
         }
+        .onChange(of: competitionStore.currentPlayer) { oldPlayer, newPlayer in
+            guard oldPlayer?.id != newPlayer?.id
+                    || oldPlayer?.reach != newPlayer?.reach
+                    || oldPlayer?.calibrationVersion != newPlayer?.calibrationVersion
+            else { return }
+            syncPlayerCalibration(newPlayer)
+        }
         .onAppear {
             flow.controlWindowDidAppear()
         }
+        .task {
+            await competitionStore.bootstrap()
+            await completeCompetitionRunIfNeeded()
+            if let player = competitionStore.currentPlayer {
+                syncPlayerCalibration(player)
+            }
+        }
         .onDisappear {
             flow.controlWindowDidDisappear()
+        }
+        .sheet(item: Binding(
+            get: { competitionStore.sheetRoute },
+            set: { route in
+                if route == nil { competitionStore.dismiss() }
+            }
+        ), onDismiss: {
+            joinCompetitionFocused = true
+        }) { _ in
+            CompetitionSheetView(onStart: startCompetition)
+                .environment(competitionStore)
+        }
+    }
+
+    private var featureSelection: some View {
+        ZStack(alignment: .topTrailing) {
+            FeatureSelectionView(
+                controlsDisabled: flow.controlsDisabled,
+                onSelect: flow.chooseFeature
+            )
+            .padding(.top, 64)
+
+            Button {
+                competitionStore.open()
+            } label: {
+                Label("Join Competition", systemImage: "trophy.fill")
+                    .padding(.horizontal, 4)
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .frame(minWidth: 44, minHeight: 44)
+            .disabled(flow.controlsDisabled)
+            .accessibilityLabel("Join Competition")
+            .accessibilityHint("Enter a player name, calibrate reach, and compete on two leaderboards")
+            .accessibilityInputLabels(["Join Competition", "Competition", "Leaderboard"])
+            .accessibilityFocused($joinCompetitionFocused)
         }
     }
 
@@ -102,6 +151,44 @@ struct BoxingCoachRootView: View {
         }
     }
 
+    private func startCompetition(_ selection: TrainingSelection) {
+        flow.navigate(to: .experience(selection))
+        Task {
+            await flow.startExperience(
+                selection,
+                session: session,
+                supportsMultipleScenes: supportsMultipleWindows,
+                openImmersive: openImmersive,
+                dismissImmersive: dismissImmersive,
+                hideControlWindow: {
+                    dismissWindow(id: BoxingCoachSceneID.controlWindow)
+                }
+            )
+            if let message = flow.presentationError {
+                competitionStore.cancelActiveRun(message: message)
+                flow.navigate(to: .features)
+            }
+        }
+    }
+
+    private func completeCompetitionRunIfNeeded() async {
+        guard competitionStore.activeRun != nil else { return }
+        await competitionStore.reconcileCompletedRun(session: session)
+        if competitionStore.activeRun == nil {
+            let clock = ContinuousClock()
+            let deadline = clock.now.advanced(by: .seconds(3))
+            while flow.controlsDisabled, clock.now < deadline {
+                try? await Task.sleep(for: .milliseconds(25))
+            }
+            flow.navigate(to: .features)
+        }
+    }
+
+    private func syncPlayerCalibration(_ player: CompetitionPlayer?) {
+        let reach = player?.hasCurrentCalibration == true ? player?.reach : nil
+        session.applyPersistedCompetitionReach(reach)
+    }
+
     private func openImmersive(_ id: String) async -> ImmersiveOpenOutcome {
         switch await openImmersiveSpace(id: id) {
         case .opened:
@@ -128,4 +215,5 @@ struct BoxingCoachRootView: View {
     BoxingCoachRootView()
         .environment(ReactiveStrikeSession())
         .environment(TrainingFlowCoordinator())
+        .environment(CompetitionStore.preview())
 }

@@ -87,6 +87,36 @@ struct Task4ReviewRegressionTests {
         )
     }
 
+    @Test("Ranked target setup opens elapsed pause before a missing body-frame wait")
+    func rankedBodyFrameWaitRetainsFirstMissingTimestampThroughRecovery() {
+        var clock = CompetitionElapsedClock()
+
+        let genericWaitAccountsPause = clock.beginBodyFrameWaitIfNeeded(
+            frameAvailable: false,
+            rankedRoundActive: true,
+            at: 1.000
+        )
+        #expect(genericWaitAccountsPause)
+        let combinationWaitRetainsPause = clock.beginBodyFrameWaitIfNeeded(
+            frameAvailable: false,
+            rankedRoundActive: true,
+            at: 2.500
+        )
+        #expect(combinationWaitRetainsPause)
+        clock.beginPause(at: 2.750) // Stable recovery must not restart the missing-frame pause.
+        #expect(abs(clock.endPause(at: 3.000) - 2.000) < 0.000_001)
+        #expect(abs(clock.activeElapsed(startedAt: 0, endedAt: 5) - 3.000) < 0.000_001)
+
+        var ordinaryClock = CompetitionElapsedClock()
+        let ordinaryWaitAccountsPause = ordinaryClock.beginBodyFrameWaitIfNeeded(
+            frameAvailable: false,
+            rankedRoundActive: false,
+            at: 1.000
+        )
+        #expect(ordinaryWaitAccountsPause == false)
+        #expect(ordinaryClock.endPause(at: 2.000) == 0)
+    }
+
     @Test("A generic evidence retry retains the exact target position and entity")
     func genericRetryRetainsPhysicalTarget() {
         let position = SIMD3<Float>(0.12, 1.34, -0.56)

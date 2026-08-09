@@ -66,6 +66,24 @@ nonisolated struct CompetitionElapsedClock: Sendable {
         pauseStartedAt = timestamp
     }
 
+    /// Opens ranked-time accounting before an asynchronous body-frame wait begins. Repeated calls
+    /// while the same outage is active deliberately return `true` without replacing its origin.
+    @discardableResult
+    mutating func beginBodyFrameWaitIfNeeded(
+        frameAvailable: Bool,
+        rankedRoundActive: Bool,
+        at timestamp: TimeInterval
+    ) -> Bool {
+        guard rankedRoundActive,
+              !frameAvailable,
+              timestamp.isFinite,
+              timestamp >= 0 else {
+            return false
+        }
+        beginPause(at: timestamp)
+        return true
+    }
+
     @discardableResult
     mutating func endPause(at timestamp: TimeInterval) -> TimeInterval {
         guard let pauseStartedAt,
@@ -776,7 +794,7 @@ final class ReactiveStrikeSession {
 
     private func makeReactiveTargetRetryPlan() async -> ReactiveTargetRetryPlan? {
         while !Task.isCancelled, phase == .running {
-            if let frame = await waitForBodyFrame() {
+            if let frame = await waitForRequiredBodyFrame() {
                 let bodyPosition = reachProfile.randomBodyTargetPosition()
                 return ReactiveTargetRetryPlan(
                     targetPosition: frame.toWorld(bodyPosition)
@@ -796,7 +814,7 @@ final class ReactiveStrikeSession {
     private func presentTarget(
         at worldPosition: SIMD3<Float>
     ) async -> TargetPresentationOutcome {
-        guard let frame = await waitForBodyFrame() else {
+        guard let frame = await waitForRequiredBodyFrame() else {
             guard !Task.isCancelled else { return .aborted }
             if capturesCompetitionEvidence {
                 return await recoverCompetitionTracking() ? .retry : .aborted
@@ -1262,10 +1280,10 @@ final class ReactiveStrikeSession {
                     failDrill("Guard calibration was unavailable for this combination.")
                     return
                 }
-                var availableFrame = await waitForBodyFrame()
+                var availableFrame = await waitForRequiredBodyFrame()
                 while availableFrame == nil && capturesCompetitionEvidence {
                     guard await recoverCompetitionTracking() else { return }
-                    availableFrame = await waitForBodyFrame()
+                    availableFrame = await waitForRequiredBodyFrame()
                 }
                 guard let frame = availableFrame else {
                     guard !Task.isCancelled else { return }
@@ -1738,6 +1756,26 @@ final class ReactiveStrikeSession {
             try? await Task.sleep(for: .milliseconds(25))
         }
         return nil
+    }
+
+    /// Starts ranked pause accounting before the potentially 1.5-second wait. A recovered frame
+    /// closes a short setup outage here; a timeout deliberately leaves the same pause active so
+    /// `recoverCompetitionTracking` includes its stable-sample gate without resetting the origin.
+    private func waitForRequiredBodyFrame(timeout: TimeInterval = 1.5) async -> BodyFrame? {
+        let immediateFrame = currentBodyFrame()
+        let accountsForRankedWait = competitionElapsedClock.beginBodyFrameWaitIfNeeded(
+            frameAvailable: immediateFrame != nil,
+            rankedRoundActive: capturesCompetitionEvidence && competitionStartedAt != nil,
+            at: ProcessInfo.processInfo.systemUptime
+        )
+        if let immediateFrame { return immediateFrame }
+
+        let frame = await waitForBodyFrame(timeout: timeout)
+        if accountsForRankedWait,
+           frame != nil || Task.isCancelled || phase != .running {
+            competitionElapsedClock.endPause(at: ProcessInfo.processInfo.systemUptime)
+        }
+        return frame
     }
 
     private func calibrationKey(for mode: ReactiveStrikeMode) -> ReactiveStrikeMode {

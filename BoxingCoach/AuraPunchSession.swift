@@ -18,6 +18,21 @@ enum AuraPunchPhase: String, Sendable {
     case results
 }
 
+/// Resolves the immutable physical hand for one Aura repetition. Either-hand techniques alternate
+/// lead/rear; stance-specific techniques retain their semantic lead/rear mapping every time.
+enum AuraPunchSideSequence {
+    static func side(
+        forRepetition repetition: Int,
+        technique: Technique,
+        stance: Stance
+    ) -> BodySide {
+        guard technique.hand == .either else {
+            return technique.hand.side(for: stance)
+        }
+        return repetition.isMultiple(of: 2) ? stance.rearSide : stance.leadSide
+    }
+}
+
 /// Drives one Aura Punch rep: demo → attempt → score → feedback.
 ///
 /// Shares the `HandTrackingService` and the immersive scene root with Reactive Strike rather than
@@ -76,11 +91,6 @@ final class AuraPunchSession {
 
     private let scoredPunchSafetyTimeout: TimeInterval = 20
     private let interScoredPunchDelay: TimeInterval = 0.45
-    /// How long to keep recording after a target hit so retraction can be scored.
-    private let postHitCaptureDuration: TimeInterval = 1.0
-    /// Follow-through ends once reach drops below this fraction of the hit peak.
-    private let retractionReachFraction: Float = 0.85
-
     // MARK: Observable state
 
     private(set) var phase: AuraPunchPhase = .idle
@@ -113,6 +123,7 @@ final class AuraPunchSession {
     ]
     private let scorer = TechniqueScorer()
     private let feedbackGenerator: FeedbackGenerating
+    private let audienceTrack: CoachLearnerLevel
     let audioCoordinator: TrainingAudioCoordinator
     private let targets = TargetController()
 
@@ -125,6 +136,8 @@ final class AuraPunchSession {
     private var phrasingTask: Task<Void, Never>?
     /// Monotonic local token. It never crosses the relay boundary.
     private var feedbackGeneration: UInt64 = 0
+    /// The last actionable metric focus in this training session.
+    private var previousCorrectionFocus: SubMetricKind?
 
     /// Reused briefly when head tracking flickers mid-attempt so hand samples are not discarded.
     private var cachedBodyFrame: BodyFrame?
@@ -138,10 +151,12 @@ final class AuraPunchSession {
     init(
         hands: HandTrackingService,
         feedbackGenerator: FeedbackGenerating = MockFeedbackGenerator(),
+        audienceTrack: CoachLearnerLevel,
         audioCoordinator: TrainingAudioCoordinator? = nil
     ) {
         self.hands = hands
         self.feedbackGenerator = feedbackGenerator
+        self.audienceTrack = audienceTrack
         self.audioCoordinator = audioCoordinator ?? TrainingAudioCoordinator()
     }
 
@@ -235,6 +250,7 @@ final class AuraPunchSession {
         phase = .idle
         score = nil
         feedback = nil
+        previousCorrectionFocus = nil
         errorMessage = nil
         statusMessage = "Ready"
     }
@@ -315,10 +331,11 @@ final class AuraPunchSession {
     /// tutorial actually trains both arms instead of only ever showing the lead side (which is
     /// what a single fixed `PunchHand.side(for:)` lookup would otherwise do for every rep).
     private func demoSide(forRep rep: Int, technique: Technique, stance: Stance) -> BodySide {
-        guard technique.hand == .either else {
-            return technique.hand.side(for: stance)
-        }
-        return rep.isMultiple(of: 2) ? stance.rearSide : stance.leadSide
+        AuraPunchSideSequence.side(
+            forRepetition: rep,
+            technique: technique,
+            stance: stance
+        )
     }
 
     /// Leads the user through the punch call-and-response, one waypoint at a time.
@@ -622,17 +639,10 @@ final class AuraPunchSession {
         currentScoredPunch = 0
         playCoachCue(.hitTarget, caption: "Hit each target.")
 
-        let expectedSide = technique.hand.side(for: stance)
-        let reference = ReferencePunchLibrary.punch(
-            for: technique,
-            stance: stance,
-            measurements: measurements,
-            side: expectedSide
-        )
-
         var scores: [TechniqueScore] = []
 
-        for punchIndex in 1...scoredPunchCount {
+        var punchIndex = 1
+        while punchIndex <= scoredPunchCount {
             guard !Task.isCancelled else { return }
 
             currentScoredPunch = punchIndex
@@ -640,6 +650,20 @@ final class AuraPunchSession {
                 headline: "HIT THE TARGET",
                 detail: "Punch \(punchIndex) of \(scoredPunchCount) — hit the target",
                 status: "Punch \(punchIndex) of \(scoredPunchCount) — hit the target!"
+            )
+
+            // `punchIndex` advances only after semantic admission, so a technical retry preserves
+            // this exact physical side and evidence chain instead of alternating mid-punch.
+            let expectedSide = AuraPunchSideSequence.side(
+                forRepetition: punchIndex,
+                technique: technique,
+                stance: stance
+            )
+            let reference = ReferencePunchLibrary.punch(
+                for: technique,
+                stance: stance,
+                measurements: measurements,
+                side: expectedSide
             )
 
             guard let frame = currentBodyFrame(solver: solver),
@@ -651,6 +675,8 @@ final class AuraPunchSession {
                     at: reference.peakTime
                   )
             else {
+                statusMessage = "Tracking changed · punch discarded"
+                try? await Task.sleep(for: .milliseconds(220))
                 continue
             }
 
@@ -659,32 +685,41 @@ final class AuraPunchSession {
 
             let capture = await capturePunchUntilHit(
                 solver: solver,
-                reference: reference,
                 side: expectedSide
             )
 
-            if let capture {
-                let punchReference = ReferencePunchLibrary.punch(
-                    for: technique,
-                    stance: stance,
-                    measurements: measurements,
-                    side: capture.side
-                )
-                if let computed = scorer.score(
-                    attempt: capture.attempt,
-                    reference: punchReference,
-                    technique: technique,
-                    thrownSide: capture.side,
-                    stance: stance
-                ) {
-                    scores.append(computed)
-                }
+            guard let capture else {
+                targets.removeActiveTarget()
+                guard !Task.isCancelled else { return }
+                try? await Task.sleep(for: .seconds(interScoredPunchDelay))
+                continue
             }
+
+            let punchReference = ReferencePunchLibrary.punch(
+                for: technique,
+                stance: stance,
+                measurements: measurements,
+                side: capture.side
+            )
+            guard let computed = scorer.score(
+                attempt: capture.attempt,
+                reference: punchReference,
+                technique: technique,
+                thrownSide: capture.side,
+                stance: stance
+            ) else {
+                statusMessage = "Punch evidence was invalid · reset in guard"
+                targets.removeActiveTarget()
+                try? await Task.sleep(for: .milliseconds(220))
+                continue
+            }
+            scores.append(computed)
+            punchIndex += 1
 
             try? await Task.sleep(for: .milliseconds(220))
             targets.removeActiveTarget()
 
-            if punchIndex < scoredPunchCount {
+            if punchIndex <= scoredPunchCount {
                 try? await Task.sleep(for: .seconds(interScoredPunchDelay))
             }
         }
@@ -700,10 +735,9 @@ final class AuraPunchSession {
         finishAggregated(aggregated)
     }
 
-    /// Records motion until the user's fist reaches the active target, then through retraction.
+    /// Records one fixed physical hand through validated outbound contact and return to guard.
     private func capturePunchUntilHit(
         solver: ArmPoseSolver,
-        reference: ReferencePunch,
         side: BodySide
     ) async -> (side: BodySide, attempt: RecordedAttempt)? {
         let throwMessage = statusMessage
@@ -712,52 +746,123 @@ final class AuraPunchSession {
         cachedBodyFrameTime = 0
 
         let startTime = CACurrentMediaTime()
+        guard let targetPosition = targets.activeTargetPosition else {
+            statusMessage = "Punch evidence was invalid · reset in guard"
+            return nil
+        }
+        guard let guardObservation = hands.freshObservation(for: side) else {
+            statusMessage = "Tracking changed · punch discarded"
+            return nil
+        }
+        guard guardObservation.fistState == .closed else {
+            statusMessage = PunchEvidenceFeedback.message(
+                for: .fistNotClosed(side: side, state: guardObservation.fistState)
+            )
+            return nil
+        }
+
+        let captureChain = PunchEvidenceCaptureChain(
+            generation: hands.providerGeneration,
+            continuityEpoch: hands.continuityEpoch
+        )
+        var validator = PunchEvidenceValidator(
+            configuration: .init(
+                technique: technique,
+                stance: stance,
+                requiredHand: side,
+                guardPosition: guardObservation.fistPosition,
+                targetPosition: targetPosition,
+                targetRadius: targetHitRadius,
+                generation: captureChain.generation,
+                continuityEpoch: captureChain.continuityEpoch
+            )
+        )
+
         hands.beginAttemptCapture()
         defer { hands.endAttemptCapture() }
 
         for recorder in recorders.values { recorder.begin(at: startTime) }
+        var trackingContinuity = TrackingContinuityObserver(epoch: captureChain.continuityEpoch)
 
         let armingDeadline = CACurrentMediaTime() + scoredPunchSafetyTimeout
-        var hitDetected = false
-        var hitPeakReach: Float = 0
-        var followThroughDeadline: TimeInterval = 0
+        var evidenceCursor = PunchEvidenceFrameCursor()
 
-        while true {
+        while CACurrentMediaTime() < armingDeadline {
             if Task.isCancelled { break }
-
-            let now = CACurrentMediaTime()
-            if !hitDetected, now >= armingDeadline { break }
-            if hitDetected, now >= followThroughDeadline { break }
-
-            updateLandingTarget(reference: reference, side: side, solver: solver)
-
-            if !hitDetected,
-               let hitPosition = targets.activeTargetPosition,
-               let fist = hands.nearestFistPosition(to: hitPosition),
-               distance(fist, hitPosition) <= targetHitRadius {
-                hitDetected = true
-                targets.flash(result: .hit)
-                audioCoordinator.handleImmediately(.validatedImpact(
-                    position: hitPosition,
-                    quality: .clean
-                ))
-                followThroughDeadline = now + postHitCaptureDuration
+            if trackingContinuity.observe(hands.continuityEpoch) {
+                for recorder in recorders.values { recorder.cancel() }
+                mirrorArm?.isVisible = false
+                statusMessage = "Tracking changed · punch discarded"
+                return nil
             }
 
-            let leadingReach = recordAttemptFrame(
+            let now = CACurrentMediaTime()
+            _ = recordAttemptFrame(
                 solver: solver,
                 startTime: startTime,
                 throwMessage: throwMessage,
                 at: now
             )
 
-            if let leadingReach {
-                if hitDetected {
-                    hitPeakReach = max(hitPeakReach, leadingReach)
-                    if hitPeakReach > 0,
-                       leadingReach < hitPeakReach * retractionReachFraction {
-                        break
+            if let evidenceFrame = punchEvidenceFrame(now: now, requiredSide: side),
+               evidenceCursor.shouldObserve(evidenceFrame) {
+                let event = validator.observe(evidenceFrame)
+                switch event {
+                case .waiting:
+                    break
+                case .armed:
+                    statusMessage = "Punch through the target"
+                case .contact:
+                    statusMessage = PunchEvidenceFeedback.returnToGuard(side: side, style: .snap)
+                case .readyForCoverage:
+                    guard let attempt = capturedAttempt(for: side), attempt.isUsable else {
+                        for recorder in recorders.values { recorder.cancel() }
+                        mirrorArm?.isVisible = false
+                        statusMessage = PunchEvidenceFeedback.message(
+                            for: .missingTrackingCoverage
+                        )
+                        return nil
                     }
+                    guard let coverage = captureChain.coverage(
+                        trackedFraction: attempt.trackedFraction,
+                        currentGeneration: hands.providerGeneration,
+                        currentContinuityEpoch: hands.continuityEpoch
+                    ) else {
+                        for recorder in recorders.values { recorder.cancel() }
+                        mirrorArm?.isVisible = false
+                        statusMessage = "Tracking changed · punch discarded"
+                        return nil
+                    }
+                    switch PunchEvidenceAttemptAction(
+                        event: validator.complete(coverage: coverage)
+                    ) {
+                    case .admit:
+                        // Satisfying feedback is downstream of semantic admission only.
+                        targets.flash(result: .hit)
+                        audioCoordinator.handleImmediately(.validatedImpact(
+                            position: targetPosition,
+                            quality: .clean
+                        ))
+                        mirrorArm?.isVisible = false
+                        return (side, attempt)
+                    case let .retry(reason):
+                        for recorder in recorders.values { recorder.cancel() }
+                        mirrorArm?.isVisible = false
+                        statusMessage = PunchEvidenceFeedback.message(for: reason)
+                        return nil
+                    case .waiting, .armed, .contact, .completeCoverage:
+                        for recorder in recorders.values { recorder.cancel() }
+                        mirrorArm?.isVisible = false
+                        statusMessage = "Punch evidence was incomplete"
+                        return nil
+                    }
+                case let .invalid(reason):
+                    for recorder in recorders.values { recorder.cancel() }
+                    mirrorArm?.isVisible = false
+                    statusMessage = PunchEvidenceFeedback.message(for: reason)
+                    return nil
+                case .validated:
+                    break
                 }
             }
 
@@ -765,13 +870,12 @@ final class AuraPunchSession {
         }
 
         mirrorArm?.isVisible = false
-
-        guard hitDetected else {
-            for recorder in recorders.values { recorder.cancel() }
-            return nil
+        for recorder in recorders.values { recorder.cancel() }
+        if !Task.isCancelled,
+           case let .retry(reason) = PunchEvidenceAttemptAction(event: validator.finish()) {
+            statusMessage = PunchEvidenceFeedback.message(for: reason)
         }
-
-        return selectedCapturedAttempt(for: technique.id)
+        return nil
     }
 
     /// Records one frame of both arms; returns the leading reach fraction if any hand tracked.
@@ -853,18 +957,9 @@ final class AuraPunchSession {
         return nil
     }
 
-    private func selectedCapturedAttempt(
-        for techniqueID: String
-    ) -> (side: BodySide, attempt: RecordedAttempt)? {
+    private func capturedAttempt(for side: BodySide) -> RecordedAttempt? {
         let captured = recorders.mapValues { $0.finish() }
-        guard let thrown = captured.max(by: {
-            $0.value.extensionMagnitude(for: techniqueID)
-                < $1.value.extensionMagnitude(for: techniqueID)
-        }),
-              thrown.value.extensionMagnitude(for: techniqueID) > 0 else {
-            return nil
-        }
-        return (thrown.key, thrown.value)
+        return captured[side]
     }
 
     /// Publishes the deterministic result synchronously, then starts one optional prose request.
@@ -879,32 +974,49 @@ final class AuraPunchSession {
         statusMessage = "Scoring…"
 
         let resultTechnique = technique
+        let resultStance = stance
         let localFeedback = feedbackGenerator.localFeedback(
             for: aggregated,
-            technique: resultTechnique
+            technique: resultTechnique,
+            stance: resultStance,
+            previousFocus: previousCorrectionFocus,
+            audienceTrack: audienceTrack
         )
         score = aggregated
         feedback = localFeedback
 
-        audioCoordinator.handleImmediately(.experienceDidEnter(.celebrate))
-        playCoachCue(
-            aggregated.overall >= 74 ? .resultsGood : .resultsNeedsWork,
-            kind: .result,
-            caption: aggregated.overall >= 74
-                ? "Strong round."
-                : "Round complete. Review the correction and try again."
-        )
+        if let focus = localFeedback.decision.focus {
+            previousCorrectionFocus = focus
+        } else if localFeedback.correctionCode == .repeatShape {
+            previousCorrectionFocus = nil
+        }
+
+        if localFeedback.correctionCode != .trackingRecovery {
+            audioCoordinator.handleImmediately(.experienceDidEnter(.celebrate))
+            playCoachCue(
+                aggregated.overall >= 74 ? .resultsGood : .resultsNeedsWork,
+                kind: .result,
+                caption: aggregated.overall >= 74
+                    ? "Strong round."
+                    : "Round complete. Review the correction and try again."
+            )
+        }
         phase = .results
         statusMessage = aggregated.wrongHand
             ? "Round complete — that was your \(aggregated.thrownHandName) hand"
             : "Round complete"
+
+        guard localFeedback.correctionCode != .trackingRecovery else {
+            return Task {}
+        }
 
         let generation = feedbackGeneration
         let generator = feedbackGenerator
         let task = Task { [weak self, generator, resultTechnique, aggregated, localFeedback] in
             let phrasing = await generator.phrasing(
                 for: aggregated,
-                technique: resultTechnique
+                technique: resultTechnique,
+                decision: localFeedback.decision
             )
 
             guard let self else { return }
@@ -929,6 +1041,33 @@ final class AuraPunchSession {
     }
 
     // MARK: Helpers
+
+    private func punchEvidenceFrame(
+        now: TimeInterval,
+        requiredSide: BodySide
+    ) -> PunchEvidenceValidator.Frame? {
+        let observations = [BodySide.left, .right].compactMap {
+            hands.freshObservation(for: $0)
+        }
+        guard let required = observations.first(where: { $0.side == requiredSide }) else {
+            return nil
+        }
+        return PunchEvidenceValidator.Frame(
+            now: now,
+            deviceTimestamp: required.deviceTimestamp,
+            generation: hands.providerGeneration,
+            continuityEpoch: hands.continuityEpoch,
+            hands: observations.map {
+                PunchEvidenceValidator.HandSample(
+                    side: $0.side,
+                    fistPosition: $0.fistPosition,
+                    fistState: $0.fistState,
+                    acquisitionTimestamp: $0.acquisitionTimestamp,
+                    quality: .measured
+                )
+            }
+        )
+    }
 
     private func landingWorldPosition(
         reference: ReferencePunch,

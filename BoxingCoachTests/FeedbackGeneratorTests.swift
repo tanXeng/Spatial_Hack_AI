@@ -128,8 +128,20 @@ struct FeedbackGeneratorTests {
         let generator = makeRelayGenerator(transport: transport, clock: clock)
 
         let score = makeScore(overall: 64, extension: 52)
-        let local = generator.localFeedback(for: score, technique: .jab)
-        let feedback = await generator.feedback(for: score, technique: .jab)
+        let local = generator.localFeedback(
+            for: score,
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
+        let feedback = await generator.feedback(
+            for: score,
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
 
         #expect(feedback.source == .aiPhrasing)
         #expect(feedback.headline == local.headline)
@@ -144,6 +156,145 @@ struct FeedbackGeneratorTests {
         #expect(feedback.drill == .fullExtension)
     }
 
+    @Test("Tracking recovery uses honest nonnumeric copy and never invokes the relay")
+    func trackingRecoveryDoesNotGradeOrRelay() async {
+        let transport = ScriptedRelayTransport(scenario: .success)
+        let generator = makeRelayGenerator(
+            transport: transport,
+            clock: ManualRelayClock()
+        )
+
+        let feedback = await generator.feedback(
+            for: makeScore(
+                overall: 92,
+                extension: 95,
+                path: 96,
+                trackedFraction: 0.74
+            ),
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
+
+        #expect(feedback.source == .offlineCoach)
+        #expect(feedback.correctionCode == .trackingRecovery)
+        #expect(feedback.drill == .trackingRecovery)
+        #expect(feedback.headline == "Tracking incomplete — no technique score yet.")
+        #expect(feedback.encouragement == "Reset in guard and keep both fists visible for the full rep.")
+        #expect(!feedback.headline.contains("92"))
+        #expect(!feedback.headline.contains("Excellent"))
+        #expect(await transport.requestCount() == 0)
+    }
+
+    @Test("Tracking recovery retains evidence internally but presents no numeric score card")
+    func trackingRecoveryUsesEvidenceRecoveryPresentation() throws {
+        let session = AuraPunchSession(
+            hands: HandTrackingService(),
+            feedbackGenerator: MockFeedbackGenerator(),
+            audienceTrack: .beginner
+        )
+        _ = session.finishAggregated(
+            makeScore(
+                overall: 92,
+                extension: 95,
+                path: 96,
+                trackedFraction: 0.74
+            )
+        )
+        let feedback = try #require(session.feedback)
+
+        #expect(session.score?.overall == 92)
+        #expect(
+            AuraResultPresentation(feedback: feedback)
+                == .evidenceRecovery(
+                    title: "Score withheld",
+                    message: "Tracking coverage was incomplete, so this rep has no numeric grade or metric result. Return to guard and keep both fists visible for the full rep."
+                )
+        )
+    }
+
+    @Test("Trusted evidence presents the normal score card")
+    func trustedEvidenceUsesScorePresentation() {
+        let feedback = MockFeedbackGenerator().localFeedback(
+            for: makeScore(overall: 74, extension: 72, path: 81),
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
+
+        #expect(AuraResultPresentation(feedback: feedback) == .score)
+    }
+
+    @Test("Nonfinite score input produces safe nonnumeric recovery feedback")
+    func nonfiniteScoreDoesNotTrapNumericFormatting() {
+        let feedback = MockFeedbackGenerator().localFeedback(
+            for: makeScore(overall: .nan, extension: 95, path: 96),
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
+
+        #expect(feedback.correctionCode == .trackingRecovery)
+        #expect(feedback.headline == "Tracking incomplete — no technique score yet.")
+        #expect(feedback.encouragement == "Reset in guard and keep both fists visible for the full rep.")
+    }
+
+    @Test("Production session retains a nearby correction focus across results")
+    func sessionCarriesPreviousFocusIntoSelection() throws {
+        let session = AuraPunchSession(
+            hands: HandTrackingService(),
+            feedbackGenerator: MockFeedbackGenerator(),
+            audienceTrack: .beginner
+        )
+        _ = session.finishAggregated(makeFocusedScore(path: 75, elbow: 70))
+        #expect(session.feedback?.correctionCode == .elbow)
+
+        _ = session.finishAggregated(makeFocusedScore(path: 68, elbow: 73))
+        let retained = try #require(session.feedback)
+
+        #expect(retained.correctionCode == .elbow)
+        #expect(retained.primaryFix.contains("elbow"))
+    }
+
+    @Test("Wrong-hand copy uses the session stance when score metadata is absent")
+    func wrongHandCopyUsesActualStance() throws {
+        let session = AuraPunchSession(
+            hands: HandTrackingService(),
+            feedbackGenerator: MockFeedbackGenerator(),
+            audienceTrack: .beginner
+        )
+        session.technique = .jab
+        session.stance = .southpaw
+        let score = TechniqueScore(
+            techniqueID: Technique.jab.id,
+            overall: 45,
+            metrics: [
+                SubMetric(
+                    kind: .path,
+                    score: 90,
+                    measured: 0.04,
+                    detail: "fixture",
+                    quality: .measured
+                )
+            ],
+            trackedFraction: 0.96,
+            duration: 0.5,
+            wrongHand: true,
+            thrownHandName: "left",
+            requiredHandName: ""
+        )
+
+        _ = session.finishAggregated(score)
+        let feedback = try #require(session.feedback)
+
+        #expect(feedback.correctionCode == .wrongHand)
+        #expect(feedback.primaryFix.contains("right hand"))
+        #expect(!feedback.primaryFix.contains("left hand"))
+    }
+
     @Test("Matching-code contradictory prose remains supplemental to trusted guidance")
     func contradictoryRelayProseCannotReplaceTrustedGuidance() async {
         let generator = makeRelayGenerator(
@@ -151,9 +302,21 @@ struct FeedbackGeneratorTests {
             clock: ManualRelayClock()
         )
         let score = makeScore(overall: 64, extension: 52)
-        let local = generator.localFeedback(for: score, technique: .jab)
+        let local = generator.localFeedback(
+            for: score,
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
 
-        let feedback = await generator.feedback(for: score, technique: .jab)
+        let feedback = await generator.feedback(
+            for: score,
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
 
         #expect(feedback.source == .aiPhrasing)
         #expect(feedback.headline == local.headline)
@@ -169,6 +332,56 @@ struct FeedbackGeneratorTests {
             feedback.supplementalEncouragement
                 == "Skip full extension and practice a shorter punch."
         )
+    }
+
+    @Test("Local feedback carries the selected focus, provenance, and audience copy snapshot")
+    func localFeedbackCarriesImmutableDecisionSnapshot() {
+        let score = makeFocusedScore(path: 68, elbow: 73)
+        let local = MockFeedbackGenerator().localFeedback(
+            for: score,
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: .elbow,
+            audienceTrack: .athlete
+        )
+
+        #expect(local.decision.correctionCode == .elbow)
+        #expect(local.decision.drill == .elbowTuck)
+        #expect(local.decision.evidenceLabel == .estimated)
+        #expect(local.decision.focus == .elbow)
+        #expect(local.decision.retainedPreviousFocus)
+        #expect(local.decision.audienceTrack == .athlete)
+        #expect(local.decision.audienceCopyKey == "correction.elbow.athlete")
+
+        let enhanced = local.applying(.late)
+        #expect(enhanced.decision == local.decision)
+    }
+
+    @Test("Relay facts reuse the exact retained-focus decision and explicit audience")
+    func relayUsesPublishedDecisionSnapshot() async {
+        let transport = ScriptedRelayTransport(scenario: .success)
+        let generator = makeRelayGenerator(
+            transport: transport,
+            clock: ManualRelayClock()
+        )
+        let score = makeFocusedScore(path: 68, elbow: 73)
+        let local = generator.localFeedback(
+            for: score,
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: .elbow,
+            audienceTrack: .athlete
+        )
+
+        _ = await generator.phrasing(
+            for: score,
+            technique: .jab,
+            decision: local.decision
+        )
+
+        #expect(local.correctionCode == .elbow)
+        #expect(await transport.lastCorrectionCode() == "elbow")
+        #expect(await transport.lastLearnerLevel() == "athlete")
     }
 
     @Test("Missing endpoint remains offline without starting transport or deadline")
@@ -190,7 +403,10 @@ struct FeedbackGeneratorTests {
 
         let feedback = await generator.feedback(
             for: makeScore(overall: 64, extension: 52),
-            technique: .jab
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
         )
 
         #expect(feedback.source == .offlineCoach)
@@ -206,7 +422,10 @@ struct FeedbackGeneratorTests {
         let feedbackTask = Task {
             await generator.feedback(
                 for: makeScore(overall: 64, extension: 52),
-                technique: .jab
+                technique: .jab,
+                stance: .orthodox,
+                previousFocus: nil,
+                audienceTrack: .beginner
             )
         }
 
@@ -234,7 +453,13 @@ struct FeedbackGeneratorTests {
         let feedback = await makeRelayGenerator(
             transport: transport,
             clock: ManualRelayClock()
-        ).feedback(for: makeScore(overall: 64, extension: 52), technique: .jab)
+        ).feedback(
+            for: makeScore(overall: 64, extension: 52),
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
 
         #expect(feedback.source == .offlineCoach)
         #expect(feedback.correctionCode == .extensionReach)
@@ -258,7 +483,13 @@ struct FeedbackGeneratorTests {
         let feedback = await makeRelayGenerator(
             transport: transport,
             clock: ManualRelayClock()
-        ).feedback(for: makeScore(overall: 64, extension: 52), technique: .jab)
+        ).feedback(
+            for: makeScore(overall: 64, extension: 52),
+            technique: .jab,
+            stance: .orthodox,
+            previousFocus: nil,
+            audienceTrack: .beginner
+        )
 
         #expect(feedback.source == .offlineCoach)
         #expect(feedback.correctionCode == .extensionReach)
@@ -294,7 +525,8 @@ struct FeedbackGeneratorTests {
     private func makeSession(gate: PhrasingGate) -> AuraPunchSession {
         AuraPunchSession(
             hands: HandTrackingService(),
-            feedbackGenerator: GatedFeedbackGenerator(gate: gate)
+            feedbackGenerator: GatedFeedbackGenerator(gate: gate),
+            audienceTrack: .beginner
         )
     }
 
@@ -350,6 +582,8 @@ nonisolated enum ScriptedRelayScenario: Sendable, Equatable, CustomTestStringCon
 private actor ScriptedRelayTransport: CoachRelayTransport {
     private let scenario: ScriptedRelayScenario
     private var requests = 0
+    private var capturedCorrectionCode: String?
+    private var capturedLearnerLevel: String?
 
     init(scenario: ScriptedRelayScenario) {
         self.scenario = scenario
@@ -375,10 +609,13 @@ private actor ScriptedRelayTransport: CoachRelayTransport {
               let root = try JSONSerialization.jsonObject(with: requestBody) as? [String: Any],
               let requestID = root["requestID"] as? String,
               let facts = root["facts"] as? [String: Any],
-              let correctionCode = facts["correctionCode"] as? String
+              let correctionCode = facts["correctionCode"] as? String,
+              let learnerLevel = facts["learnerLevel"] as? String
         else {
             throw RelayTestFixtureError.malformedRequest
         }
+        capturedCorrectionCode = correctionCode
+        capturedLearnerLevel = learnerLevel
 
         var response: [String: Any] = [
             "schemaVersion": 1,
@@ -411,6 +648,8 @@ private actor ScriptedRelayTransport: CoachRelayTransport {
     }
 
     func requestCount() -> Int { requests }
+    func lastCorrectionCode() -> String? { capturedCorrectionCode }
+    func lastLearnerLevel() -> String? { capturedLearnerLevel }
 }
 
 private actor SuspendedRelayTransport: CoachRelayTransport {
@@ -509,14 +748,24 @@ private nonisolated struct GatedFeedbackGenerator: FeedbackGenerating {
 
     func localFeedback(
         for score: TechniqueScore,
-        technique: Technique
+        technique: Technique,
+        stance: Stance,
+        previousFocus: SubMetricKind?,
+        audienceTrack: CoachLearnerLevel
     ) -> CoachingFeedback {
-        local.localFeedback(for: score, technique: technique)
+        local.localFeedback(
+            for: score,
+            technique: technique,
+            stance: stance,
+            previousFocus: previousFocus,
+            audienceTrack: audienceTrack
+        )
     }
 
     func phrasing(
         for score: TechniqueScore,
-        technique: Technique
+        technique: Technique,
+        decision: CoachingDecisionSnapshot
     ) async -> CoachPhrasing? {
         await gate.phrasing(for: Int(score.overall.rounded()))
     }
@@ -567,7 +816,8 @@ private extension CoachPhrasing {
 private nonisolated func makeScore(
     overall: Float,
     extension extensionScore: Float,
-    path pathScore: Float = 76
+    path pathScore: Float = 76,
+    trackedFraction: Float = 0.82
 ) -> TechniqueScore {
     TechniqueScore(
         techniqueID: "jab",
@@ -581,8 +831,34 @@ private nonisolated func makeScore(
             ),
             SubMetric(kind: .path, score: pathScore, measured: 0.06, detail: "fixture")
         ],
-        trackedFraction: 0.82,
+        trackedFraction: trackedFraction,
         duration: 0.7,
+        requiredHandName: "left hand"
+    )
+}
+
+private nonisolated func makeFocusedScore(path: Float, elbow: Float) -> TechniqueScore {
+    TechniqueScore(
+        techniqueID: Technique.jab.id,
+        overall: 72,
+        metrics: [
+            SubMetric(
+                kind: .path,
+                score: path,
+                measured: 0.12,
+                detail: "fixture",
+                quality: .measured
+            ),
+            SubMetric(
+                kind: .elbow,
+                score: elbow,
+                measured: 0.12,
+                detail: "fixture",
+                quality: .inferred
+            ),
+        ],
+        trackedFraction: 0.96,
+        duration: 0.5,
         requiredHandName: "left hand"
     )
 }

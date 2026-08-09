@@ -116,6 +116,7 @@ nonisolated enum TrainingAudioEvent: Equatable, Sendable {
     case voiceCaptureDidEnd
     case audioSystemEvent(TrainingAudioSystemEvent)
     case audioRecoveryConfirmed
+    case trainingDidStop
     case sceneDidDetach
 }
 
@@ -326,6 +327,7 @@ nonisolated enum TrainingAudioCoordinatorStatus: Equatable, Sendable {
     case detached
     case ready
     case trackingPaused
+    case capturePreparing
     case capturing
     case awaitingExplicitRecovery
     case unavailable

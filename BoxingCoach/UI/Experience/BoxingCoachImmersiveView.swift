@@ -61,16 +61,25 @@ struct BoxingCoachImmersiveView: View {
 
             Attachment(id: voiceCoachAttachmentID) {
                 if showsVoiceCoach {
-                    CoachPushToTalkButton(
-                        isListening: session.voiceCoach.isListening,
-                        isCaptureReady: session.voiceCoach.isCaptureReady,
-                        isRouting: session.voiceCoach.isRouting,
-                        isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
-                        isDisabled: flow.controlsDisabled,
-                        style: .compactSpatial,
-                        onPress: { session.voiceCoach.beginPushToTalk() },
-                        onRelease: { session.voiceCoach.endPushToTalk() }
-                    )
+                    VStack(spacing: 8) {
+                        CoachPushToTalkButton(
+                            isListening: session.voiceCoach.isListening,
+                            isCaptureReady: session.voiceCoach.isCaptureReady,
+                            isRouting: session.voiceCoach.isRouting,
+                            isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
+                            isDisabled: flow.controlsDisabled,
+                            style: .compactSpatial,
+                            onPress: { session.voiceCoach.beginPushToTalk() },
+                            onRelease: { session.voiceCoach.endPushToTalk() }
+                        )
+                        if let caption = session.audioCoordinator.presentation.caption {
+                            Text(caption)
+                                .font(.caption)
+                                .multilineTextAlignment(.center)
+                                .frame(maxWidth: 260)
+                                .accessibilityLabel("Coach caption: \(caption)")
+                        }
+                    }
                     .padding(10)
                     .glassBackgroundEffect()
                 }
@@ -136,7 +145,6 @@ struct BoxingCoachImmersiveView: View {
             flow.immersiveSceneDidClose(session: session)
         }
         .task {
-            session.auraPunch.prepareCoachAudio()
             session.voiceCoach.prepare()
             refreshVoiceCoachContext()
         }

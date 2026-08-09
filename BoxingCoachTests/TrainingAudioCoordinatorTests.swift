@@ -1,3 +1,4 @@
+import AVFoundation
 import Foundation
 import Testing
 @testable import BoxingCoach
@@ -159,6 +160,266 @@ struct TrainingAudioCoordinatorTests {
         #expect(coordinator.presentation.isCapturing == false)
     }
 
+    @Test("Deferred voice response survives failed recovery and waits for explicit success")
+    func deferredResponseSurvivesFailedPlaybackRecovery() async {
+        let backend = RecordingTrainingAudioBackend()
+        let resources = StubTrainingAudioResources(available: [.coach(.qaWhatFix)])
+        let coordinator = makeCoordinator(backend: backend, resources: resources)
+        await coordinator.handle(.sceneDidAttach)
+        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .captureReady)
+        #expect(await coordinator.handle(.coachCue(.init(
+            kind: .voiceResponse,
+            clip: .qaWhatFix,
+            caption: "Keep the guard close to your cheek."
+        ))) == .deferredUntilCaptureEnds)
+        backend.recoverPlaybackFailuresRemaining = 1
+
+        let failedRecovery = await coordinator.handle(.voiceCaptureDidEnd)
+
+        #expect(failedRecovery == .backendUnavailable)
+        #expect(coordinator.presentation.requiresExplicitRecovery)
+        #expect(backend.playedResources.contains(.coach(.qaWhatFix)) == false)
+
+        let successfulRecovery = await coordinator.handle(.audioRecoveryConfirmed)
+
+        #expect(successfulRecovery == .handled)
+        #expect(coordinator.presentation.requiresExplicitRecovery == false)
+        #expect(backend.playedResources == [.coach(.qaWhatFix)])
+    }
+
+    @Test("Voice responses arriving during acoustic decay wait until capture has ended")
+    func cueDuringCapturePreparationCannotPlayIntoMicrophone() async {
+        let backend = RecordingTrainingAudioBackend()
+        let waiter = ControlledTrainingAudioWaiter()
+        let resources = StubTrainingAudioResources(available: [.coach(.qaWhatFix)])
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: resources,
+            waiter: waiter
+        )
+        await coordinator.handle(.sceneDidAttach)
+
+        let captureTask = Task { @MainActor in
+            await coordinator.handle(.voiceCaptureDidBegin)
+        }
+        await waiter.waitUntilSuspended()
+
+        let cueOutcome = await coordinator.handle(.coachCue(.init(
+            kind: .voiceResponse,
+            clip: .qaWhatFix,
+            caption: "Keep the guard close to your cheek."
+        )))
+
+        #expect(cueOutcome == .deferredUntilCaptureEnds)
+        #expect(backend.playedResources.contains(.coach(.qaWhatFix)) == false)
+
+        waiter.resume()
+        #expect(await captureTask.value == .captureReady)
+        #expect(backend.playedResources.contains(.coach(.qaWhatFix)) == false)
+
+        await coordinator.handle(.voiceCaptureDidEnd)
+        #expect(backend.playedResources.contains(.coach(.qaWhatFix)))
+    }
+
+    @Test("Duplicate capture begin shares one preparation and one backend transition")
+    func duplicateCaptureBeginIsIdempotent() async {
+        let backend = RecordingTrainingAudioBackend()
+        let waiter = ControlledTrainingAudioWaiter()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: StubTrainingAudioResources(),
+            waiter: waiter
+        )
+        await coordinator.handle(.sceneDidAttach)
+
+        let first = Task { @MainActor in
+            await coordinator.handle(.voiceCaptureDidBegin)
+        }
+        await waiter.waitUntilSuspended()
+
+        var secondEntered = false
+        let second = Task { @MainActor in
+            secondEntered = true
+            return await coordinator.handle(.voiceCaptureDidBegin)
+        }
+        while !secondEntered {
+            await Task.yield()
+        }
+        await Task.yield()
+
+        waiter.resumeAll()
+        #expect(await first.value == .captureReady)
+        #expect(await second.value == .captureReady)
+        #expect(waiter.waitCallCount == 1)
+        #expect(backend.commands.filter { $0 == .beginCapture }.count == 1)
+    }
+
+    @Test("Cancelling preparation restores playback even when the decay waiter ignores cancellation")
+    func cancelledPreparationCannotLeaveCoordinatorStuck() async {
+        let backend = RecordingTrainingAudioBackend()
+        let waiter = ControlledTrainingAudioWaiter()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: StubTrainingAudioResources(),
+            waiter: waiter
+        )
+        await coordinator.handle(.sceneDidAttach)
+
+        let preparation = Task { @MainActor in
+            await coordinator.handle(.voiceCaptureDidBegin)
+        }
+        await waiter.waitUntilSuspended()
+        preparation.cancel()
+        waiter.resume()
+
+        #expect(await preparation.value == .staleGeneration)
+        #expect(coordinator.presentation.status == .ready)
+        #expect(coordinator.presentation.isCapturing == false)
+        #expect(coordinator.presentation.mix == .stage(.fit))
+    }
+
+    @Test("Safety cues preempt microphone preparation and active capture")
+    func safetyCueAlwaysPreemptsVoiceCapture() async {
+        let preparingBackend = RecordingTrainingAudioBackend()
+        let waiter = ControlledTrainingAudioWaiter()
+        let resources = StubTrainingAudioResources(available: [.coach(.pauseAck)])
+        let preparingCoordinator = makeCoordinator(
+            backend: preparingBackend,
+            resources: resources,
+            waiter: waiter
+        )
+        await preparingCoordinator.handle(.sceneDidAttach)
+
+        let preparation = Task { @MainActor in
+            await preparingCoordinator.handle(.voiceCaptureDidBegin)
+        }
+        await waiter.waitUntilSuspended()
+
+        let preparingSafety = await preparingCoordinator.handle(.coachCue(.init(
+            kind: .safety,
+            clip: .pauseAck,
+            caption: "Stop now"
+        )))
+
+        #expect(preparingSafety == .handled)
+        #expect(preparingBackend.playedResources == [.coach(.pauseAck)])
+        #expect(preparingCoordinator.presentation.caption == "Stop now")
+        waiter.resume()
+        #expect(await preparation.value == .staleGeneration)
+        #expect(preparingBackend.commands.contains(.beginCapture) == false)
+
+        let capturingBackend = RecordingTrainingAudioBackend()
+        let capturingCoordinator = makeCoordinator(
+            backend: capturingBackend,
+            resources: resources
+        )
+        await capturingCoordinator.handle(.sceneDidAttach)
+        #expect(await capturingCoordinator.handle(.voiceCaptureDidBegin) == .captureReady)
+
+        let capturingSafety = await capturingCoordinator.handle(.coachCue(.init(
+            kind: .safety,
+            clip: .pauseAck,
+            caption: "Stop now"
+        )))
+
+        #expect(capturingSafety == .handled)
+        #expect(capturingCoordinator.presentation.isCapturing == false)
+        #expect(capturingCoordinator.presentation.caption == "Stop now")
+        #expect(capturingBackend.commands.contains(.endCapture))
+        #expect(capturingBackend.commands.contains(.recoverPlaybackSession))
+        #expect(capturingBackend.playedResources == [.coach(.pauseAck)])
+    }
+
+    @Test("Tracking and explicit audio recovery suppress narration without replacing safety captions")
+    func pausedSafetyStatesBlockOrdinaryNarration() async {
+        let backend = RecordingTrainingAudioBackend()
+        let resources = StubTrainingAudioResources(available: [
+            .coach(.guardUp),
+            .coach(.qaWhatFix),
+            .trackingLost
+        ])
+        let coordinator = makeCoordinator(backend: backend, resources: resources)
+        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.trackingDidPause(.handsUnavailable))
+        let trackingCaption = coordinator.presentation.caption
+
+        let phaseOutcome = await coordinator.handle(.coachCue(.init(
+            kind: .phaseInstruction,
+            clip: .guardUp,
+            caption: "Guard up"
+        )))
+        let voiceOutcome = await coordinator.handle(.coachCue(.init(
+            kind: .voiceResponse,
+            clip: .qaWhatFix,
+            caption: "Coach response"
+        )))
+
+        #expect(phaseOutcome == .suppressed(by: .safety))
+        #expect(voiceOutcome == .suppressed(by: .safety))
+        #expect(coordinator.presentation.caption == trackingCaption)
+        #expect(backend.playedResources.contains(.coach(.guardUp)) == false)
+        #expect(backend.playedResources.contains(.coach(.qaWhatFix)) == false)
+
+        await coordinator.handle(.experienceDidEnter(.compete))
+        await coordinator.handle(.targetDidAppear(position: .init(0, 1, -0.5)))
+        await coordinator.handle(.validatedImpact(position: .init(0, 1, -0.5), quality: .clean))
+        #expect(coordinator.presentation.caption == trackingCaption)
+
+        await coordinator.handle(.trackingDidResume)
+        await coordinator.handle(.audioSystemEvent(.routeChanged))
+        let recoveryCaption = coordinator.presentation.caption
+        let recoveryOutcome = await coordinator.handle(.coachCue(.init(
+            kind: .phaseInstruction,
+            clip: .guardUp,
+            caption: "Guard up"
+        )))
+
+        #expect(recoveryOutcome == .suppressed(by: .safety))
+        #expect(coordinator.presentation.caption == recoveryCaption)
+        #expect(backend.playedResources.contains(.coach(.guardUp)) == false)
+    }
+
+    @Test("Tracking status prompts retain safety priority until playback finishes")
+    func trackingStatusPromptBlocksLowerPriorityCoachCue() async throws {
+        let backend = RecordingTrainingAudioBackend()
+        let resources = StubTrainingAudioResources(available: [
+            .trackingLost,
+            .trackingRestored,
+            .coach(.guardUp)
+        ])
+        let coordinator = makeCoordinator(backend: backend, resources: resources)
+        await coordinator.handle(.sceneDidAttach)
+        await coordinator.handle(.trackingDidPause(.handsUnavailable))
+        await coordinator.handle(.trackingDidResume)
+        let safetyCaption = coordinator.presentation.caption
+
+        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .suppressed(by: .safety))
+        #expect(backend.commands.contains(.beginCapture) == false)
+
+        let suppressed = await coordinator.handle(.coachCue(.init(
+            kind: .phaseInstruction,
+            clip: .guardUp,
+            caption: "Guard up"
+        )))
+
+        #expect(suppressed == .suppressed(by: .safety))
+        #expect(coordinator.presentation.caption == safetyCaption)
+
+        let statusHandles: [TrainingAudioPlaybackHandle] = backend.commands.compactMap { command in
+            guard case let .play(handle, resource) = command,
+                  resource == .trackingRestored else { return nil }
+            return handle
+        }
+        let statusHandle = try #require(statusHandles.last)
+        backend.playbackDidFinish?(statusHandle)
+
+        #expect(await coordinator.handle(.coachCue(.init(
+            kind: .phaseInstruction,
+            clip: .guardUp,
+            caption: "Guard up"
+        ))) == .handled)
+    }
+
     @Test("Tracking loss mutes crowd and scoring effects until explicit tracking resume")
     func trackingLossAppliesSafetyMix() async {
         let backend = RecordingTrainingAudioBackend()
@@ -204,12 +465,13 @@ struct TrainingAudioCoordinatorTests {
         #expect(coordinator.presentation.requiresExplicitRecovery)
         #expect(backend.playedResources.count == playsBeforeInterruption)
         #expect(backend.commands.contains(.recoverPlaybackSession))
+        #expect(backend.commands.contains(.stopAll) == false)
 
         await coordinator.handle(.audioRecoveryConfirmed)
 
         #expect(coordinator.presentation.status == .ready)
         #expect(coordinator.presentation.requiresExplicitRecovery == false)
-        #expect(backend.playedResources.count > playsBeforeInterruption)
+        #expect(backend.playedResources.count == playsBeforeInterruption)
     }
 
     @Test("Route changes and media resets invalidate playback and require an explicit recovery")
@@ -226,13 +488,16 @@ struct TrainingAudioCoordinatorTests {
         let routeGeneration = coordinator.generation
         #expect(routeGeneration > initialGeneration)
         #expect(coordinator.presentation.requiresExplicitRecovery)
-        #expect(backend.commands.contains(.stopAll))
+        #expect(backend.commands.contains(.stopAll) == false)
+        #expect(backend.playedResources == [.gymAmbience])
 
         await coordinator.handle(.audioRecoveryConfirmed)
+        #expect(backend.playedResources == [.gymAmbience])
         await coordinator.handle(.audioSystemEvent(.mediaServicesWereReset))
 
         #expect(coordinator.generation > routeGeneration)
         #expect(coordinator.presentation.requiresExplicitRecovery)
+        #expect(backend.commands.contains(.stopAll))
         #expect(backend.commands.contains(.mediaServicesWereReset))
     }
 
@@ -368,6 +633,50 @@ struct TrainingAudioCoordinatorTests {
         #expect(TrainingAudioSystemEventMapper.event(for: testCase.deactivation) == testCase.expectedEvent)
     }
 
+    @Test("App-driven audio category changes do not enter route recovery")
+    func routeChangeMappingPreservesAndFiltersTheTypedReason() throws {
+        let notification = Notification(
+            name: AVAudioSession.routeChangeNotification,
+            userInfo: [
+                AVAudioSessionRouteChangeReasonKey:
+                    AVAudioSession.RouteChangeReason.categoryChange.rawValue
+            ]
+        )
+        let message = try #require(AudioRouteDidChangeMessage.makeMessage(notification))
+
+        #expect(message.reason == .categoryChange)
+        #expect(TrainingAudioRouteChangeEventMapper.event(for: message.reason) == nil)
+        #expect(TrainingAudioRouteChangeEventMapper.event(for: .oldDeviceUnavailable) == .routeChanged)
+    }
+
+    @Test("Reactive, Aura, voice, and scene lifecycle share one semantic audio owner")
+    func liveTrainingSessionsUseTheInjectedCoordinator() {
+        let backend = RecordingTrainingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: StubTrainingAudioResources(available: [.coach(.guardUp)])
+        )
+        let session = ReactiveStrikeSession(
+            feedbackGenerator: MockFeedbackGenerator(),
+            audioCoordinator: coordinator
+        )
+
+        #expect(session.audioCoordinator === coordinator)
+        #expect(session.auraPunch.audioCoordinator === coordinator)
+        #expect(session.voiceCoach.audioCoordinator === coordinator)
+
+        session.immersiveSpaceDidOpen()
+        session.startDrill()
+        #expect(coordinator.presentation.stage == .baseline)
+        session.stopDrill()
+        session.immersiveSpaceDidClose()
+
+        #expect(backend.commands.filter { $0 == .attachScene }.count == 1)
+        #expect(backend.playedResources == [.coach(.guardUp)])
+        #expect(backend.commands.contains(.stopChannels([.coach, .impact, .status])))
+        #expect(backend.commands.filter { $0 == .detachScene }.count == 1)
+    }
+
     private func makeCoordinator(
         backend: RecordingTrainingAudioBackend,
         resources: StubTrainingAudioResources,
@@ -449,6 +758,10 @@ private final class StubTrainingAudioResources: TrainingAudioResourceResolving {
 
 @MainActor
 private final class RecordingTrainingAudioBackend: TrainingAudioBackend {
+    private enum Failure: Error {
+        case playbackRecovery
+    }
+
     enum Command: Equatable {
         case attachScene
         case detachScene
@@ -466,6 +779,7 @@ private final class RecordingTrainingAudioBackend: TrainingAudioBackend {
     var playbackDidFinish: ((TrainingAudioPlaybackHandle) -> Void)?
     var systemEventHandler: ((TrainingAudioSystemEvent) -> Void)?
     private(set) var commands: [Command] = []
+    var recoverPlaybackFailuresRemaining = 0
     private var nextHandle = 1
     private let journal: TrainingAudioTestJournal?
 
@@ -533,6 +847,10 @@ private final class RecordingTrainingAudioBackend: TrainingAudioBackend {
 
     func recoverPlaybackSession() throws {
         commands.append(.recoverPlaybackSession)
+        if recoverPlaybackFailuresRemaining > 0 {
+            recoverPlaybackFailuresRemaining -= 1
+            throw Failure.playbackRecovery
+        }
     }
 
     func mediaServicesWereReset() throws {
@@ -555,28 +873,38 @@ private final class ImmediateTrainingAudioWaiter: TrainingAudioDecayWaiting {
 
 @MainActor
 private final class ControlledTrainingAudioWaiter: TrainingAudioDecayWaiting {
-    private var releaseContinuation: CheckedContinuation<Void, Never>?
+    private var releaseContinuations: [CheckedContinuation<Void, Never>] = []
     private var startWaiters: [CheckedContinuation<Void, Never>] = []
+    private(set) var waitCallCount = 0
 
     func wait(for duration: Duration) async throws {
+        waitCallCount += 1
         for waiter in startWaiters {
             waiter.resume()
         }
         startWaiters.removeAll()
         await withCheckedContinuation { continuation in
-            releaseContinuation = continuation
+            releaseContinuations.append(continuation)
         }
     }
 
     func waitUntilSuspended() async {
-        guard releaseContinuation == nil else { return }
+        guard releaseContinuations.isEmpty else { return }
         await withCheckedContinuation { continuation in
             startWaiters.append(continuation)
         }
     }
 
     func resume() {
-        releaseContinuation?.resume()
-        releaseContinuation = nil
+        guard !releaseContinuations.isEmpty else { return }
+        releaseContinuations.removeFirst().resume()
+    }
+
+    func resumeAll() {
+        let continuations = releaseContinuations
+        releaseContinuations.removeAll()
+        for continuation in continuations {
+            continuation.resume()
+        }
     }
 }

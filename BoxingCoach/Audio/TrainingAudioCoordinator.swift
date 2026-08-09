@@ -56,6 +56,17 @@ final class TrainingAudioCoordinator {
         let priority: TrainingCoachCueKind?
     }
 
+    private struct CapturePreparation {
+        let id: UInt64
+        let generation: UInt64
+        var duplicateWaiters: [CheckedContinuation<TrainingAudioEventOutcome, Never>] = []
+    }
+
+    private struct PendingVoiceResponse {
+        let cue: TrainingCoachCue
+        let generation: UInt64
+    }
+
     private(set) var presentation: TrainingAudioPresentationState = .detached
     private(set) var generation: UInt64 = 0
 
@@ -75,8 +86,14 @@ final class TrainingAudioCoordinator {
     private var crowd: ActivePlayback?
     private var status: ActivePlayback?
     private var impactVoices: [ActivePlayback] = []
-    private var pendingVoiceResponse: TrainingCoachCue?
+    private var pendingVoiceResponse: PendingVoiceResponse?
     private var nextImpactVariant = 0
+    private var nextCapturePreparationID: UInt64 = 0
+    private var capturePreparation: CapturePreparation?
+
+    private var highestActivePriority: TrainingCoachCueKind? {
+        [foreground?.priority, status?.priority].compactMap { $0 }.max()
+    }
 
     convenience init() {
         self.init(
@@ -109,31 +126,44 @@ final class TrainingAudioCoordinator {
 
     @discardableResult
     func handle(_ event: TrainingAudioEvent) async -> TrainingAudioEventOutcome {
+        if case .voiceCaptureDidBegin = event {
+            return await beginVoiceCapture()
+        }
+        return handleImmediately(event)
+    }
+
+    /// Handles semantic events that cannot suspend. Session engines use this path so cue ordering
+    /// remains deterministic without spawning unstructured tasks.
+    @discardableResult
+    func handleImmediately(_ event: TrainingAudioEvent) -> TrainingAudioEventOutcome {
         switch event {
         case .sceneDidAttach:
-            attachScene()
+            return attachScene()
         case let .experienceDidEnter(stage):
-            enter(stage)
+            return enter(stage)
         case let .targetDidAppear(position):
-            targetAppeared(at: position)
+            return targetAppeared(at: position)
         case let .validatedImpact(position, quality):
-            playValidatedImpact(at: position, quality: quality)
+            return playValidatedImpact(at: position, quality: quality)
         case let .coachCue(cue):
-            playCoachCue(cue)
+            return playCoachCue(cue)
         case let .trackingDidPause(reason):
-            pauseForTracking(reason)
+            return pauseForTracking(reason)
         case .trackingDidResume:
-            resumeAfterTracking()
+            return resumeAfterTracking()
         case .voiceCaptureDidBegin:
-            await beginVoiceCapture()
+            assertionFailure("voiceCaptureDidBegin must use the async handle(_:)")
+            return .staleGeneration
         case .voiceCaptureDidEnd:
-            endVoiceCapture()
+            return endVoiceCapture()
         case let .audioSystemEvent(systemEvent):
-            handleSystemEvent(systemEvent)
+            return handleSystemEvent(systemEvent)
         case .audioRecoveryConfirmed:
-            recoverAfterExplicitConfirmation()
+            return recoverAfterExplicitConfirmation()
+        case .trainingDidStop:
+            return stopTrainingAudio()
         case .sceneDidDetach:
-            detachScene()
+            return detachScene()
         }
     }
 
@@ -166,7 +196,15 @@ final class TrainingAudioCoordinator {
 
     private func enter(_ stage: TrainingAudioStage) -> TrainingAudioEventOutcome {
         presentation.stage = stage
-        presentation.caption = stage.caption
+        guard !trackingPaused,
+              !presentation.requiresExplicitRecovery,
+              capturePreparation == nil,
+              !presentation.isCapturing else {
+            return .handled
+        }
+        if highestActivePriority == nil {
+            presentation.caption = stage.caption
+        }
         guard sceneAttached else { return .ignoredWhileDetached }
         guard backendReady else { return .backendUnavailable }
 
@@ -177,6 +215,13 @@ final class TrainingAudioCoordinator {
 
     private func targetAppeared(at position: SIMD3<Float>) -> TrainingAudioEventOutcome {
         presentation.targetPosition = position
+        guard !trackingPaused,
+              !presentation.requiresExplicitRecovery,
+              capturePreparation == nil,
+              !presentation.isCapturing,
+              highestActivePriority == nil else {
+            return sceneAttached ? .handled : .ignoredWhileDetached
+        }
         presentation.caption = "Target ready."
         return sceneAttached ? .handled : .ignoredWhileDetached
     }
@@ -185,14 +230,17 @@ final class TrainingAudioCoordinator {
         at position: SIMD3<Float>,
         quality: TrainingImpactQuality
     ) -> TrainingAudioEventOutcome {
-        presentation.caption = quality.caption
-        guard sceneAttached else { return .ignoredWhileDetached }
-        guard backendReady else { return .backendUnavailable }
         guard !trackingPaused,
+              capturePreparation == nil,
               !presentation.isCapturing,
               !presentation.requiresExplicitRecovery else {
             return .handled
         }
+        if highestActivePriority == nil {
+            presentation.caption = quality.caption
+        }
+        guard sceneAttached else { return .ignoredWhileDetached }
+        guard backendReady else { return .backendUnavailable }
 
         let resource = impactResourceForNextVoice()
         guard let url = resources.url(for: resource) else {
@@ -224,21 +272,66 @@ final class TrainingAudioCoordinator {
     }
 
     private func playCoachCue(_ cue: TrainingCoachCue) -> TrainingAudioEventOutcome {
-        if let activePriority = foreground?.priority, cue.kind < activePriority {
+        if (trackingPaused || presentation.requiresExplicitRecovery), cue.kind != .safety {
+            return .suppressed(by: .safety)
+        }
+
+        if cue.kind == .safety {
+            presentation.caption = cue.caption
+        }
+
+        if cue.kind == .safety,
+           capturePreparation != nil || presentation.isCapturing {
+            let captureOutcome = preemptVoiceCaptureForSafety()
+            guard captureOutcome == .handled else { return captureOutcome }
+        }
+
+        if let activePriority = highestActivePriority, cue.kind < activePriority {
             return .suppressed(by: activePriority)
         }
 
-        presentation.caption = cue.caption
+        if cue.kind != .safety {
+            presentation.caption = cue.caption
+        }
 
-        if presentation.isCapturing {
+        if capturePreparation != nil || presentation.isCapturing {
             guard cue.kind == .voiceResponse else {
                 return .suppressed(by: .voiceResponse)
             }
-            pendingVoiceResponse = cue
+            pendingVoiceResponse = PendingVoiceResponse(cue: cue, generation: generation)
             return .deferredUntilCaptureEnds
         }
 
         return startForegroundCue(cue)
+    }
+
+    private func preemptVoiceCaptureForSafety() -> TrainingAudioEventOutcome {
+        let wasCapturing = presentation.isCapturing
+        generation &+= 1
+        invalidateCapturePreparation()
+        pendingVoiceResponse = nil
+        presentation.isCapturing = false
+
+        if wasCapturing {
+            backend.endVoiceCapture()
+            do {
+                try backend.recoverPlaybackSession()
+                backendReady = true
+            } catch {
+                backendReady = false
+                presentation.status = .unavailable
+                Self.logger.error(
+                    "Safety cue playback recovery failed: \(error.localizedDescription, privacy: .public)"
+                )
+                return .backendUnavailable
+            }
+        }
+
+        presentation.status = trackingPaused
+            ? .trackingPaused
+            : (presentation.requiresExplicitRecovery ? .awaitingExplicitRecovery : .ready)
+        applyCurrentMix()
+        return .handled
     }
 
     private func startForegroundCue(_ cue: TrainingCoachCue) -> TrainingAudioEventOutcome {
@@ -249,6 +342,12 @@ final class TrainingAudioCoordinator {
             backend.stop(current.handle)
             foreground = nil
             presentation.activePriority = nil
+        }
+        if let currentStatus = status,
+           let statusPriority = currentStatus.priority,
+           cue.kind >= statusPriority {
+            backend.stop(currentStatus.handle)
+            status = nil
         }
 
         let resource = TrainingAudioResourceID.coach(cue.clip)
@@ -273,13 +372,15 @@ final class TrainingAudioCoordinator {
             generation: generation,
             priority: cue.kind
         )
-        presentation.activePriority = cue.kind
+        presentation.activePriority = highestActivePriority
         applyCurrentMix()
         return .handled
     }
 
     private func pauseForTracking(_ reason: TrainingTrackingPauseReason) -> TrainingAudioEventOutcome {
         guard sceneAttached else { return .ignoredWhileDetached }
+        generation &+= 1
+        invalidateCapturePreparation()
         trackingPaused = true
         pendingVoiceResponse = nil
         presentation.status = .trackingPaused
@@ -312,9 +413,23 @@ final class TrainingAudioCoordinator {
         guard backendReady else { return .backendUnavailable }
         guard !trackingPaused, !presentation.requiresExplicitRecovery else { return .handled }
         guard !presentation.isCapturing else { return .captureReady }
+        if highestActivePriority == .safety {
+            return .suppressed(by: .safety)
+        }
+
+        if capturePreparation != nil {
+            return await waitForActiveCapturePreparation()
+        }
 
         let captureGeneration = generation
+        nextCapturePreparationID &+= 1
+        let preparationID = nextCapturePreparationID
+        capturePreparation = CapturePreparation(
+            id: preparationID,
+            generation: captureGeneration
+        )
         pendingVoiceResponse = nil
+        presentation.status = .capturePreparing
         presentation.caption = "Preparing microphone…"
         presentation.activePriority = nil
         backend.stop(channels: Self.captureChannels)
@@ -324,10 +439,13 @@ final class TrainingAudioCoordinator {
         do {
             try await decayWaiter.wait(for: captureDecay)
             guard !Task.isCancelled,
+                  capturePreparation?.id == preparationID,
+                  capturePreparation?.generation == captureGeneration,
                   generation == captureGeneration,
                   sceneAttached,
                   !trackingPaused,
                   !presentation.requiresExplicitRecovery else {
+                cancelCapturePreparationIfCurrent(id: preparationID)
                 return .staleGeneration
             }
             try backend.beginVoiceCapture()
@@ -335,10 +453,14 @@ final class TrainingAudioCoordinator {
             presentation.caption = "Listening…"
             presentation.isCapturing = true
             presentation.mix = .voiceCapture
+            completeCapturePreparation(id: preparationID, with: .captureReady)
             return .captureReady
         } catch is CancellationError {
+            cancelCapturePreparationIfCurrent(id: preparationID)
             return .staleGeneration
         } catch {
+            pendingVoiceResponse = nil
+            completeCapturePreparation(id: preparationID, with: .backendUnavailable)
             presentation.status = .unavailable
             presentation.caption = "Microphone audio is unavailable. Use the visible controls."
             applyCurrentMix()
@@ -348,7 +470,15 @@ final class TrainingAudioCoordinator {
     }
 
     private func endVoiceCapture() -> TrainingAudioEventOutcome {
+        guard sceneAttached else { return .ignoredWhileDetached }
         generation &+= 1
+        if let pendingVoiceResponse {
+            self.pendingVoiceResponse = PendingVoiceResponse(
+                cue: pendingVoiceResponse.cue,
+                generation: generation
+            )
+        }
+        invalidateCapturePreparation()
         backend.endVoiceCapture()
         presentation.isCapturing = false
 
@@ -357,27 +487,33 @@ final class TrainingAudioCoordinator {
             backendReady = true
         } catch {
             backendReady = false
-            presentation.status = .unavailable
-            presentation.caption = "Audio is unavailable. Visual coaching remains active."
+            presentation.status = .awaitingExplicitRecovery
+            presentation.caption = "Audio recovery failed. Confirm recovery to hear the coach response."
+            presentation.requiresExplicitRecovery = true
             return .backendUnavailable
         }
 
         presentation.status = presentation.requiresExplicitRecovery ? .awaitingExplicitRecovery : .ready
         applyCurrentMix()
 
-        guard let pendingVoiceResponse else { return .handled }
-        self.pendingVoiceResponse = nil
-        return startForegroundCue(pendingVoiceResponse)
+        return playPendingVoiceResponseIfCurrentGeneration()
     }
 
     private func handleSystemEvent(_ event: TrainingAudioSystemEvent) -> TrainingAudioEventOutcome {
         switch event {
         case .interruptionBegan:
-            enterExplicitRecovery(caption: "Audio interrupted. Training remains paused until you resume.")
+            enterExplicitRecovery(
+                caption: "Audio interrupted. Training remains paused until you resume."
+            )
         case .routeChanged:
-            enterExplicitRecovery(caption: "Audio route changed. Check your surroundings, then resume.")
+            enterExplicitRecovery(
+                caption: "Audio route changed. Check your surroundings, then resume."
+            )
         case .mediaServicesWereReset:
-            enterExplicitRecovery(caption: "Audio restarted. Training remains paused until you resume.")
+            enterExplicitRecovery(
+                caption: "Audio restarted. Training remains paused until you resume.",
+                hardStopEnvironment: true
+            )
             do {
                 try backend.mediaServicesWereReset()
                 backendReady = true
@@ -422,12 +558,13 @@ final class TrainingAudioCoordinator {
             : "Audio restored. Return both hands to guard."
         applyCurrentMix()
         startEnvironmentBedsIfNeeded()
-        return .handled
+        return playPendingVoiceResponseIfCurrentGeneration()
     }
 
     private func detachScene() -> TrainingAudioEventOutcome {
         guard sceneAttached else { return .handled }
         generation &+= 1
+        invalidateCapturePreparation()
         sceneAttached = false
         backendReady = false
         trackingPaused = false
@@ -440,13 +577,56 @@ final class TrainingAudioCoordinator {
         return .handled
     }
 
-    private func enterExplicitRecovery(caption: String) {
+    private func stopTrainingAudio() -> TrainingAudioEventOutcome {
+        guard sceneAttached else { return .ignoredWhileDetached }
+        generation &+= 1
+        let wasCapturing = presentation.isCapturing
+        invalidateCapturePreparation()
+        pendingVoiceResponse = nil
+        backend.stop(channels: Self.captureChannels)
+        clearPlaybackRecords(in: Self.captureChannels)
+        presentation.isCapturing = false
+
+        if wasCapturing {
+            backend.endVoiceCapture()
+            do {
+                try backend.recoverPlaybackSession()
+                backendReady = true
+            } catch {
+                backendReady = false
+                presentation.status = .awaitingExplicitRecovery
+                presentation.caption = "Audio recovery failed. Confirm recovery before continuing."
+                presentation.requiresExplicitRecovery = true
+                return .backendUnavailable
+            }
+        }
+
+        presentation.status = trackingPaused
+            ? .trackingPaused
+            : (presentation.requiresExplicitRecovery ? .awaitingExplicitRecovery : .ready)
+        if !trackingPaused, !presentation.requiresExplicitRecovery {
+            presentation.caption = "Training stopped."
+        }
+        applyCurrentMix()
+        return .handled
+    }
+
+    private func enterExplicitRecovery(
+        caption: String,
+        hardStopEnvironment: Bool = false
+    ) {
         guard sceneAttached else { return }
         generation &+= 1
+        invalidateCapturePreparation()
         pendingVoiceResponse = nil
         backend.endVoiceCapture()
-        backend.stopAll()
-        clearAllPlaybackRecords()
+        if hardStopEnvironment {
+            backend.stopAll()
+            clearAllPlaybackRecords()
+        } else {
+            backend.stop(channels: Self.captureChannels)
+            clearPlaybackRecords(in: Self.captureChannels)
+        }
         presentation.status = .awaitingExplicitRecovery
         presentation.caption = caption
         presentation.isCapturing = false
@@ -457,10 +637,15 @@ final class TrainingAudioCoordinator {
     }
 
     private func playStatusResource(_ resource: TrainingAudioResourceID, caption: String?) {
-        guard backendReady, let url = resources.url(for: resource) else { return }
         if let current = status {
             backend.stop(current.handle)
+            status = nil
         }
+        presentation.caption = caption
+        presentation.activePriority = highestActivePriority
+        applyCurrentMix()
+
+        guard backendReady, let url = resources.url(for: resource) else { return }
         let request = TrainingAudioPlaybackRequest(
             resource: resource,
             url: url,
@@ -476,13 +661,15 @@ final class TrainingAudioCoordinator {
             generation: generation,
             priority: .safety
         )
-        presentation.caption = caption
+        presentation.activePriority = highestActivePriority
+        applyCurrentMix()
     }
 
     private func startEnvironmentBedsIfNeeded() {
         guard sceneAttached,
               backendReady,
               !trackingPaused,
+              capturePreparation == nil,
               !presentation.isCapturing,
               !presentation.requiresExplicitRecovery else {
             return
@@ -541,11 +728,11 @@ final class TrainingAudioCoordinator {
         let mix: TrainingAudioMix
         if presentation.requiresExplicitRecovery {
             mix = .silent
-        } else if asVoiceCapture || presentation.isCapturing {
+        } else if asVoiceCapture || capturePreparation != nil || presentation.isCapturing {
             mix = .voiceCapture
         } else if trackingPaused {
             mix = .trackingPaused
-        } else if let priority = foreground?.priority {
+        } else if let priority = highestActivePriority {
             mix = TrainingAudioMix.stage(presentation.stage).ducked(for: priority)
         } else {
             mix = TrainingAudioMix.stage(presentation.stage)
@@ -559,12 +746,14 @@ final class TrainingAudioCoordinator {
         if foreground?.handle == handle {
             guard foreground?.generation == generation else { return }
             foreground = nil
-            presentation.activePriority = nil
+            presentation.activePriority = highestActivePriority
             applyCurrentMix()
             return
         }
         if status?.handle == handle {
             status = nil
+            presentation.activePriority = highestActivePriority
+            applyCurrentMix()
             return
         }
         if ambience?.handle == handle {
@@ -581,7 +770,6 @@ final class TrainingAudioCoordinator {
     private func clearPlaybackRecords(in channels: Set<TrainingAudioChannel>) {
         if channels.contains(.coach) {
             foreground = nil
-            presentation.activePriority = nil
         }
         if channels.contains(.impact) {
             impactVoices.removeAll()
@@ -595,6 +783,7 @@ final class TrainingAudioCoordinator {
         if channels.contains(.crowd) {
             crowd = nil
         }
+        presentation.activePriority = highestActivePriority
     }
 
     private func clearAllPlaybackRecords() {
@@ -604,6 +793,61 @@ final class TrainingAudioCoordinator {
         status = nil
         impactVoices.removeAll()
         presentation.activePriority = nil
+    }
+
+    private func waitForActiveCapturePreparation() async -> TrainingAudioEventOutcome {
+        await withCheckedContinuation { continuation in
+            guard var preparation = capturePreparation,
+                  preparation.generation == generation else {
+                continuation.resume(returning: .staleGeneration)
+                return
+            }
+            preparation.duplicateWaiters.append(continuation)
+            capturePreparation = preparation
+        }
+    }
+
+    private func completeCapturePreparation(
+        id: UInt64,
+        with outcome: TrainingAudioEventOutcome
+    ) {
+        guard let preparation = capturePreparation,
+              preparation.id == id else {
+            return
+        }
+        capturePreparation = nil
+        for waiter in preparation.duplicateWaiters {
+            waiter.resume(returning: outcome)
+        }
+    }
+
+    private func invalidateCapturePreparation() {
+        guard let preparation = capturePreparation else { return }
+        capturePreparation = nil
+        for waiter in preparation.duplicateWaiters {
+            waiter.resume(returning: .staleGeneration)
+        }
+    }
+
+    private func cancelCapturePreparationIfCurrent(id: UInt64) {
+        guard capturePreparation?.id == id else { return }
+        completeCapturePreparation(id: id, with: .staleGeneration)
+        presentation.status = trackingPaused
+            ? .trackingPaused
+            : (presentation.requiresExplicitRecovery ? .awaitingExplicitRecovery : .ready)
+        presentation.isCapturing = false
+        applyCurrentMix()
+    }
+
+    private func playPendingVoiceResponseIfCurrentGeneration() -> TrainingAudioEventOutcome {
+        guard let pendingVoiceResponse else { return .handled }
+        guard pendingVoiceResponse.generation == generation else {
+            self.pendingVoiceResponse = nil
+            return .staleGeneration
+        }
+        self.pendingVoiceResponse = nil
+        presentation.caption = pendingVoiceResponse.cue.caption
+        return startForegroundCue(pendingVoiceResponse.cue)
     }
 
     private static func comfortFade(_ requested: Duration) -> Duration {

@@ -13,8 +13,6 @@ final class CoachAudioPlayer: TrainingAudioBackend {
         subsystem: "com.josephkwokpersonalteam.BoxingCoach",
         category: "CoachAudio"
     )
-    private static let maximumLegacyQueueLength = 3
-
     var playbackDidFinish: ((TrainingAudioPlaybackHandle) -> Void)?
     var systemEventHandler: ((TrainingAudioSystemEvent) -> Void)?
 
@@ -27,11 +25,6 @@ final class CoachAudioPlayer: TrainingAudioBackend {
     private var playbackReady = false
     private var captureActive = false
     private var notificationObservers: [NotificationCenter.ObservationToken] = []
-
-    // Transitional source-compatibility for sessions that Task 8 will move to semantic events.
-    private var legacyQueue: [CoachClipID] = []
-    private var legacyHandle: TrainingAudioPlaybackHandle?
-    private var legacyVoiceResponseContinuation: CheckedContinuation<Void, Never>?
 
     init() {
         playbackDelegate.onFinish = { [weak self] player in
@@ -57,7 +50,6 @@ final class CoachAudioPlayer: TrainingAudioBackend {
 
     func detachScene() {
         guard sceneAttached else { return }
-        stopAll()
         removeAudioSystemObservers()
         sceneAttached = false
         captureActive = false
@@ -109,7 +101,6 @@ final class CoachAudioPlayer: TrainingAudioBackend {
     func stop(_ handle: TrainingAudioPlaybackHandle) {
         players.removeValue(forKey: handle)?.stop()
         channels[handle] = nil
-        finishLegacyPlaybackIfNeeded(handle)
     }
 
     func stop(channels channelsToStop: Set<TrainingAudioChannel>) {
@@ -126,8 +117,6 @@ final class CoachAudioPlayer: TrainingAudioBackend {
         for handle in handles {
             stop(handle)
         }
-        legacyQueue.removeAll()
-        finishLegacyResponseIfNeeded()
     }
 
     func beginVoiceCapture() throws {
@@ -164,81 +153,11 @@ final class CoachAudioPlayer: TrainingAudioBackend {
     }
 
     func mediaServicesWereReset() throws {
-        stopAll()
         captureActive = false
         playbackReady = false
         if sceneAttached {
             try configurePlaybackSession()
         }
-    }
-
-    // MARK: Transitional coaching API
-
-    /// Warms the backend for existing session call sites. New code sends `.sceneDidAttach` to the
-    /// semantic coordinator instead.
-    func prepare() {
-        do {
-            try attachScene()
-        } catch {
-            Self.logger.error("Audio preparation failed: \(error.localizedDescription, privacy: .public)")
-        }
-        if CoachClipLibrary.url(for: .welcome) == nil {
-            Self.logger.error("welcome.mp3 not found in app bundle — check CoachAudio target membership")
-        }
-    }
-
-    func play(id: CoachClipID) {
-        if legacyHandle != nil {
-            enqueueLegacy(id)
-        } else {
-            startLegacyPlayback(id)
-        }
-    }
-
-    func playAndWait(for id: CoachClipID) async {
-        legacyQueue.removeAll()
-        if let legacyHandle {
-            stop(legacyHandle)
-        }
-        await withCheckedContinuation { continuation in
-            legacyVoiceResponseContinuation = continuation
-            startLegacyPlayback(id)
-            if legacyHandle == nil {
-                finishLegacyResponseIfNeeded()
-            }
-        }
-    }
-
-    func play(named name: String) {
-        guard let id = CoachClipID(rawValue: name) else {
-            Self.logger.error("Unknown coach clip id: \(name, privacy: .public)")
-            return
-        }
-        play(id: id)
-    }
-
-    func stop() {
-        stopAll()
-    }
-
-    var isClipPlaying: Bool { legacyHandle != nil }
-
-    func prepareForVoiceCapture() throws {
-        stop(channels: [.coach, .impact, .status])
-        try beginVoiceCapture()
-    }
-
-    func restorePlaybackAfterCapture() {
-        endVoiceCapture()
-        do {
-            try recoverPlaybackSession()
-        } catch {
-            Self.logger.error("Playback recovery failed: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
-    func restorePlaybackMode() {
-        restorePlaybackAfterCapture()
     }
 
     // MARK: Audio mechanics
@@ -299,8 +218,11 @@ final class CoachAudioPlayer: TrainingAudioBackend {
         notificationObservers.append(center.addObserver(
             of: session,
             for: AudioRouteDidChangeMessage.self
-        ) { [weak self] _ in
-            self?.systemEventHandler?(.routeChanged)
+        ) { [weak self] message in
+            guard let event = TrainingAudioRouteChangeEventMapper.event(for: message.reason) else {
+                return
+            }
+            self?.systemEventHandler?(event)
         })
 
         notificationObservers.append(center.addObserver(
@@ -323,60 +245,7 @@ final class CoachAudioPlayer: TrainingAudioBackend {
         let handle = entry.key
         players[handle] = nil
         channels[handle] = nil
-        let wasLegacy = legacyHandle == handle
-        if wasLegacy {
-            legacyHandle = nil
-            finishLegacyResponseIfNeeded()
-            playNextLegacyClip()
-        }
         playbackDidFinish?(handle)
-    }
-
-    private func enqueueLegacy(_ id: CoachClipID) {
-        if legacyQueue.last == id { return }
-        if legacyQueue.count >= Self.maximumLegacyQueueLength {
-            legacyQueue.removeFirst()
-        }
-        legacyQueue.append(id)
-    }
-
-    private func startLegacyPlayback(_ id: CoachClipID) {
-        guard let url = CoachClipLibrary.url(for: id) else {
-            Self.logger.error("Missing coach clip: \(id.rawValue, privacy: .public).mp3")
-            finishLegacyResponseIfNeeded()
-            playNextLegacyClip()
-            return
-        }
-        let request = TrainingAudioPlaybackRequest(
-            resource: .coach(id),
-            url: url,
-            channel: .coach,
-            loops: false,
-            position: nil,
-            generation: 0
-        )
-        legacyHandle = play(request)
-        if legacyHandle == nil {
-            finishLegacyResponseIfNeeded()
-            playNextLegacyClip()
-        }
-    }
-
-    private func playNextLegacyClip() {
-        guard legacyHandle == nil, !legacyQueue.isEmpty else { return }
-        startLegacyPlayback(legacyQueue.removeFirst())
-    }
-
-    private func finishLegacyPlaybackIfNeeded(_ handle: TrainingAudioPlaybackHandle) {
-        guard legacyHandle == handle else { return }
-        legacyHandle = nil
-        finishLegacyResponseIfNeeded()
-    }
-
-    private func finishLegacyResponseIfNeeded() {
-        guard let continuation = legacyVoiceResponseContinuation else { return }
-        legacyVoiceResponseContinuation = nil
-        continuation.resume()
     }
 
     private static func seconds(for duration: Duration) -> TimeInterval {
@@ -411,17 +280,34 @@ private final class PlaybackDelegate: NSObject, AVAudioPlayerDelegate {
     }
 }
 
-private struct AudioRouteDidChangeMessage: NotificationCenter.MainActorMessage {
+nonisolated enum TrainingAudioRouteChangeEventMapper {
+    static func event(
+        for reason: AVAudioSession.RouteChangeReason
+    ) -> TrainingAudioSystemEvent? {
+        reason == .categoryChange ? nil : .routeChanged
+    }
+}
+
+struct AudioRouteDidChangeMessage: NotificationCenter.MainActorMessage {
     typealias Subject = AVAudioSession
+
+    let reason: AVAudioSession.RouteChangeReason
 
     static var name: Notification.Name { AVAudioSession.routeChangeNotification }
 
     static func makeMessage(_ notification: Notification) -> Self? {
-        Self()
+        guard let rawReason = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+              let reason = AVAudioSession.RouteChangeReason(rawValue: rawReason) else {
+            return nil
+        }
+        return Self(reason: reason)
     }
 
     static func makeNotification(_ message: Self) -> Notification {
-        Notification(name: name)
+        Notification(
+            name: name,
+            userInfo: [AVAudioSessionRouteChangeReasonKey: message.reason.rawValue]
+        )
     }
 }
 

@@ -174,6 +174,8 @@ final class ReactiveStrikeSession {
     private(set) var errorMessage: String?
     private(set) var isTrackingPaused = false
     private(set) var trackingReadyToResume = false
+    private(set) var isVoicePaused = false
+    private(set) var voicePauseInvalidationCount = 0
     private(set) var latestCalibratedReaches: [BodySide: Float] = [:]
     private(set) var competitionSteps: [CompetitionStepEvidence] = []
     private(set) var competitionTrackingStatus: CompetitionTrackingStatus = .complete
@@ -212,6 +214,7 @@ final class ReactiveStrikeSession {
     private var competitionStartedAt: TimeInterval?
     private var competitionElapsedClock = CompetitionElapsedClock()
     private var trackingResumeRequested = false
+    private var phaseBeforeVoicePause: DrillPhase?
     let audioCoordinator: TrainingAudioCoordinator
     let voiceCoach: CoachVoiceCoach
 
@@ -411,6 +414,8 @@ final class ReactiveStrikeSession {
         isTrackingPaused = false
         trackingReadyToResume = false
         trackingResumeRequested = false
+        isVoicePaused = false
+        phaseBeforeVoicePause = nil
 
         drillTask?.cancel()
         drillTask = Task { [weak self] in
@@ -434,6 +439,8 @@ final class ReactiveStrikeSession {
         isTrackingPaused = false
         trackingReadyToResume = false
         trackingResumeRequested = false
+        isVoicePaused = false
+        phaseBeforeVoicePause = nil
 
         let stoppedActiveDrill = phase == .running || phase == .calibrating
         if stoppedActiveDrill {
@@ -462,6 +469,8 @@ final class ReactiveStrikeSession {
         isTrackingPaused = false
         trackingReadyToResume = false
         trackingResumeRequested = false
+        isVoicePaused = false
+        phaseBeforeVoicePause = nil
         if !keepingCompetitionConfiguration {
             capturesCompetitionEvidence = false
             calibrationOnly = false
@@ -486,6 +495,140 @@ final class ReactiveStrikeSession {
 
     func clearError() {
         errorMessage = nil
+    }
+
+    /// Suspends a non-ranked drill before microphone capture. Any in-flight evidence is discarded
+    /// without crossing the metric/miss boundary; completed attempts remain intact.
+    func pauseForVoice() -> String? {
+        guard !capturesCompetitionEvidence,
+              !isVoicePaused,
+              phase == .calibrating || phase == .running else { return nil }
+
+        phaseBeforeVoicePause = phase
+        isVoicePaused = true
+        isTrackingPaused = true
+        trackingReadyToResume = false
+        trackingResumeRequested = false
+        voicePauseInvalidationCount &+= 1
+        drillTask?.cancel()
+        drillTask = nil
+        targets.removeActiveTarget()
+        clearAttemptState()
+        lastFeedback = "Training paused · return both fists to guard to resume"
+        return "Training paused."
+    }
+
+    /// Resumes only from the same live session after tracking is running and both current fists
+    /// are freshly closed in guard. The supplied countdown seam keeps tests deterministic.
+    func resumeAfterFreshGuard(
+        countdown: @MainActor (Int) async -> Void = { count in
+            _ = count
+            try? await Task.sleep(for: .seconds(1))
+        },
+        commandIsCurrent: @MainActor () -> Bool = { true }
+    ) async -> String? {
+        guard isVoicePaused,
+              commandIsCurrent(),
+              hands.isRunning,
+              hasFreshVoiceGuard() else { return nil }
+
+        let pausedPhase = phaseBeforeVoicePause
+        let generation = hands.providerGeneration
+        trackingReadyToResume = true
+        for count in [3, 2, 1] {
+            lastFeedback = "Resuming in \(count)…"
+            await countdown(count)
+            guard isVoicePaused,
+                  commandIsCurrent(),
+                  hands.providerGeneration == generation,
+                  hands.isRunning,
+                  hasFreshVoiceGuard() else {
+                trackingReadyToResume = false
+                lastFeedback = "Tracking paused · return both fists to guard"
+                return nil
+            }
+        }
+
+        isVoicePaused = false
+        isTrackingPaused = false
+        trackingReadyToResume = false
+        phaseBeforeVoicePause = nil
+        lastFeedback = "Resume · guard set"
+
+        switch pausedPhase {
+        case .calibrating:
+            drillTask = Task { [weak self] in await self?.runDrillLoop() }
+        case .running:
+            let targetIndex = currentTargetIndex
+            let comboStepIndex = currentComboStepIndex
+            drillTask = Task { [weak self] in
+                await self?.resumeRunningDrill(
+                    targetIndex: targetIndex,
+                    comboStepIndex: comboStepIndex
+                )
+            }
+        case .idle, .finished, nil:
+            return nil
+        }
+        return "Tracking is fresh. Resuming training."
+    }
+
+    func requestCorrection() -> String? {
+        guard phase == .running || phase == .finished else { return nil }
+        return lastFeedback
+    }
+
+    func requestGuardExplanation() -> String? {
+        guard phase != .idle else { return nil }
+        return "Keeping both fists in guard protects your head and gives every punch a fresh start."
+    }
+
+    func requestTargetHelp() -> String? {
+        guard phase == .calibrating || phase == .running else { return nil }
+        return "Face forward and punch through the visible target, then return the same fist to guard."
+    }
+
+    func requestProgress() -> String { progressLabel }
+
+    private func hasFreshVoiceGuard() -> Bool {
+        guard currentBodyFrame() != nil,
+              let left = hands.freshObservation(for: .left),
+              let right = hands.freshObservation(for: .right),
+              left.fistState == .closed,
+              right.fistState == .closed else { return false }
+
+        guard let leftGuard = guardPositionsBody[.left],
+              let rightGuard = guardPositionsBody[.right],
+              let frame = currentBodyFrame() else {
+            return true
+        }
+        return CombinationPunchValidator.isRetracted(
+            fist: frame.toBody(left.fistPosition),
+            guardPosition: leftGuard,
+            radius: CombinationPunchValidator.guardRadius
+        ) && CombinationPunchValidator.isRetracted(
+            fist: frame.toBody(right.fistPosition),
+            guardPosition: rightGuard,
+            radius: CombinationPunchValidator.guardRadius
+        )
+    }
+
+    private func resumeRunningDrill(targetIndex: Int, comboStepIndex: Int) async {
+        guard !Task.isCancelled, phase == .running, !isVoicePaused else { return }
+        if mode == .combination {
+            await runCombinationLoop(
+                startingAtRep: targetIndex,
+                startingAtStep: comboStepIndex
+            )
+        } else {
+            await runTargetLoop(startingAt: targetIndex)
+        }
+
+        guard !Task.isCancelled, phase == .running, !isVoicePaused else { return }
+        targets.removeActiveTarget()
+        clearAttemptState()
+        phase = .finished
+        lastFeedback = summaryFeedback()
     }
 
     private func runDrillLoop() async {
@@ -811,8 +954,8 @@ final class ReactiveStrikeSession {
 
     private typealias TargetPresentationOutcome = ReactiveTargetRetryPlan.Outcome
 
-    private func runTargetLoop() async {
-        for index in 0..<config.targetCount {
+    private func runTargetLoop(startingAt startIndex: Int = 0) async {
+        for index in max(0, startIndex)..<config.targetCount {
             guard !Task.isCancelled, phase == .running else { return }
             currentTargetIndex = index
 
@@ -1308,19 +1451,23 @@ final class ReactiveStrikeSession {
     /// Presents exactly one combination target at a time. Each step validates the stance-derived
     /// physical hand and outbound motion, then requires that hand to retract before another target
     /// is allowed to appear. That makes repeated positions such as a double jab unambiguous.
-    private func runCombinationLoop() async {
+    private func runCombinationLoop(
+        startingAtRep startRep: Int = 0,
+        startingAtStep startStep: Int = 0
+    ) async {
         let combination = selectedCombination
         guard let resolvedTargets = resolvedCombinationTargets(for: combination) else {
             failDrill("Your calibrated reach leaves too little room beyond guard for this combination.")
             return
         }
 
-        for rep in 0..<comboRepeatCount {
+        for rep in max(0, startRep)..<comboRepeatCount {
             guard !Task.isCancelled, phase == .running else { return }
             currentTargetIndex = rep
             var completedRep = true
 
-            targetLoop: for target in resolvedTargets {
+            let firstStep = rep == startRep ? max(0, startStep) : 0
+            targetLoop: for target in resolvedTargets where target.index >= firstStep {
                 evidenceRetryLoop: while true {
                 guard !Task.isCancelled, phase == .running else { return }
                 currentComboStepIndex = target.index

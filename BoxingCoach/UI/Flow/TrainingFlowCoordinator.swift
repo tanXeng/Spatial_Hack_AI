@@ -78,6 +78,8 @@ final class TrainingFlowCoordinator {
     private(set) var transition: TrainingFlowTransition = .idle
     private(set) var presentationError: String?
     private(set) var draftStance: Stance = .orthodox
+    private(set) var commandGeneration: UInt64 = 1
+    private(set) var pendingVoiceConfirmation: TrainingCommandConfirmation?
 
     private var immersiveState: ImmersiveSceneState = .closed
     private var isControlWindowVisible = false
@@ -91,7 +93,7 @@ final class TrainingFlowCoordinator {
     func navigate(to route: TrainingFlowRoute) {
         guard transition == .idle else { return }
         presentationError = nil
-        self.route = route
+        setRoute(route)
     }
 
     func chooseFeature(_ feature: TrainingFeature) {
@@ -100,9 +102,9 @@ final class TrainingFlowCoordinator {
 
         switch feature {
         case .reactiveStrike:
-            route = .reactiveSetup
+            setRoute(.reactiveSetup)
         case .auraPunch:
-            route = .auraSetup
+            setRoute(.auraSetup)
         }
     }
 
@@ -123,33 +125,33 @@ final class TrainingFlowCoordinator {
         guard transition == .idle else { return }
         presentationError = nil
         if mode == .combination {
-            route = .combinationSetup
+            setRoute(.combinationSetup)
         } else {
-            route = .experience(.reactive(mode: mode, combination: nil, stance: draftStance))
+            setRoute(.experience(.reactive(mode: mode, combination: nil, stance: draftStance)))
         }
     }
 
     func chooseCombination(_ combination: Combination) {
         guard transition == .idle else { return }
         presentationError = nil
-        route = .experience(
+        setRoute(.experience(
             .reactive(mode: .combination, combination: combination, stance: draftStance)
-        )
+        ))
     }
 
     func chooseAuraTechnique(_ technique: Technique) {
         guard transition == .idle, technique.isImplemented else { return }
         presentationError = nil
-        route = .experience(.aura(technique: technique, stance: draftStance))
+        setRoute(.experience(.aura(technique: technique, stance: draftStance)))
     }
 
     func backFromSetup() {
         guard transition == .idle else { return }
         presentationError = nil
         if route == .combinationSetup {
-            route = .reactiveSetup
+            setRoute(.reactiveSetup)
         } else {
-            route = .features
+            setRoute(.features)
         }
     }
 
@@ -234,6 +236,8 @@ final class TrainingFlowCoordinator {
             session.startDrill()
         }
 
+        invalidateCommands()
+
         transition = .idle
         hideControlWindow()
         // The SwiftUI disappearance callback can arrive on a later update. Mark the requested
@@ -247,6 +251,7 @@ final class TrainingFlowCoordinator {
         dismissImmersive: () async -> Void
     ) async {
         guard transition == .idle else { return }
+        invalidateCommands()
         presentationError = nil
         transition = .closingImmersion
 
@@ -314,15 +319,15 @@ final class TrainingFlowCoordinator {
         case .reactive(let mode, _, let stance):
             draftStance = stance
             session.resetForNewRound()
-            route = mode == .combination ? .combinationSetup : .reactiveSetup
+            setRoute(mode == .combination ? .combinationSetup : .reactiveSetup)
         case .aura(_, let stance):
             draftStance = stance
             session.auraPunch.reset()
-            route = .auraSetup
+            setRoute(.auraSetup)
 
         case .reachCalibration, .competitionCalibration, .competition:
             session.resetForNewRound()
-            route = .features
+            setRoute(.features)
         }
 
         presentationError = nil
@@ -339,6 +344,124 @@ final class TrainingFlowCoordinator {
     /// Handles both explicit dismissal and the system taking the immersive space away.
     func immersiveSceneDidClose(session: ReactiveStrikeSession) {
         finalizeImmersiveClosure(session: session)
+    }
+
+    func voiceCommandState(session: ReactiveStrikeSession) -> VoiceCommandState {
+        if pendingVoiceConfirmation == .endTraining {
+            return .awaitingEndConfirmation
+        }
+
+        switch route {
+        case .experience(.competition):
+            return .ranked
+        case .experience(.aura):
+            if session.auraPunch.isVoicePaused { return .trackingPaused }
+            switch session.auraPunch.phase {
+            case .idle: return .idle
+            case .acquiring, .guiding: return .learn
+            case .countdown, .attempting: return .baseline
+            case .scoring, .results: return .results
+            }
+        case .experience(.reactive), .experience(.reachCalibration),
+             .experience(.competitionCalibration):
+            if session.isVoicePaused || session.isTrackingPaused { return .trackingPaused }
+            switch session.phase {
+            case .idle: return .idle
+            case .calibrating, .running: return .baseline
+            case .finished: return .results
+            }
+        case .features, .reactiveSetup, .combinationSetup, .auraSetup:
+            return .idle
+        }
+    }
+
+    func voiceCommandContext(session: ReactiveStrikeSession) -> VoiceCommandContext {
+        let state = voiceCommandState(session: session)
+        let capabilities: Set<VoiceCommandCapability>
+        switch state {
+        case .idle:
+            capabilities = [.help, .leaderboard]
+        case .learn:
+            capabilities = [
+                .pause, .requestEnd, .repeatDemo, .slower, .normalPace, .faster,
+                .next, .guardExplanation, .targetHelp, .progress, .help
+            ]
+        case .baseline, .retest, .transfer:
+            capabilities = [
+                .pause, .requestEnd, .correction, .guardExplanation, .targetHelp,
+                .progress, .help
+            ]
+        case .correction:
+            capabilities = [
+                .pause, .requestEnd, .repeatDemo, .slower, .normalPace, .faster,
+                .next, .correction, .guardExplanation, .targetHelp, .progress, .help, .why
+            ]
+        case .ranked:
+            capabilities = []
+        case .results:
+            capabilities = [
+                .requestEnd, .next, .correction, .progress, .help, .score, .why,
+                .leaderboard, .requestParticipantHandoff
+            ]
+        case .trackingPaused:
+            capabilities = [.resume, .requestEnd, .guardExplanation, .help]
+        case .awaitingEndConfirmation:
+            capabilities = [.confirmEnd, .cancelEnd, .help]
+        }
+        return VoiceCommandContext(state: state, capabilities: capabilities)
+    }
+
+    @discardableResult
+    func requestEndConfirmation(issuedFor generation: UInt64) -> String? {
+        guard generation == commandGeneration,
+              transition == .idle,
+              pendingVoiceConfirmation == nil,
+              case let .experience(selection) = route else { return nil }
+        if case .competition = selection { return nil }
+        pendingVoiceConfirmation = .endTraining
+        return "End training? Say confirm end, or say cancel to keep training."
+    }
+
+    @discardableResult
+    func cancelEndConfirmation(issuedFor generation: UInt64) -> String? {
+        guard generation == commandGeneration,
+              pendingVoiceConfirmation == .endTraining else { return nil }
+        pendingVoiceConfirmation = nil
+        return "Continuing training."
+    }
+
+    @discardableResult
+    func requestParticipantHandoffConfirmation(
+        issuedFor generation: UInt64,
+        session: ReactiveStrikeSession
+    ) -> String? {
+        guard generation == commandGeneration,
+              transition == .idle,
+              pendingVoiceConfirmation == nil,
+              voiceCommandState(session: session) == .results else {
+            return nil
+        }
+        pendingVoiceConfirmation = .participantHandoff
+        return "Use the visible confirmation to switch participants."
+    }
+
+    func confirmVoiceEnd(
+        issuedFor generation: UInt64,
+        session: ReactiveStrikeSession,
+        showControlWindow: () -> Void,
+        dismissImmersive: () async -> Void
+    ) async -> String? {
+        guard generation == commandGeneration,
+              pendingVoiceConfirmation == .endTraining,
+              transition == .idle else { return nil }
+        pendingVoiceConfirmation = nil
+        await endExperience(
+            session: session,
+            showControlWindow: showControlWindow,
+            dismissImmersive: dismissImmersive
+        )
+        guard transition == .idle else { return nil }
+        return "Training ended."
     }
 
     private func waitForSceneReadiness() async -> Bool {
@@ -379,5 +502,16 @@ final class TrainingFlowCoordinator {
         session.immersiveSpaceDidClose()
         session.stopDrill(preservingVoiceCapture: true)
         session.hands.stop()
+    }
+
+    private func setRoute(_ newRoute: TrainingFlowRoute) {
+        guard route != newRoute else { return }
+        route = newRoute
+        invalidateCommands()
+    }
+
+    private func invalidateCommands() {
+        commandGeneration &+= 1
+        pendingVoiceConfirmation = nil
     }
 }

@@ -105,6 +105,9 @@ final class AuraPunchSession {
     private(set) var currentDemoRep = 0
     /// Active scored punch during the 3-punch round (0 when not scoring).
     private(set) var currentScoredPunch = 0
+    private(set) var isVoicePaused = false
+    private(set) var voicePauseInvalidationCount = 0
+    private(set) var demonstrationRate: TrainingDemoRate = .normal
     /// Live reach fraction during the attempt, for the UI's punch meter.
     private(set) var liveReach: Float = 0
 
@@ -136,6 +139,8 @@ final class AuraPunchSession {
     private var phrasingTask: Task<Void, Never>?
     /// Monotonic local token. It never crosses the relay boundary.
     private var feedbackGeneration: UInt64 = 0
+    private var phaseBeforeVoicePause: AuraPunchPhase?
+    private var scoredRoundScores: [TechniqueScore] = []
     /// The last actionable metric focus in this training session.
     private var previousCorrectionFocus: SubMetricKind?
 
@@ -211,6 +216,9 @@ final class AuraPunchSession {
         currentDemoRep = 0
         currentScoredPunch = 0
         liveReach = 0
+        isVoicePaused = false
+        phaseBeforeVoicePause = nil
+        scoredRoundScores.removeAll(keepingCapacity: true)
 
         // Rebuild the ghost arms for the currently selected technique — switching from a jab to a
         // cross switches which arm throws, and a silhouette built for the old side would appear
@@ -240,6 +248,8 @@ final class AuraPunchSession {
         demoArm?.isVisible = false
         mirrorArm?.isVisible = false
         currentScoredPunch = 0
+        isVoicePaused = false
+        phaseBeforeVoicePause = nil
         phase = .idle
         statusMessage = "Stopped"
         audioCoordinator.handleImmediately(.trainingDidStop(
@@ -253,8 +263,150 @@ final class AuraPunchSession {
         score = nil
         feedback = nil
         previousCorrectionFocus = nil
+        scoredRoundScores.removeAll(keepingCapacity: true)
         errorMessage = nil
         statusMessage = "Ready"
+    }
+
+    /// Stops the active capture/demo task before the microphone opens. Recorder state and the
+    /// visible target are discarded without producing a score or miss.
+    func pauseForVoice() -> String? {
+        guard !isVoicePaused,
+              [.acquiring, .guiding, .countdown, .attempting].contains(phase) else {
+            return nil
+        }
+        phaseBeforeVoicePause = phase
+        isVoicePaused = true
+        voicePauseInvalidationCount &+= 1
+        loopTask?.cancel()
+        loopTask = nil
+        for recorder in recorders.values { recorder.cancel() }
+        targets.removeActiveTarget()
+        mirrorArm?.isVisible = false
+        statusMessage = "Training paused · return both fists to guard to resume"
+        return "Training paused."
+    }
+
+    func resumeAfterFreshGuard(
+        countdown: @MainActor (Int) async -> Void = { count in
+            _ = count
+            try? await Task.sleep(for: .seconds(1))
+        },
+        commandIsCurrent: @MainActor () -> Bool = { true }
+    ) async -> String? {
+        guard isVoicePaused, commandIsCurrent(), hasFreshVoiceGuard() else { return nil }
+        let pausedPhase = phaseBeforeVoicePause
+        let generation = hands.providerGeneration
+        for count in [3, 2, 1] {
+            setCoaching(
+                headline: "YOUR TURN",
+                detail: "Resuming in \(count)…",
+                status: "Resuming in \(count)…"
+            )
+            await countdown(count)
+            guard isVoicePaused,
+                  commandIsCurrent(),
+                  hands.providerGeneration == generation,
+                  hasFreshVoiceGuard() else { return nil }
+        }
+
+        isVoicePaused = false
+        phaseBeforeVoicePause = nil
+        let solver = ArmPoseSolver(measurements: measurements)
+        loopTask = Task { [weak self] in
+            guard let self else { return }
+            switch pausedPhase {
+            case .acquiring, .guiding:
+                await self.runGuidedFollowAlong(
+                    solver: solver,
+                    startingAt: max(1, self.currentDemoRep)
+                )
+                guard !Task.isCancelled else { return }
+                await self.runCountdown()
+                guard !Task.isCancelled else { return }
+                await self.runScoredTargetRound(solver: solver)
+            case .countdown, .attempting:
+                await self.runCountdown()
+                guard !Task.isCancelled else { return }
+                await self.runScoredTargetRound(solver: solver)
+            case .idle, .scoring, .results, nil:
+                return
+            }
+        }
+        return "Tracking is fresh. Resuming training."
+    }
+
+    func repeatDemo() -> String? {
+        guard phase == .guiding, !isVoicePaused else { return nil }
+        let repeatedRep = max(1, currentDemoRep)
+        loopTask?.cancel()
+        targets.removeActiveTarget()
+        let solver = ArmPoseSolver(measurements: measurements)
+        loopTask = Task { [weak self] in
+            guard let self else { return }
+            await self.runGuidedFollowAlong(solver: solver, startingAt: repeatedRep)
+            guard !Task.isCancelled else { return }
+            await self.runCountdown()
+            guard !Task.isCancelled else { return }
+            await self.runScoredTargetRound(solver: solver)
+        }
+        return "Repeating demo \(repeatedRep)."
+    }
+
+    func setDemoRate(_ rate: TrainingDemoRate) -> String? {
+        guard phase == .guiding, !isVoicePaused else { return nil }
+        demonstrationRate = rate
+        switch rate {
+        case .slower: return "Showing the demo slower."
+        case .normal: return "Demo speed reset."
+        case .faster: return "Showing the demo faster."
+        }
+    }
+
+    func advanceDemo() -> String? {
+        guard phase == .guiding, !isVoicePaused else { return nil }
+        let nextRep = min(max(1, currentDemoRep + 1), max(1, guidedRepetitions))
+        currentDemoRep = nextRep
+        return "Moving to demo \(nextRep)."
+    }
+
+    func requestCorrection() -> String? {
+        feedback?.primaryFix ?? (phase == .attempting ? statusMessage : nil)
+    }
+
+    func requestGuardExplanation() -> String? {
+        guard phase != .idle else { return nil }
+        return "Keep the other fist by your chin so every punch starts and finishes from guard."
+    }
+
+    func requestTargetHelp() -> String? {
+        guard phase != .idle, phase != .results else { return nil }
+        return "Follow the hologram, punch through its visible target, then return to guard."
+    }
+
+    func requestProgress() -> String {
+        switch phase {
+        case .guiding:
+            return "Demo \(min(currentDemoRep, guidedRepetitions)) of \(guidedRepetitions)"
+        case .countdown:
+            return "Demo complete · scored punches start next"
+        case .attempting:
+            return "Punch \(min(currentScoredPunch, scoredPunchCount)) of \(scoredPunchCount)"
+        case .scoring:
+            return "Scoring \(scoredRoundScores.count) punches"
+        case .results:
+            return "\(scoredRoundScores.count) of \(scoredPunchCount) punches complete"
+        case .idle, .acquiring:
+            return statusMessage
+        }
+    }
+
+    private func hasFreshVoiceGuard() -> Bool {
+        guard hands.isRunning,
+              hands.deviceTransform != nil,
+              let left = hands.freshObservation(for: .left),
+              let right = hands.freshObservation(for: .right) else { return false }
+        return left.fistState == .closed && right.fistState == .closed
     }
 
     // MARK: Session loop
@@ -349,14 +501,21 @@ final class AuraPunchSession {
     ///
     /// This replaces the old fire-and-forget demo, which played at fixed speed whether or not the
     /// user was anywhere near keeping up.
-    private func runGuidedFollowAlong(solver: ArmPoseSolver) async {
+    private func runGuidedFollowAlong(
+        solver: ArmPoseSolver,
+        startingAt startRep: Int = 1
+    ) async {
         phase = .guiding
         mirrorArm?.isVisible = false
 
         let reps = max(1, guidedRepetitions)
-        var speedFactor: Double = 1
+        let clampedStartRep = min(max(1, startRep), reps)
+        var speedFactor = max(
+            minimumGuidedSpeedFactor,
+            pow(guidedSpeedUp, Double(clampedStartRep - 1))
+        )
 
-        for rep in 1...reps {
+        for rep in clampedStartRep...reps {
             if Task.isCancelled { return }
             currentDemoRep = rep
 
@@ -468,7 +627,7 @@ final class AuraPunchSession {
             return
         }
 
-        let wallDuration = span * speedFactor
+        let wallDuration = span * speedFactor / demonstrationRate.playbackMultiplier
         var activeElapsed: TimeInterval = 0
         var lastTick = CACurrentMediaTime()
 
@@ -641,9 +800,7 @@ final class AuraPunchSession {
         currentScoredPunch = 0
         playCoachCue(.hitTarget, caption: "Hit each target.")
 
-        var scores: [TechniqueScore] = []
-
-        var punchIndex = 1
+        var punchIndex = scoredRoundScores.count + 1
         while punchIndex <= scoredPunchCount {
             guard !Task.isCancelled else { return }
 
@@ -715,7 +872,7 @@ final class AuraPunchSession {
                 try? await Task.sleep(for: .milliseconds(220))
                 continue
             }
-            scores.append(computed)
+            scoredRoundScores.append(computed)
             punchIndex += 1
 
             try? await Task.sleep(for: .milliseconds(220))
@@ -729,7 +886,10 @@ final class AuraPunchSession {
         currentScoredPunch = 0
         mirrorArm?.isVisible = false
 
-        guard let aggregated = TechniqueScore.averaging(scores, techniqueID: technique.id) else {
+        guard let aggregated = TechniqueScore.averaging(
+            scoredRoundScores,
+            techniqueID: technique.id
+        ) else {
             fail("Couldn't see a punch. Keep both hands in view and hit each target.")
             return
         }

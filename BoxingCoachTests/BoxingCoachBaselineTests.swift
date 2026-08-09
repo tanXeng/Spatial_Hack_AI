@@ -12,6 +12,14 @@ final class BoxingCoachTechniqueTests: XCTestCase {
         XCTAssertEqual(ReactiveStrikeMode.allCases, [.air, .combination])
     }
 
+    @MainActor
+    func testEndTrainingControlUsesOneStableImmersivePlacement() {
+        XCTAssertEqual(
+            ImmersiveTrainingControlsLayout.worldPosition,
+            SIMD3<Float>(0, 0.78, -0.9)
+        )
+    }
+
     func testUppercutIsOneAlternatingTechniqueWithLegacyLookup() {
         let uppercuts = Technique.all.filter { $0.id.contains("uppercut") }
 

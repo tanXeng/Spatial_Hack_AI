@@ -68,12 +68,22 @@ struct BoxingCoachRootView: View {
         .onChange(of: flow.route) {
             AccessibilityNotification.ScreenChanged().post()
         }
+        .onChange(of: competitionStore.currentPlayer) { oldPlayer, newPlayer in
+            guard oldPlayer?.id != newPlayer?.id
+                    || oldPlayer?.reach != newPlayer?.reach
+                    || oldPlayer?.calibrationVersion != newPlayer?.calibrationVersion
+            else { return }
+            syncPlayerCalibration(newPlayer)
+        }
         .onAppear {
             flow.controlWindowDidAppear()
         }
         .task {
             await competitionStore.bootstrap()
             await completeCompetitionRunIfNeeded()
+            if let player = competitionStore.currentPlayer {
+                syncPlayerCalibration(player)
+            }
         }
         .onDisappear {
             flow.controlWindowDidDisappear()
@@ -172,6 +182,11 @@ struct BoxingCoachRootView: View {
             }
             flow.navigate(to: .features)
         }
+    }
+
+    private func syncPlayerCalibration(_ player: CompetitionPlayer?) {
+        let reach = player?.hasCurrentCalibration == true ? player?.reach : nil
+        session.applyPersistedCompetitionReach(reach)
     }
 
     private func openImmersive(_ id: String) async -> ImmersiveOpenOutcome {

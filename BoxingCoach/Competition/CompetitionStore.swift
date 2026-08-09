@@ -251,6 +251,7 @@ final class CompetitionStore {
             switch run.kind {
             case .calibration:
                 guard session.phase == .finished,
+                      !session.wasStoppedBeforeCompletion,
                       let reach = BilateralReach(session.latestCalibratedReaches)
                 else { throw CompetitionStoreError.incompleteRun }
                 player.reach = reach
@@ -264,6 +265,9 @@ final class CompetitionStore {
                 sheetRoute = .modes
 
             case .ranked(let mode):
+                guard !session.wasStoppedBeforeCompletion else {
+                    throw CompetitionStoreError.incompleteRun
+                }
                 if session.competitionRequiresRecalibration {
                     player.reach = nil
                     player.calibrationVersion = nil

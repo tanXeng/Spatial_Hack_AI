@@ -232,6 +232,47 @@ struct CompetitionSheetView: View {
     }
 
     private func leaderboard(_ mode: CompetitionMode) -> some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(alignment: .top, spacing: 18) {
+                leaderboardCalibrationTab
+                leaderboardBoard(mode)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            VStack(alignment: .leading, spacing: 18) {
+                leaderboardCalibrationTab
+                leaderboardBoard(mode)
+            }
+        }
+    }
+
+    private var leaderboardCalibrationTab: some View {
+        Button {
+            if let selection = store.prepareCalibration() { onStart(selection) }
+        } label: {
+            VStack(spacing: 8) {
+                Image(systemName: "ruler")
+                    .font(.title2)
+                    .accessibilityHidden(true)
+                Text(store.currentPlayer?.hasCurrentCalibration == true ? "Recalibrate" : "Calibrate")
+                    .font(.caption.weight(.semibold))
+                    .multilineTextAlignment(.center)
+            }
+            .frame(minWidth: 96, minHeight: 72)
+            .padding(.vertical, 8)
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+        }
+        .buttonStyle(.plain)
+        .disabled(store.currentPlayer == nil || store.activeRun != nil || store.isSaving)
+        .accessibilityLabel(
+            store.currentPlayer?.hasCurrentCalibration == true
+                ? "Recalibrate reach"
+                : "Calibrate reach"
+        )
+        .accessibilityHint("Updates target placement for Reactive Strike and Combo")
+        .accessibilityInputLabels(["Calibrate", "Recalibrate reach", "Reach settings"])
+    }
+
+    private func leaderboardBoard(_ mode: CompetitionMode) -> some View {
         VStack(alignment: .leading, spacing: 18) {
             Picker("Leaderboard", selection: Binding(
                 get: { mode },

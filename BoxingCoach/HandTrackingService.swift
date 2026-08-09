@@ -66,6 +66,23 @@ nonisolated enum FistStateClassifier {
     }
 }
 
+/// Pure hand-geometry helpers kept separate from ARKit so partial-joint behavior is testable.
+/// A curled fist often hides fingertips from the cameras while its knuckles remain stable; fist
+/// position must therefore not depend on every finger having a visible tip.
+nonisolated enum HandObservationGeometry {
+    static func fistCenter(knuckles: [SIMD3<Float>]) -> SIMD3<Float>? {
+        let valid = knuckles.filter(\.isFinite)
+        guard valid.count >= 3 else { return nil }
+        return valid.reduce(SIMD3<Float>.zero, +) / Float(valid.count)
+    }
+
+    static func meanClosureRatio(_ ratios: [Float]) -> Float? {
+        let valid = ratios.filter { $0.isFinite && $0 >= 0 }
+        guard !valid.isEmpty else { return nil }
+        return valid.reduce(0, +) / Float(valid.count)
+    }
+}
+
 /// Tracks both hands and the device (head) via ARKit.
 ///
 /// Exposes two levels of detail:
@@ -300,24 +317,26 @@ final class HandTrackingService {
             (.ringFingerKnuckle, .ringFingerTip),
             (.littleFingerKnuckle, .littleFingerTip)
         ]
+        let knuckles = fingerChains.compactMap { knuckleName, _ in
+            worldTransform(knuckleName)?.translation
+        }.filter(\.isFinite)
+        guard let fistCenter = HandObservationGeometry.fistCenter(knuckles: knuckles) else {
+            clear(chirality: anchor.chirality)
+            return
+        }
+
         let trackedChains = fingerChains.compactMap { knuckleName, tipName -> (SIMD3<Float>, SIMD3<Float>)? in
             guard let knuckle = worldTransform(knuckleName)?.translation,
                   let tip = worldTransform(tipName)?.translation else { return nil }
             return (knuckle, tip)
         }
-        guard trackedChains.count >= 3 else {
-            clear(chirality: anchor.chirality)
-            return
-        }
-        let knuckles = trackedChains.map(\.0)
-        let fistCenter = knuckles.reduce(SIMD3<Float>.zero, +) / Float(knuckles.count)
         let indexKnuckle = worldTransform(.indexFingerKnuckle)?.translation
         let littleKnuckle = worldTransform(.littleFingerKnuckle)?.translation
         let palmWidth = indexKnuckle.flatMap { index in
             littleKnuckle.map { max(distance(index, $0), 0.001) }
         } ?? max(distance(knuckles.first!, knuckles.last!), 0.001)
         let ratios = trackedChains.map { distance($0.0, $0.1) / palmWidth }
-        let closureRatio = ratios.reduce(0, +) / Float(ratios.count)
+        let closureRatio = HandObservationGeometry.meanClosureRatio(ratios) ?? .nan
         let prototype = fistPrototypes[side]
 
         let observation = HandObservation(

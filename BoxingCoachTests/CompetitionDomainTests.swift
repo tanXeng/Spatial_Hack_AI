@@ -10,12 +10,99 @@ final class CompetitionDomainTests: XCTestCase {
         session.configureCompetition(mode: .reactiveStrike, stance: .orthodox, reach: reach)
         XCTAssertEqual(session.mode, .air)
         XCTAssertEqual(session.config.targetCount, 8)
+        XCTAssertEqual(session.config.timeout, 4)
 
         session.configureCompetition(mode: .combination, stance: .southpaw, reach: reach)
         XCTAssertEqual(session.mode, .combination)
         XCTAssertEqual(session.selectedCombination, .jabCrossHookCross)
         XCTAssertEqual(session.comboRepeatCount, 5)
         XCTAssertEqual(session.selectedCombination.punchCount * session.comboRepeatCount, 20)
+
+        session.configure(mode: .air, combination: nil, stance: .orthodox)
+        XCTAssertEqual(session.config, DrillConfig(), "Competition timing must not leak into normal training")
+    }
+
+    @MainActor
+    func testPersistedPlayerReachFlowsIntoRegularReactiveAndComboThenClears() throws {
+        let session = ReactiveStrikeSession()
+        let reach = try XCTUnwrap(BilateralReach(left: 0.58, right: 0.72))
+        let expected = ReachProfile.air.calibrated(measuredForwardReach: reach.conservative)
+
+        session.applyPersistedCompetitionReach(reach)
+        session.configure(mode: .air, combination: nil, stance: .orthodox)
+        XCTAssertEqual(session.reachProfile.forwardMax, expected.forwardMax, accuracy: 0.0001)
+
+        session.configure(mode: .combination, combination: .jabCrossHookCross, stance: .southpaw)
+        XCTAssertEqual(session.reachProfile.forwardMax, expected.forwardMax, accuracy: 0.0001)
+
+        session.applyPersistedCompetitionReach(nil)
+        session.configure(mode: .air, combination: nil, stance: .orthodox)
+        XCTAssertEqual(session.reachProfile.forwardMax, ReachProfile.air.forwardMax, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testExplicitStopMarksCompetitionAsCancelledBeforeAnySubmission() throws {
+        let session = ReactiveStrikeSession()
+        let reach = try XCTUnwrap(BilateralReach(left: 0.62, right: 0.66))
+        session.configureCompetition(mode: .reactiveStrike, stance: .orthodox, reach: reach)
+
+        session.startDrill()
+        session.stopDrill()
+
+        XCTAssertTrue(session.wasStoppedBeforeCompletion)
+        XCTAssertEqual(session.lastFeedback, "Drill stopped")
+    }
+
+    func testClosedFistPositionSurvivesMissingFingertips() throws {
+        let knuckles = [
+            SIMD3<Float>(-0.03, 0, 0),
+            SIMD3<Float>(-0.01, 0.01, 0),
+            SIMD3<Float>(0.01, 0.01, 0),
+            SIMD3<Float>(0.03, 0, 0)
+        ]
+
+        let center = try XCTUnwrap(HandObservationGeometry.fistCenter(knuckles: knuckles))
+        XCTAssertEqual(center.x, 0, accuracy: 0.0001)
+        XCTAssertEqual(center.y, 0.005, accuracy: 0.0001)
+        XCTAssertNil(HandObservationGeometry.fistCenter(knuckles: Array(knuckles.prefix(2))))
+
+        // Missing tips reduce shape confidence, but no longer erase the usable fist position.
+        XCTAssertEqual(
+            FistStateClassifier.classify(fingertipToKnuckleRatios: [0.8, 0.9]),
+            .uncertain
+        )
+    }
+
+    func testCompetitionTrackingRecoveryNeedsConsecutiveStableEvidence() {
+        var gate = CompetitionTrackingRecoveryGate()
+        XCTAssertFalse(gate.observe(freshAndGuarded: true))
+        XCTAssertFalse(gate.observe(freshAndGuarded: true))
+        XCTAssertFalse(gate.observe(freshAndGuarded: false))
+        XCTAssertEqual(gate.consecutiveStableSamples, 0)
+
+        for _ in 0..<(CompetitionTrackingRecoveryGate.requiredStableSamples - 1) {
+            XCTAssertFalse(gate.observe(freshAndGuarded: true))
+        }
+        XCTAssertTrue(gate.observe(freshAndGuarded: true))
+    }
+
+    func testGuardCoachUsesTheRoundCapturedGuardInsteadOfAnAverageBodyPose() {
+        let captured = SIMD3<Float>(-0.24, 0.12, 0.31)
+        XCTAssertEqual(
+            GuardCoach.isGuardUp(
+                guardFistBody: captured + SIMD3<Float>(0.04, -0.03, 0.02),
+                capturedGuardBody: captured
+            ),
+            true
+        )
+        XCTAssertEqual(
+            GuardCoach.isGuardUp(
+                guardFistBody: captured + SIMD3<Float>(0, -0.30, 0),
+                capturedGuardBody: captured
+            ),
+            false
+        )
+        XCTAssertNil(GuardCoach.isGuardUp(guardFistBody: nil, capturedGuardBody: captured))
     }
 
     func testNameNormalizationCollapsesWhitespaceAndReopensEquivalentNames() throws {

@@ -125,6 +125,7 @@ final class AuraPunchSession {
     private var cachedBodyFrame: BodyFrame?
     private var cachedBodyFrameTime: TimeInterval = 0
     private let bodyFrameCacheDuration: TimeInterval = 0.25
+    private var lastRecordedHandTimestamps: [BodySide: TimeInterval] = [:]
 
     /// Frame interval for the pose loop. Hand tracking runs at ~90 Hz; polling faster just burns
     /// cycles re-reading the same anchor.
@@ -676,6 +677,7 @@ final class AuraPunchSession {
 
         cachedBodyFrame = nil
         cachedBodyFrameTime = 0
+        lastRecordedHandTimestamps.removeAll(keepingCapacity: true)
 
         let startTime = CACurrentMediaTime()
         hands.beginAttemptCapture()
@@ -699,7 +701,7 @@ final class AuraPunchSession {
 
             if !hitDetected,
                let hitPosition = targets.activeTargetPosition,
-               let fist = hands.nearestFistPosition(to: hitPosition),
+               let fist = freshFistPosition(nearestTo: hitPosition),
                distance(fist, hitPosition) <= targetHitRadius {
                 hitDetected = true
                 targets.flash(result: .hit)
@@ -747,9 +749,7 @@ final class AuraPunchSession {
         guard let frame = bodyFrameForAttempt(solver: solver, at: now) else {
             for handSide in [BodySide.left, .right] {
                 guard let recorder = recorders[handSide] else { continue }
-                if hands.observation(for: handSide) == nil {
-                    recorder.recordDropout(at: now)
-                }
+                recorder.recordDropout(at: now)
             }
             mirrorArm?.isVisible = false
             return nil
@@ -761,15 +761,18 @@ final class AuraPunchSession {
 
         for handSide in [BodySide.left, .right] {
             guard let recorder = recorders[handSide] else { continue }
-            guard let hand = hands.observation(for: handSide) else {
+            guard let hand = hands.freshObservation(for: handSide),
+                  hand.timestamp > (lastRecordedHandTimestamps[handSide] ?? -.infinity)
+            else {
                 recorder.recordDropout(at: now)
                 continue
             }
+            lastRecordedHandTimestamps[handSide] = hand.timestamp
 
             let pose = solver.solve(hand: hand, frame: frame)
             let sample = solver.normalize(
                 pose: pose,
-                guardHand: hands.observation(for: handSide.opposite)?.fistPosition,
+                guardHand: hands.freshObservation(for: handSide.opposite)?.fistPosition,
                 frame: frame,
                 startTime: startTime
             )
@@ -920,11 +923,21 @@ final class AuraPunchSession {
         guard let frame = currentBodyFrame(solver: solver) else { return nil }
         let guardSide = punchingSide.opposite
         return GuardCoach.isGuardUp(
-            guardFistWorld: hands.observation(for: guardSide)?.fistPosition,
+            guardFistWorld: hands.freshObservation(for: guardSide)?.fistPosition,
             frame: frame,
             measurements: measurements,
             guardSide: guardSide
         )
+    }
+
+    private func freshFistPosition(nearestTo point: SIMD3<Float>) -> SIMD3<Float>? {
+        let candidates = [BodySide.left, .right].compactMap { side -> SIMD3<Float>? in
+            guard let observation = hands.freshObservation(for: side),
+                  observation.timestamp > (lastRecordedHandTimestamps[side] ?? -.infinity)
+            else { return nil }
+            return observation.fistPosition
+        }
+        return candidates.min { distance($0, point) < distance($1, point) }
     }
 
     private func fail(_ message: String) {

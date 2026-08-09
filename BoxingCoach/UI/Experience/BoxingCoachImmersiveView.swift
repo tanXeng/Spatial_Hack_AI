@@ -2,6 +2,13 @@ import Accessibility
 import RealityKit
 import SwiftUI
 
+enum ImmersiveTrainingControlsLayout {
+    /// Keep the safety control in one predictable place for every immersive experience.
+    /// This matches the established Reactive Strike placement and avoids Aura Punch putting
+    /// the same control near the floor.
+    static let worldPosition = SIMD3<Float>(0, 0.78, -0.9)
+}
+
 /// Mixed immersive scene hosting spatial targets and Aura Punch silhouettes.
 /// It owns the in-training stop control and restores the window before immersion closes.
 struct BoxingCoachImmersiveView: View {
@@ -29,13 +36,8 @@ struct BoxingCoachImmersiveView: View {
 
             if let controls = attachments.entity(for: controlsAttachmentID) {
                 controls.name = "TrainingControls"
-                if isAuraExperience {
-                    controls.position = SIMD3<Float>(0, -0.32, -1.05)
-                    root.addChild(controls)
-                } else {
-                    controls.position = SIMD3<Float>(0, 0.78, -0.9)
-                    root.addChild(controls)
-                }
+                controls.position = ImmersiveTrainingControlsLayout.worldPosition
+                root.addChild(controls)
             }
 
             session.attachSceneRoot(root)
@@ -56,12 +58,17 @@ struct BoxingCoachImmersiveView: View {
             Attachment(id: controlsAttachmentID) {
                 VStack(spacing: 10) {
                     if session.isTrackingPaused {
-                        Button("Resume Training", systemImage: "play.circle.fill") {
-                            session.requestTrackingResume()
+                        if isCompetitionExperience {
+                            Label("Tracking paused · Return to guard", systemImage: "hand.raised.fill")
+                                .accessibilityLabel("Tracking paused. Hold both fists in guard to resume automatically.")
+                        } else {
+                            Button("Resume Training", systemImage: "play.circle.fill") {
+                                session.requestTrackingResume()
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(!session.trackingReadyToResume)
+                            .accessibilityHint("Available after both hands return to guard with stable tracking")
                         }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(!session.trackingReadyToResume)
-                        .accessibilityHint("Available after both hands return to guard with stable tracking")
                     }
                     Button("End Training", systemImage: "stop.circle") {
                         endTraining()
@@ -129,6 +136,11 @@ struct BoxingCoachImmersiveView: View {
         default:
             return false
         }
+    }
+
+    private var isCompetitionExperience: Bool {
+        if case .experience(.competition) = flow.route { return true }
+        return false
     }
 
     private var auraBannerStyle: ImmersiveInstructionBannerStyle {

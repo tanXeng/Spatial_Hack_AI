@@ -1,4 +1,6 @@
 import XCTest
+import SwiftData
+import Testing
 @testable import BoxingCoach
 
 @MainActor
@@ -146,19 +148,6 @@ final class CompetitionPersistenceTests: XCTestCase {
         XCTAssertNil(store.errorMessage)
     }
 
-    func testSwiftDataCompetitionSchemaRoundTripsWithoutEventEditionModels() async throws {
-        let container = try CompetitionModelContainer.make(inMemory: true)
-        let repository = SwiftDataCompetitionRepository(container: container)
-        let player = makePlayer()
-        try await repository.save(player: player)
-        _ = try await repository.submit(makeSubmission(player: player))
-
-        let restored = try await repository.player(id: player.id)
-        let submissions = try await repository.submissions()
-        XCTAssertEqual(restored, player)
-        XCTAssertEqual(submissions.count, 1)
-    }
-
     private func makePlayer() -> CompetitionPlayer {
         CompetitionPlayer(
             id: UUID(uuidString: "00000000-0000-0000-0000-000000000201")!,
@@ -191,6 +180,186 @@ final class CompetitionPersistenceTests: XCTestCase {
             trackingStatus: .complete
         )
     }
+}
+
+@Suite("Competition SwiftData V2 persistence")
+@MainActor
+struct CompetitionSwiftDataV2PersistenceTests {
+    @Test("Current V2 schema round-trips participant and submission snapshots")
+    func currentSchemaRoundTripsCompetitionValues() async throws {
+        let container = try CompetitionModelContainer.make(inMemory: true)
+        let repository = SwiftDataCompetitionRepository(container: container)
+        let player = makePersistentPlayer()
+        let submission = makePersistentSubmission(player: player)
+
+        try await repository.save(player: player)
+        _ = try await repository.submit(submission)
+
+        #expect(try await repository.player(id: player.id) == player)
+        #expect(try await repository.submissions() == [submission])
+        #expect(try ModelContext(container).fetch(
+            FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>()
+        ).count == 1)
+    }
+
+    @Test("Current V2 schema round-trips event, attempt, memory, pending run, and award records")
+    func currentSchemaRoundTripsAthleteMemoryValues() throws {
+        let container = try CompetitionModelContainer.make(inMemory: true)
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        let player = makePersistentPlayer()
+        let eventID = try #require(player.eventID)
+        let publicHandle = try #require(player.publicHandle)
+        let event = try #require(EventEdition(
+            id: eventID,
+            title: "Summer Finals",
+            status: .open,
+            openedAt: Date(timeIntervalSince1970: 1),
+            closedAt: nil,
+            scoringVersion: CompetitionScorer.scoringVersion,
+            calibrationVersion: CompetitionPlayer.calibrationVersion
+        ))
+        let attempt = try #require(TechniqueAttemptSnapshot(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000213")!,
+            athleteID: player.id,
+            eventID: event.id,
+            techniqueID: "jab",
+            score: 92,
+            scoringVersion: event.scoringVersion,
+            calibrationVersion: player.calibrationVersion,
+            startedAt: Date(timeIntervalSince1970: 10),
+            completedAt: Date(timeIntervalSince1970: 12),
+            publicHandleSnapshot: player.publicHandle
+        ))
+        let memory = try #require(AthleteSkillMemory(
+            athleteID: player.id,
+            techniqueID: attempt.techniqueID,
+            experienceLevel: player.experienceLevel,
+            attempts: [attempt],
+            pastSelfTrace: nil,
+            updatedAt: attempt.completedAt
+        ))
+        let pending = try #require(PendingTrainingRun(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000214")!,
+            athleteID: player.id,
+            eventID: event.id,
+            techniqueID: "cross",
+            requestedAt: Date(timeIntervalSince1970: 20)
+        ))
+        let award = try #require(EventAward(
+            id: UUID(uuidString: "00000000-0000-0000-0000-000000000215")!,
+            eventID: event.id,
+            athleteID: player.id,
+            publicHandleSnapshot: publicHandle,
+            kind: .personalBest,
+            attemptID: attempt.id,
+            awardedAt: Date(timeIntervalSince1970: 13)
+        ))
+
+        context.insert(CompetitionSchemaV2.EventEditionRecord(event))
+        context.insert(CompetitionSchemaV2.TechniqueAttemptRecord(attempt))
+        context.insert(try CompetitionSchemaV2.AthleteSkillMemoryRecord(memory))
+        context.insert(CompetitionSchemaV2.PendingTrainingRunRecord(pending))
+        context.insert(CompetitionSchemaV2.EventAwardRecord(award))
+        try context.save()
+
+        let restoredContext = ModelContext(container)
+        #expect(try restoredContext.fetch(
+            FetchDescriptor<CompetitionSchemaV2.EventEditionRecord>()
+        ).only?.snapshot == event)
+        #expect(try restoredContext.fetch(
+            FetchDescriptor<CompetitionSchemaV2.TechniqueAttemptRecord>()
+        ).only?.snapshot == attempt)
+        #expect(try restoredContext.fetch(
+            FetchDescriptor<CompetitionSchemaV2.AthleteSkillMemoryRecord>()
+        ).only?.snapshot(attempts: [attempt]) == memory)
+        #expect(try restoredContext.fetch(
+            FetchDescriptor<CompetitionSchemaV2.PendingTrainingRunRecord>()
+        ).only?.snapshot == pending)
+        #expect(try restoredContext.fetch(
+            FetchDescriptor<CompetitionSchemaV2.EventAwardRecord>()
+        ).only?.snapshot == award)
+    }
+
+    @Test("A failed save rolls back the inserted participant")
+    func saveFailureRollsBackContext() async throws {
+        let directoryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("CompetitionRollbackTests-\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: directoryURL, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directoryURL) }
+        let storeURL = directoryURL.appendingPathComponent("competition.store")
+        try createWritableV2Store(at: storeURL)
+
+        let container = try CompetitionModelContainer.make(storeURL: storeURL, allowsSave: false)
+        let repository = SwiftDataCompetitionRepository(container: container)
+        let player = makePersistentPlayer()
+
+        await #expect(throws: CompetitionRepositoryError.self) {
+            try await repository.save(player: player)
+        }
+
+        #expect(try await repository.player(id: player.id) == nil)
+        #expect(try ModelContext(container).fetch(
+            FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>()
+        ).isEmpty)
+    }
+}
+
+@MainActor
+private func createWritableV2Store(at storeURL: URL) throws {
+    _ = try CompetitionModelContainer.make(storeURL: storeURL)
+}
+
+private extension Array {
+    var only: Element? { count == 1 ? self[0] : nil }
+}
+
+@MainActor
+private func makePersistentPlayer() -> CompetitionPlayer {
+    let eventID = UUID(uuidString: "00000000-0000-0000-0000-000000000210")!
+    let handle = ParticipantPublicHandle.reserving(
+        eventID: eventID,
+        displayName: "Alex",
+        displayCode: "0042",
+        against: []
+    )!
+    return CompetitionPlayer(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000211")!,
+        name: "Alex",
+        normalizedName: "alex",
+        rememberedStance: .southpaw,
+        reach: BilateralReach(left: 0.64, right: 0.69),
+        calibrationVersion: CompetitionPlayer.calibrationVersion,
+        calibratedAt: Date(timeIntervalSince1970: 5),
+        createdAt: Date(timeIntervalSince1970: 1),
+        lastSeenAt: Date(timeIntervalSince1970: 5),
+        experienceLevel: .intermediate,
+        publicHandle: handle
+    )
+}
+
+@MainActor
+private func makePersistentSubmission(player: CompetitionPlayer) -> CompetitionSubmission {
+    CompetitionSubmission(
+        id: UUID(uuidString: "00000000-0000-0000-0000-000000000212")!,
+        playerID: player.id,
+        playerName: player.name,
+        normalizedPlayerName: player.normalizedName,
+        mode: .reactiveStrike,
+        score: 88,
+        validSteps: 7,
+        totalSteps: 8,
+        completedRepetitions: 0,
+        meanCentreErrorMeters: 0.02,
+        speedTieBreakSeconds: 0.31,
+        startedAt: Date(timeIntervalSince1970: 10),
+        endedAt: Date(timeIntervalSince1970: 20),
+        trackingStatus: .complete,
+        eventID: player.eventID,
+        scoringVersion: CompetitionScorer.scoringVersion,
+        calibrationVersion: player.calibrationVersion,
+        publicHandleSnapshot: player.publicHandle
+    )
 }
 
 @MainActor

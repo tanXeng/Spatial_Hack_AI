@@ -171,21 +171,79 @@ enum CompetitionSchemaV1: VersionedSchema {
 }
 
 enum CompetitionMigrationPlan: SchemaMigrationPlan {
-    static var schemas: [any VersionedSchema.Type] { [CompetitionSchemaV1.self] }
-    static var stages: [MigrationStage] { [] }
+    static var schemas: [any VersionedSchema.Type] {
+        [CompetitionSchemaV1.self, CompetitionSchemaV2.self]
+    }
+
+    static var stages: [MigrationStage] {
+        [
+            .custom(
+                fromVersion: CompetitionSchemaV1.self,
+                toVersion: CompetitionSchemaV2.self,
+                willMigrate: nil,
+                didMigrate: CompetitionLegacyMigration.migrate
+            )
+        ]
+    }
 }
 
 enum CompetitionModelContainer {
+    static let configurationName = "BoxingCoachAthleteMemory"
+    private static let legacyConfigurationName = "BoxingCoachCompetitionV1"
+
     static func make(inMemory: Bool) throws -> ModelContainer {
-        let schema = Schema(versionedSchema: CompetitionSchemaV1.self)
+        let schema = Schema(versionedSchema: CompetitionSchemaV2.self)
+        let configuration: ModelConfiguration
+        if inMemory {
+            configuration = ModelConfiguration(
+                configurationName,
+                schema: schema,
+                isStoredInMemoryOnly: true,
+                allowsSave: true,
+                groupContainer: .automatic,
+                cloudKitDatabase: .none
+            )
+        } else {
+            configuration = ModelConfiguration(
+                configurationName,
+                schema: schema,
+                url: legacyStoreURL,
+                allowsSave: true,
+                cloudKitDatabase: .none
+            )
+        }
+        return try make(schema: schema, configuration: configuration)
+    }
+
+    static func make(storeURL: URL, allowsSave: Bool = true) throws -> ModelContainer {
+        let schema = Schema(versionedSchema: CompetitionSchemaV2.self)
         let configuration = ModelConfiguration(
-            "BoxingCoachCompetitionV1",
+            configurationName,
             schema: schema,
-            isStoredInMemoryOnly: inMemory,
+            url: storeURL,
+            allowsSave: allowsSave,
+            cloudKitDatabase: .none
+        )
+        return try make(schema: schema, configuration: configuration)
+    }
+
+    private static var legacyStoreURL: URL {
+        // Keep the shipped V1 file URL while giving the V2 configuration a version-neutral name.
+        // Changing both would abandon the existing store instead of migrating it.
+        ModelConfiguration(
+            legacyConfigurationName,
+            schema: Schema(versionedSchema: CompetitionSchemaV1.self),
+            isStoredInMemoryOnly: false,
             allowsSave: true,
             groupContainer: .automatic,
             cloudKitDatabase: .none
-        )
+        ).url
+    }
+
+    private static func make(
+        schema: Schema,
+        configuration: ModelConfiguration
+    ) throws -> ModelContainer {
         return try ModelContainer(
             for: schema,
             migrationPlan: CompetitionMigrationPlan.self,
@@ -197,16 +255,15 @@ enum CompetitionModelContainer {
 @MainActor
 final class SwiftDataCompetitionRepository: CompetitionRepository {
     let container: ModelContainer
-    private let context: ModelContext
+    private var context: ModelContext
 
     init(container: ModelContainer) {
         self.container = container
-        context = ModelContext(container)
-        context.autosaveEnabled = false
+        context = Self.makeContext(container: container)
     }
 
     func player(normalizedName: String) async throws -> CompetitionPlayer? {
-        try context.fetch(FetchDescriptor<CompetitionPlayerRecord>())
+        try context.fetch(FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>())
             .first { $0.normalizedName == normalizedName }?.snapshot
     }
 
@@ -218,7 +275,7 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
         if let existing = try playerRecord(id: player.id) {
             existing.apply(player)
         } else {
-            context.insert(CompetitionPlayerRecord(player))
+            context.insert(CompetitionSchemaV2.CompetitionPlayerRecord(player))
         }
         try saveContext()
     }
@@ -228,29 +285,31 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
         guard try playerRecord(id: submission.playerID) != nil else {
             throw CompetitionRepositoryError.playerNotFound
         }
-        context.insert(CompetitionSubmissionRecord(submission))
+        context.insert(CompetitionSchemaV2.CompetitionSubmissionRecord(submission))
         try saveContext()
         return submission
     }
 
     func submissions() async throws -> [CompetitionSubmission] {
-        try context.fetch(FetchDescriptor<CompetitionSubmissionRecord>())
+        try context.fetch(FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>())
             .compactMap(\.snapshot)
             .sorted { $0.endedAt > $1.endedAt }
     }
 
     func reset() async throws {
-        try context.delete(model: CompetitionSubmissionRecord.self)
-        try context.delete(model: CompetitionPlayerRecord.self)
+        try context.delete(model: CompetitionSchemaV2.CompetitionSubmissionRecord.self)
+        try context.delete(model: CompetitionSchemaV2.CompetitionPlayerRecord.self)
         try saveContext()
     }
 
-    private func playerRecord(id: UUID) throws -> CompetitionPlayerRecord? {
-        try context.fetch(FetchDescriptor<CompetitionPlayerRecord>()).first { $0.id == id }
+    private func playerRecord(id: UUID) throws -> CompetitionSchemaV2.CompetitionPlayerRecord? {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>())
+            .first { $0.id == id }
     }
 
-    private func submissionRecord(id: UUID) throws -> CompetitionSubmissionRecord? {
-        try context.fetch(FetchDescriptor<CompetitionSubmissionRecord>()).first { $0.id == id }
+    private func submissionRecord(id: UUID) throws -> CompetitionSchemaV2.CompetitionSubmissionRecord? {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>())
+            .first { $0.id == id }
     }
 
     private func saveContext() throws {
@@ -258,7 +317,100 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
             try context.save()
         } catch {
             context.rollback()
+            context = Self.makeContext(container: container)
             throw CompetitionRepositoryError.saveFailed("Competition data could not be saved. Nothing was changed.")
         }
+    }
+
+    private static func makeContext(container: ModelContainer) -> ModelContext {
+        let context = ModelContext(container)
+        context.autosaveEnabled = false
+        return context
+    }
+}
+
+nonisolated enum CompetitionLegacyMigration {
+    static let eventID = UUID(uuidString: "00000000-0000-0000-0000-00000000E001")!
+    private static let legacyScoringVersion = 1
+
+    static func migrate(_ context: ModelContext) throws {
+        do {
+            let existingEvents = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV2.EventEditionRecord>()
+            )
+            guard existingEvents.isEmpty else {
+                throw CompetitionRepositoryError.saveFailed(
+                    "Legacy competition data could not be archived because an event already exists."
+                )
+            }
+
+            let players = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV2.CompetitionPlayerRecord>()
+            )
+            let submissions = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV2.CompetitionSubmissionRecord>()
+            )
+            let participantIDs = Set(players.map(\.id) + submissions.map(\.playerID))
+            guard participantIDs.count <= 10_000 else {
+                throw CompetitionRepositoryError.saveFailed(
+                    "Legacy competition data has too many participants for unique display codes."
+                )
+            }
+
+            let sortedIDs = participantIDs.sorted { $0.uuidString < $1.uuidString }
+            let displayCodes = Dictionary(uniqueKeysWithValues: sortedIDs.enumerated().map {
+                ($0.element, String(format: "%04d", $0.offset))
+            })
+            let timestamps = migrationTimestamps(players: players, submissions: submissions)
+            context.insert(CompetitionSchemaV2.EventEditionRecord(
+                id: eventID,
+                title: "Legacy Event",
+                statusRawValue: EventEditionStatus.closed.rawValue,
+                openedAt: timestamps.openedAt,
+                closedAt: timestamps.closedAt,
+                scoringVersion: legacyScoringVersion,
+                calibrationVersion: CompetitionPlayer.calibrationVersion
+            ))
+
+            let calibrationVersions = Dictionary(uniqueKeysWithValues: players.map {
+                ($0.id, $0.calibrationVersion)
+            })
+            for player in players {
+                player.experienceLevelRawValue = ExperienceLevel.beginner.rawValue
+                player.eventID = eventID
+                player.publicDisplayName = player.name
+                player.publicDisplayCode = displayCodes[player.id]
+            }
+            for submission in submissions {
+                guard let displayCode = displayCodes[submission.playerID] else {
+                    throw CompetitionRepositoryError.saveFailed(
+                        "Legacy competition data contains an unidentifiable submission."
+                    )
+                }
+                submission.eventID = eventID
+                submission.scoringVersion = legacyScoringVersion
+                submission.calibrationVersion = calibrationVersions[submission.playerID] ?? nil
+                submission.publicDisplayName = submission.playerName
+                submission.publicDisplayCode = displayCode
+            }
+
+            try context.save()
+        } catch {
+            context.rollback()
+            throw error
+        }
+    }
+
+    private static func migrationTimestamps(
+        players: [CompetitionSchemaV2.CompetitionPlayerRecord],
+        submissions: [CompetitionSchemaV2.CompetitionSubmissionRecord]
+    ) -> (openedAt: Date, closedAt: Date) {
+        let playerDates = players.flatMap { player in
+            [player.createdAt, player.lastSeenAt] + [player.calibratedAt].compactMap { $0 }
+        }
+        let submissionDates = submissions.flatMap { [$0.startedAt, $0.endedAt] }
+        let dates = playerDates + submissionDates
+        let fallback = Date(timeIntervalSince1970: 0)
+        return (dates.min() ?? fallback, dates.max() ?? fallback)
     }
 }

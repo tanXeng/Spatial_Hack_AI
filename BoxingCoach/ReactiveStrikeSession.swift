@@ -78,11 +78,15 @@ final class ReactiveStrikeSession {
     private let coachAudio: CoachAudioPlayer
     let voiceCoach: CoachVoiceCoach
 
-    init() {
+    init(feedbackGenerator: some FeedbackGenerating = MockFeedbackGenerator()) {
         let coachAudio = CoachAudioPlayer()
         self.coachAudio = coachAudio
         voiceCoach = CoachVoiceCoach(audioPlayer: coachAudio)
-        auraPunch = AuraPunchSession(hands: hands, coachAudio: coachAudio)
+        auraPunch = AuraPunchSession(
+            hands: hands,
+            feedbackGenerator: feedbackGenerator,
+            coachAudio: coachAudio
+        )
     }
 
     var progressLabel: String {

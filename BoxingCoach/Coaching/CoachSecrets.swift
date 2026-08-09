@@ -1,78 +1,31 @@
 import Foundation
 
-nonisolated enum OpenAIKeySource: Equatable, Sendable {
-    case inApp
-    case buildConfig
-    case none
-}
-
+/// Public, non-secret configuration for optional team-hosted coaching.
 nonisolated enum CoachSecrets {
-    static let userDefaultsKey = "com.boxingcoach.openaiAPIKey"
+    static let relayURLInfoKey = "COACH_RELAY_URL"
 
-    /// In-app stored key takes priority over build-time `Secrets.xcconfig` → Info.plist.
-    static var openAIAPIKey: String? {
-        if let inApp = validatedKey(from: storedInAppKey) {
-            return inApp
+    static var relayEndpoint: URL? {
+        relayEndpoint(in: Bundle.main.infoDictionary ?? [:])
+    }
+
+    /// Provider credentials are intentionally not part of this boundary. A build can enable
+    /// network coaching only by supplying an HTTPS relay URL without embedded credentials.
+    static func relayEndpoint(in infoDictionary: [String: Any]) -> URL? {
+        guard let rawValue = infoDictionary[relayURLInfoKey] as? String else { return nil }
+        let trimmed = rawValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard
+            !trimmed.isEmpty,
+            !trimmed.hasPrefix("$("),
+            let url = URL(string: trimmed),
+            url.scheme?.lowercased() == "https",
+            url.host?.isEmpty == false,
+            url.user == nil,
+            url.password == nil
+        else {
+            return nil
         }
-        return validatedKey(from: plistRawValue)
+        return url
     }
-
-    static var hasOpenAIKey: Bool {
-        openAIAPIKey != nil
-    }
-
-    static var openAIKeySource: OpenAIKeySource {
-        if validatedKey(from: storedInAppKey) != nil {
-            return .inApp
-        }
-        if validatedKey(from: plistRawValue) != nil {
-            return .buildConfig
-        }
-        return .none
-    }
-
-    static func setOpenAIAPIKey(_ key: String?) {
-        guard let key, let validated = validatedKey(from: key) else {
-            userDefaults.removeObject(forKey: userDefaultsKey)
-            return
-        }
-        userDefaults.set(validated, forKey: userDefaultsKey)
-    }
-
-    // MARK: - Private
-
-    private static var userDefaults: UserDefaults {
-        #if DEBUG
-        if let suiteName = testingDefaultsSuiteName,
-           let suite = UserDefaults(suiteName: suiteName) {
-            return suite
-        }
-        #endif
-        return .standard
-    }
-
-    private static var storedInAppKey: String? {
-        userDefaults.string(forKey: userDefaultsKey)
-    }
-
-    private static var plistRawValue: String? {
-        Bundle.main.object(forInfoDictionaryKey: "OPENAI_API_KEY") as? String
-    }
-
-    static func validatedKey(from raw: String?) -> String? {
-        guard let raw else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty,
-              !trimmed.hasPrefix("$("),
-              trimmed != "sk-your-key-here"
-        else { return nil }
-        return trimmed
-    }
-
-    #if DEBUG
-    /// Isolated suite for unit tests; nil uses standard UserDefaults.
-    static var testingDefaultsSuiteName: String?
-    #endif
 }
 
 nonisolated struct CoachVoiceContext: Sendable, Equatable {

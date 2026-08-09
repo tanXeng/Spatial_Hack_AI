@@ -332,7 +332,6 @@
 				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "Boxing Coach uses hand tracking to detect when you punch virtual targets.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice commands let you ask the coach questions during training.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech is converted to text on device to pick a coaching response.";
-				INFOPLIST_KEY_OPENAI_API_KEY = "$(OPENAI_API_KEY)";
 				INFOPLIST_KEY_UIApplicationSupportsMultipleScenes = YES;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MARKETING_VERSION = 1.0;
@@ -396,7 +395,6 @@
 				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "Boxing Coach uses hand tracking to detect when you punch virtual targets.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice commands let you ask the coach questions during training.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech is converted to text on device to pick a coaching response.";
-				INFOPLIST_KEY_OPENAI_API_KEY = "$(OPENAI_API_KEY)";
 				INFOPLIST_KEY_UIApplicationSupportsMultipleScenes = YES;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MARKETING_VERSION = 1.0;

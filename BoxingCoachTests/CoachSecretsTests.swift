@@ -1,53 +1,41 @@
-import XCTest
+import Foundation
+import Testing
 @testable import BoxingCoach
 
-final class CoachSecretsTests: XCTestCase {
-    private let suiteName = "CoachSecretsTests"
+@Suite("Coach production configuration")
+struct CoachSecretsTests {
+    @Test("Provider credentials cannot become app configuration")
+    func providerCredentialsAreIgnored() {
+        let endpoint = CoachSecrets.relayEndpoint(in: [
+            "OPENAI_API_KEY": "sk-must-not-be-readable",
+            "ANTHROPIC_API_KEY": "must-not-be-readable"
+        ])
 
-    override func setUp() {
-        super.setUp()
-        CoachSecrets.testingDefaultsSuiteName = suiteName
-        UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
+        #expect(endpoint == nil)
     }
 
-    override func tearDown() {
-        UserDefaults(suiteName: suiteName)?.removePersistentDomain(forName: suiteName)
-        CoachSecrets.testingDefaultsSuiteName = nil
-        super.tearDown()
+    @Test("Only a secure team relay URL enables network coaching")
+    func relayEndpointRequiresHTTPS() {
+        #expect(
+            CoachSecrets.relayEndpoint(in: [
+                CoachSecrets.relayURLInfoKey: "https://coach-relay.example/v1/feedback"
+            ]) == URL(string: "https://coach-relay.example/v1/feedback")
+        )
+        #expect(
+            CoachSecrets.relayEndpoint(in: [
+                CoachSecrets.relayURLInfoKey: "http://coach-relay.example/v1/feedback"
+            ]) == nil
+        )
+        #expect(
+            CoachSecrets.relayEndpoint(in: [
+                CoachSecrets.relayURLInfoKey: "https://user:secret@coach-relay.example/v1/feedback"
+            ]) == nil
+        )
     }
 
-    func testSaveAndClearRoundTrip() {
-        XCTAssertFalse(CoachSecrets.hasOpenAIKey)
-        XCTAssertEqual(CoachSecrets.openAIKeySource, .none)
-
-        CoachSecrets.setOpenAIAPIKey("  sk-test-key-123  ")
-        XCTAssertEqual(CoachSecrets.openAIAPIKey, "sk-test-key-123")
-        XCTAssertTrue(CoachSecrets.hasOpenAIKey)
-        XCTAssertEqual(CoachSecrets.openAIKeySource, .inApp)
-
-        CoachSecrets.setOpenAIAPIKey(nil)
-        XCTAssertNil(CoachSecrets.openAIAPIKey)
-        XCTAssertFalse(CoachSecrets.hasOpenAIKey)
-        XCTAssertEqual(CoachSecrets.openAIKeySource, .none)
-    }
-
-    func testValidationRejectsInvalidValues() {
-        XCTAssertNil(CoachSecrets.validatedKey(from: nil))
-        XCTAssertNil(CoachSecrets.validatedKey(from: ""))
-        XCTAssertNil(CoachSecrets.validatedKey(from: "   "))
-        XCTAssertNil(CoachSecrets.validatedKey(from: "$(OPENAI_API_KEY)"))
-        XCTAssertNil(CoachSecrets.validatedKey(from: "sk-your-key-here"))
-
-        CoachSecrets.setOpenAIAPIKey("")
-        XCTAssertNil(CoachSecrets.openAIAPIKey)
-
-        CoachSecrets.setOpenAIAPIKey("sk-your-key-here")
-        XCTAssertNil(CoachSecrets.openAIAPIKey)
-    }
-
-    func testInAppKeyTakesPriorityOverBuildConfig() {
-        CoachSecrets.setOpenAIAPIKey("sk-in-app-priority")
-        XCTAssertEqual(CoachSecrets.openAIAPIKey, "sk-in-app-priority")
-        XCTAssertEqual(CoachSecrets.openAIKeySource, .inApp)
+    @Test("Built app contains no provider-key configuration field")
+    func builtAppHasNoProviderKeyField() {
+        #expect(Bundle.main.object(forInfoDictionaryKey: "OPENAI_API_KEY") == nil)
+        #expect(Bundle.main.object(forInfoDictionaryKey: "ANTHROPIC_API_KEY") == nil)
     }
 }

@@ -9,9 +9,15 @@ enum BoxingCoachSceneID {
 
 @main
 struct BoxingCoachApp: App {
-    @State private var session = ReactiveStrikeSession()
+    @State private var session: ReactiveStrikeSession
     @State private var flow = TrainingFlowCoordinator()
     @State private var competitionStore = CompetitionStore.live()
+
+    init() {
+        _session = State(initialValue: ReactiveStrikeSession(
+            feedbackGenerator: FeedbackGenerator.production()
+        ))
+    }
 
     var body: some Scene {
         // `Window` is intentionally single-instance. A named `WindowGroup` creates another

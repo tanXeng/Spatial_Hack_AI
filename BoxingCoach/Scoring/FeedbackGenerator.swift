@@ -1,5 +1,30 @@
 import Foundation
 
+nonisolated enum CoachingFeedbackSource: String, Sendable, Equatable {
+    case offlineCoach = "offline_coach"
+    case aiPhrasing = "ai_phrasing"
+}
+
+/// A local, allow-listed drill selected from deterministic evidence.
+///
+/// This is deliberately not part of `CoachRelayResponse`: the relay may change prose only.
+nonisolated enum CoachCorrectiveDrill: String, Sendable, Equatable {
+    case correctHand = "correct_hand"
+    case fullExtension = "full_extension"
+    case straightLine = "straight_line"
+    case elbowTuck = "elbow_tuck"
+    case guardAnchor = "guard_anchor"
+    case snapBack = "snap_back"
+    case repeatShape = "repeat_shape"
+}
+
+/// Optional prose returned by the relay. It contains no score, correction, or drill fields.
+nonisolated struct CoachPhrasing: Sendable, Equatable {
+    let headline: String
+    let primaryFix: String
+    let encouragement: String
+}
+
 /// Natural-language coaching for one attempt.
 nonisolated struct CoachingFeedback: Sendable, Equatable {
     /// One line summarizing how the punch went.
@@ -8,35 +33,74 @@ nonisolated struct CoachingFeedback: Sendable, Equatable {
     var primaryFix: String
     /// Something the user did well, so feedback isn't purely negative.
     var encouragement: String
+    /// Persisted provenance for the words currently shown.
+    let source: CoachingFeedbackSource
+    /// Deterministic correction selected before any relay work begins.
+    let correctionCode: CoachCorrectionCode
+    /// Deterministic local drill; never supplied by the relay.
+    let drill: CoachCorrectiveDrill
 
-    /// True when this came from the deterministic local generator.
-    var isOffline: Bool = false
+    var isOffline: Bool { source == .offlineCoach }
+
+    func applying(_ phrasing: CoachPhrasing) -> CoachingFeedback {
+        CoachingFeedback(
+            headline: phrasing.headline,
+            primaryFix: phrasing.primaryFix,
+            encouragement: phrasing.encouragement,
+            source: .aiPhrasing,
+            correctionCode: correctionCode,
+            drill: drill
+        )
+    }
 }
 
 /// Turns a deterministic `TechniqueScore` into coaching a beginner can act on.
 ///
 /// The generator never decides the score. The relay receives only an allow-listed score summary
 /// and may explain that result; any relay failure leaves the deterministic local result intact.
-protocol FeedbackGenerating: Sendable {
-    func feedback(for score: TechniqueScore, technique: Technique) async -> CoachingFeedback
+nonisolated protocol FeedbackGenerating: Sendable {
+    /// Pure local work. Callers publish this value before starting optional relay work.
+    func localFeedback(for score: TechniqueScore, technique: Technique) -> CoachingFeedback
+
+    /// Optional prose only. Returning nil preserves the already-published local feedback.
+    func phrasing(for score: TechniqueScore, technique: Technique) async -> CoachPhrasing?
+}
+
+nonisolated extension FeedbackGenerating {
+    /// Convenience for non-UI consumers. Interactive sessions use the split API so they never wait.
+    func feedback(for score: TechniqueScore, technique: Technique) async -> CoachingFeedback {
+        let local = localFeedback(for: score, technique: technique)
+        guard let phrasing = await phrasing(for: score, technique: technique) else {
+            return local
+        }
+        return local.applying(phrasing)
+    }
 }
 
 // MARK: - Offline
 
 nonisolated struct DeterministicCorrection: Sendable, Equatable {
     let code: CoachCorrectionCode
+    let drill: CoachCorrectiveDrill
     let localCue: String
 }
 
 /// Deterministic, offline coaching built from the sub-metric breakdown.
 nonisolated struct MockFeedbackGenerator: FeedbackGenerating {
-    func feedback(for score: TechniqueScore, technique: Technique) async -> CoachingFeedback {
-        CoachingFeedback(
+    func localFeedback(for score: TechniqueScore, technique: Technique) -> CoachingFeedback {
+        let correction = correction(for: score, technique: technique)
+        return CoachingFeedback(
             headline: headline(for: score, technique: technique),
-            primaryFix: correction(for: score, technique: technique).localCue,
+            primaryFix: correction.localCue,
             encouragement: encouragement(for: score),
-            isOffline: true
+            source: .offlineCoach,
+            correctionCode: correction.code,
+            drill: correction.drill
         )
+    }
+
+    func phrasing(for score: TechniqueScore, technique: Technique) async -> CoachPhrasing? {
+        nil
     }
 
     func correction(
@@ -46,6 +110,7 @@ nonisolated struct MockFeedbackGenerator: FeedbackGenerating {
         if let note = score.wrongHandNote {
             return DeterministicCorrection(
                 code: .wrongHand,
+                drill: .correctHand,
                 localCue: "\(note) Throw the next one off your \(score.requiredHandName)."
             )
         }
@@ -53,12 +118,14 @@ nonisolated struct MockFeedbackGenerator: FeedbackGenerating {
         guard let weakest = score.weakest, let value = weakest.score, value < 85 else {
             return DeterministicCorrection(
                 code: .repeatShape,
+                drill: .repeatShape,
                 localCue: technique.coachingCues.first
                     ?? "Keep the shape you just threw and repeat it."
             )
         }
         return DeterministicCorrection(
             code: correctionCode(for: weakest.kind),
+            drill: correctiveDrill(for: weakest.kind),
             localCue: "Next rep, focus on this: \(weakest.kind.faultDescription). \(cue(for: weakest.kind, technique: technique))"
         )
     }
@@ -83,6 +150,16 @@ nonisolated struct MockFeedbackGenerator: FeedbackGenerating {
         case .elbow: .elbow
         case .guardHand: .guardHand
         case .retraction: .retraction
+        }
+    }
+
+    private func correctiveDrill(for kind: SubMetricKind) -> CoachCorrectiveDrill {
+        switch kind {
+        case .extensionReach: .fullExtension
+        case .path: .straightLine
+        case .elbow: .elbowTuck
+        case .guardHand: .guardAnchor
+        case .retraction: .snapBack
         }
     }
 
@@ -151,8 +228,11 @@ nonisolated struct RelayFeedbackGenerator: FeedbackGenerating {
     var context: CoachRelayFeedbackContext
     private let offline = MockFeedbackGenerator()
 
-    func feedback(for score: TechniqueScore, technique: Technique) async -> CoachingFeedback {
-        let localFeedback = await offline.feedback(for: score, technique: technique)
+    func localFeedback(for score: TechniqueScore, technique: Technique) -> CoachingFeedback {
+        offline.localFeedback(for: score, technique: technique)
+    }
+
+    func phrasing(for score: TechniqueScore, technique: Technique) async -> CoachPhrasing? {
         let correction = offline.correction(for: score, technique: technique)
         let facts = CoachRelayRequestFacts(
             locale: context.locale,
@@ -173,14 +253,13 @@ nonisolated struct RelayFeedbackGenerator: FeedbackGenerating {
 
         do {
             let response = try await client.response(for: facts)
-            return CoachingFeedback(
+            return CoachPhrasing(
                 headline: response.spokenCue,
                 primaryFix: response.whyItMatters,
-                encouragement: response.encouragement,
-                isOffline: false
+                encouragement: response.encouragement
             )
         } catch {
-            return localFeedback
+            return nil
         }
     }
 

@@ -3,6 +3,15 @@ import QuartzCore
 import RealityKit
 import simd
 
+@MainActor
+protocol CoachAudioPlaying: AnyObject {
+    func prepare()
+    func play(id: CoachClipID)
+    func stop()
+}
+
+extension CoachAudioPlayer: CoachAudioPlaying {}
+
 enum AuraPunchPhase: String, Sendable {
     case idle
     /// Waiting for hands and head to be tracked well enough to place a shoulder.
@@ -113,7 +122,7 @@ final class AuraPunchSession {
     ]
     private let scorer = TechniqueScorer()
     private let feedbackGenerator: FeedbackGenerating
-    private let coachAudio: CoachAudioPlayer
+    private let coachAudio: any CoachAudioPlaying
     private let targets = TargetController()
 
     private var demoArm: ArmSilhouetteEntity?
@@ -121,6 +130,10 @@ final class AuraPunchSession {
     private weak var sceneRoot: Entity?
 
     private var loopTask: Task<Void, Never>?
+    /// At most one optional relay request may be associated with the visible result.
+    private var phrasingTask: Task<Void, Never>?
+    /// Monotonic local token. It never crosses the relay boundary.
+    private var feedbackGeneration: UInt64 = 0
 
     /// Reused briefly when head tracking flickers mid-attempt so hand samples are not discarded.
     private var cachedBodyFrame: BodyFrame?
@@ -134,11 +147,16 @@ final class AuraPunchSession {
     init(
         hands: HandTrackingService,
         feedbackGenerator: FeedbackGenerating = MockFeedbackGenerator(),
-        coachAudio: CoachAudioPlayer? = nil
+        coachAudio: (any CoachAudioPlaying)? = nil
     ) {
         self.hands = hands
         self.feedbackGenerator = feedbackGenerator
         self.coachAudio = coachAudio ?? CoachAudioPlayer()
+    }
+
+    isolated deinit {
+        loopTask?.cancel()
+        phrasingTask?.cancel()
     }
 
     // MARK: Scene
@@ -164,6 +182,7 @@ final class AuraPunchSession {
     }
 
     func detach() {
+        cancelPendingPhrasing()
         targets.removeActiveTarget()
         demoArm?.removeFromScene()
         mirrorArm?.removeFromScene()
@@ -177,6 +196,7 @@ final class AuraPunchSession {
     func start() {
         guard phase == .idle || phase == .results else { return }
 
+        cancelPendingPhrasing()
         score = nil
         feedback = nil
         errorMessage = nil
@@ -198,6 +218,9 @@ final class AuraPunchSession {
     }
 
     func stop() {
+        // Results are not "running", but their optional phrasing request still is.
+        cancelPendingPhrasing()
+
         // No-op when nothing is running, so Reactive Strike's own stop path — which shares this
         // call — never clears a finished Aura Punch result out from under the user.
         guard isRunning else { return }
@@ -684,7 +707,7 @@ final class AuraPunchSession {
             return
         }
 
-        await finishAggregated(aggregated)
+        finishAggregated(aggregated)
     }
 
     /// Records motion until the user's fist reaches the active target, then through retraction.
@@ -856,18 +879,58 @@ final class AuraPunchSession {
         return (thrown.key, thrown.value)
     }
 
-    private func finishAggregated(_ aggregated: TechniqueScore) async {
+    /// Publishes the deterministic result synchronously, then starts one optional prose request.
+    ///
+    /// The returned task is primarily useful to callers that need to coordinate teardown. The
+    /// session also owns and cancels it, and accepts its value only while this exact generation is
+    /// still active.
+    @discardableResult
+    func finishAggregated(_ aggregated: TechniqueScore) -> Task<Void, Never> {
+        cancelPendingPhrasing()
         phase = .scoring
         statusMessage = "Scoring…"
 
+        let resultTechnique = technique
+        let localFeedback = feedbackGenerator.localFeedback(
+            for: aggregated,
+            technique: resultTechnique
+        )
         score = aggregated
-        feedback = await feedbackGenerator.feedback(for: aggregated, technique: technique)
+        feedback = localFeedback
 
         coachAudio.play(id: aggregated.overall >= 74 ? .resultsGood : .resultsNeedsWork)
         phase = .results
         statusMessage = aggregated.wrongHand
             ? "Round complete — that was your \(aggregated.thrownHandName) hand"
             : "Round complete"
+
+        let generation = feedbackGeneration
+        let generator = feedbackGenerator
+        let task = Task { [weak self, generator, resultTechnique, aggregated, localFeedback] in
+            let phrasing = await generator.phrasing(
+                for: aggregated,
+                technique: resultTechnique
+            )
+
+            guard let self else { return }
+            defer {
+                if self.feedbackGeneration == generation {
+                    self.phrasingTask = nil
+                }
+            }
+            guard
+                !Task.isCancelled,
+                self.feedbackGeneration == generation,
+                self.phase == .results,
+                self.score?.techniqueID == aggregated.techniqueID
+            else {
+                return
+            }
+            guard let phrasing else { return }
+            self.feedback = localFeedback.applying(phrasing)
+        }
+        phrasingTask = task
+        return task
     }
 
     // MARK: Helpers
@@ -938,6 +1001,12 @@ final class AuraPunchSession {
         if let status {
             statusMessage = status
         }
+    }
+
+    private func cancelPendingPhrasing() {
+        feedbackGeneration &+= 1
+        phrasingTask?.cancel()
+        phrasingTask = nil
     }
 
     /// `true` = guard up, `false` = dropped, `nil` = guard hand not visible (do not pause).

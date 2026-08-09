@@ -53,6 +53,8 @@ nonisolated struct CoachRelayResponse: Equatable, Sendable {
 
 nonisolated enum CoachRelayError: Error, Equatable, Sendable {
     case offline
+    case refused
+    case timedOut
     case badResponse
     case malformedResponse
     case unknownResponseFields
@@ -64,17 +66,53 @@ nonisolated enum CoachRelayError: Error, Equatable, Sendable {
     case wordLimitExceeded(field: String, maximum: Int)
 }
 
+nonisolated struct CoachRelayTransportResponse: Sendable {
+    let data: Data
+    let statusCode: Int?
+}
+
+/// Narrow, cancellable request boundary used by production URL loading and deterministic tests.
+nonisolated protocol CoachRelayTransport: Sendable {
+    func response(for request: URLRequest) async throws -> CoachRelayTransportResponse
+}
+
+nonisolated struct URLSessionCoachRelayTransport: CoachRelayTransport {
+    let session: URLSession
+
+    func response(for request: URLRequest) async throws -> CoachRelayTransportResponse {
+        let (data, response) = try await session.data(for: request)
+        return CoachRelayTransportResponse(
+            data: data,
+            statusCode: (response as? HTTPURLResponse)?.statusCode
+        )
+    }
+}
+
+/// The deadline clock is injected so timeout tests advance virtual time instead of sleeping.
+nonisolated protocol CoachRelayClock: Sendable {
+    func sleep(for duration: Duration) async throws
+}
+
+nonisolated struct ContinuousCoachRelayClock: CoachRelayClock {
+    func sleep(for duration: Duration) async throws {
+        try await ContinuousClock().sleep(for: duration)
+    }
+}
+
 /// A provider-neutral client for the team's relay. The endpoint, transport, and time source are
 /// injected so production contains no provider route and tests never need live network access.
 nonisolated struct CoachRelayClient: Sendable {
     static let schemaVersion = 1
+    private static let phrasingDeadline: Duration = .milliseconds(1_500)
 
     private let endpoint: URL?
-    private let session: URLSession
-    private let clock: @Sendable () -> Date
+    private let transport: any CoachRelayTransport
+    private let deadlineClock: any CoachRelayClock
+    private let deadline: Duration
+    private let requestDate: @Sendable () -> Date
     private let requestID: @Sendable () -> String
 
-    static func liveSession(timeout: TimeInterval = 5) -> URLSession {
+    static func liveSession(timeout: TimeInterval = 1.5) -> URLSession {
         let configuration = URLSessionConfiguration.ephemeral
         configuration.timeoutIntervalForRequest = timeout
         configuration.waitsForConnectivity = false
@@ -105,9 +143,29 @@ nonisolated struct CoachRelayClient: Sendable {
         clock: @escaping @Sendable () -> Date = Date.init,
         requestID: @escaping @Sendable () -> String = { CoachRelayClient.makeRequestID() }
     ) {
+        self.init(
+            endpoint: endpoint,
+            transport: URLSessionCoachRelayTransport(session: session),
+            deadlineClock: ContinuousCoachRelayClock(),
+            deadline: Self.phrasingDeadline,
+            requestDate: clock,
+            requestID: requestID
+        )
+    }
+
+    init(
+        endpoint: URL?,
+        transport: any CoachRelayTransport,
+        deadlineClock: any CoachRelayClock,
+        deadline: Duration = .milliseconds(1_500),
+        requestDate: @escaping @Sendable () -> Date = Date.init,
+        requestID: @escaping @Sendable () -> String = { CoachRelayClient.makeRequestID() }
+    ) {
         self.endpoint = endpoint
-        self.session = session
-        self.clock = clock
+        self.transport = transport
+        self.deadlineClock = deadlineClock
+        self.deadline = deadline
+        self.requestDate = requestDate
         self.requestID = requestID
     }
 
@@ -122,7 +180,7 @@ nonisolated struct CoachRelayClient: Sendable {
         let envelope = RequestEnvelope(
             schemaVersion: Self.schemaVersion,
             requestID: outboundRequestID,
-            requestedAt: clock(),
+            requestedAt: requestDate(),
             facts: facts
         )
         var request = URLRequest(url: endpoint)
@@ -134,19 +192,51 @@ nonisolated struct CoachRelayClient: Sendable {
         encoder.dateEncodingStrategy = .iso8601
         request.httpBody = try encoder.encode(envelope)
 
-        let (data, response) = try await session.data(for: request)
-        guard
-            let httpResponse = response as? HTTPURLResponse,
-            (200..<300).contains(httpResponse.statusCode)
-        else {
+        let transportResponse = try await responseBeforeDeadline(for: request)
+        if transportResponse.statusCode == 403 {
+            throw CoachRelayError.refused
+        }
+        guard let statusCode = transportResponse.statusCode,
+              (200..<300).contains(statusCode) else {
             throw CoachRelayError.badResponse
         }
 
         return try Self.decode(
-            data,
+            transportResponse.data,
             expectedRequestID: envelope.requestID,
             expectedCorrectionCode: facts.correctionCode
         )
+    }
+
+    private func responseBeforeDeadline(
+        for request: URLRequest
+    ) async throws -> CoachRelayTransportResponse {
+        let transport = transport
+        let deadlineClock = deadlineClock
+        let deadline = deadline
+
+        try Task.checkCancellation()
+        return try await withThrowingTaskGroup(of: DeadlineRaceResult.self) { group in
+            group.addTask {
+                .response(try await transport.response(for: request))
+            }
+            group.addTask {
+                try await deadlineClock.sleep(for: deadline)
+                return .timedOut
+            }
+            defer { group.cancelAll() }
+
+            guard let first = try await group.next() else {
+                throw CancellationError()
+            }
+            try Task.checkCancellation()
+            switch first {
+            case .response(let response):
+                return response
+            case .timedOut:
+                throw CoachRelayError.timedOut
+            }
+        }
     }
 
     private static func decode(
@@ -237,5 +327,10 @@ nonisolated struct CoachRelayClient: Sendable {
         let requestID: String
         let requestedAt: Date
         let facts: CoachRelayRequestFacts
+    }
+
+    private enum DeadlineRaceResult: Sendable {
+        case response(CoachRelayTransportResponse)
+        case timedOut
     }
 }

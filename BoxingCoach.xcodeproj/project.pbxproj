@@ -24,6 +24,9 @@
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		000000000000000000000010 /* BoxingCoach */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			explicitFileTypes = {
+				mp3 = audio.mp3;
+			};
 			path = BoxingCoach;
 			sourceTree = "<group>";
 		};

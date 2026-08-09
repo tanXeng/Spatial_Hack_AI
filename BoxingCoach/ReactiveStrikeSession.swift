@@ -74,6 +74,7 @@ final class ReactiveStrikeSession {
 
     func immersiveSpaceDidOpen() {
         isImmersiveSpaceOpen = true
+        auraPunch.prepareCoachAudio()
     }
 
     func immersiveSpaceDidClose() {

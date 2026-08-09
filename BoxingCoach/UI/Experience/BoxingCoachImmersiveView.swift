@@ -104,6 +104,9 @@ struct BoxingCoachImmersiveView: View {
             openWindow(id: BoxingCoachSceneID.controlWindow)
             flow.immersiveSceneDidClose(session: session)
         }
+        .task {
+            session.auraPunch.prepareCoachAudio()
+        }
     }
 
     private var isAuraExperience: Bool {

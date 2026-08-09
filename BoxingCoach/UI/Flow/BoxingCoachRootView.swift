@@ -11,7 +11,12 @@ struct BoxingCoachRootView: View {
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
     @Environment(\.dismissWindow) private var dismissWindow
-    @AccessibilityFocusState private var joinCompetitionFocused: Bool
+    @AccessibilityFocusState private var landingActionFocused: LandingAction?
+
+    private enum LandingAction: Hashable {
+        case calibration
+        case competition
+    }
 
     var body: some View {
         Group {
@@ -81,7 +86,10 @@ struct BoxingCoachRootView: View {
         .task {
             await competitionStore.bootstrap()
             await completeCompetitionRunIfNeeded()
-            if let player = competitionStore.currentPlayer {
+            // A standalone calibration belongs to the training session. Reopening the control
+            // window must not replace it with whichever competition player happened to be used
+            // previously.
+            if !session.hasCalibratedReach, let player = competitionStore.currentPlayer {
                 syncPlayerCalibration(player)
             }
         }
@@ -94,7 +102,11 @@ struct BoxingCoachRootView: View {
                 if route == nil { competitionStore.dismiss() }
             }
         ), onDismiss: {
-            joinCompetitionFocused = true
+            // Starting a run dismisses this window immediately. Moving VoiceOver to a control
+            // that is about to disappear creates a misleading focus jump into hidden UI.
+            if competitionStore.activeRun == nil {
+                landingActionFocused = .competition
+            }
         }) { _ in
             CompetitionSheetView(onStart: startCompetition)
                 .environment(competitionStore)
@@ -109,21 +121,61 @@ struct BoxingCoachRootView: View {
             )
             .padding(.top, 64)
 
-            Button {
-                competitionStore.open()
-            } label: {
-                Label("Join Competition", systemImage: "trophy.fill")
+            HStack(spacing: 12) {
+                Button(action: openLandingCalibration) {
+                    Label(
+                        session.hasCalibratedReach
+                            ? "Recalibrate"
+                            : "Calibrate",
+                        systemImage: "ruler"
+                    )
                     .padding(.horizontal, 4)
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .frame(minWidth: 44, minHeight: 44)
+                .disabled(
+                    flow.controlsDisabled
+                        || competitionStore.activeRun != nil
+                        || competitionStore.isLoading
+                        || competitionStore.isSaving
+                )
+                .accessibilityLabel(
+                    session.hasCalibratedReach
+                        ? "Recalibrate reach"
+                        : "Calibrate reach"
+                )
+                .accessibilityHint("Measures comfortable reach for Reactive Strike and Combo without joining the competition")
+                .accessibilityInputLabels(["Calibrate", "Recalibrate reach", "Reach settings"])
+                .accessibilityFocused($landingActionFocused, equals: .calibration)
+
+                Button {
+                    competitionStore.open()
+                } label: {
+                    Label("Join Competition", systemImage: "trophy.fill")
+                        .padding(.horizontal, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .frame(minWidth: 44, minHeight: 44)
+                .disabled(
+                    flow.controlsDisabled
+                        || competitionStore.activeRun != nil
+                        || competitionStore.isLoading
+                        || competitionStore.isSaving
+                )
+                .accessibilityLabel("Join Competition")
+                .accessibilityHint("Enter a player name, calibrate reach, and compete on two leaderboards")
+                .accessibilityInputLabels(["Join Competition", "Competition", "Leaderboard"])
+                .accessibilityFocused($landingActionFocused, equals: .competition)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .frame(minWidth: 44, minHeight: 44)
-            .disabled(flow.controlsDisabled)
-            .accessibilityLabel("Join Competition")
-            .accessibilityHint("Enter a player name, calibrate reach, and compete on two leaderboards")
-            .accessibilityInputLabels(["Join Competition", "Competition", "Leaderboard"])
-            .accessibilityFocused($joinCompetitionFocused)
         }
+    }
+
+    private func openLandingCalibration() {
+        let selection = TrainingSelection.reachCalibration
+        flow.navigate(to: .experience(selection))
+        start(selection)
     }
 
     private func start(_ selection: TrainingSelection) {

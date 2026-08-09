@@ -14,8 +14,10 @@ struct TrainingExperienceView: View {
             reactiveExperience(mode: mode, combination: combination, stance: stance)
         case .aura(let technique, let stance):
             auraExperience(technique: technique, stance: stance)
+        case .reachCalibration:
+            reachCalibrationExperience(backLabel: "Home")
         case .competitionCalibration:
-            competitionCalibrationExperience
+            reachCalibrationExperience(backLabel: "Competition")
         case .competition(_, let mode, let stance, _):
             reactiveExperience(
                 mode: mode == .combination ? .combination : .air,
@@ -25,9 +27,9 @@ struct TrainingExperienceView: View {
         }
     }
 
-    private var competitionCalibrationExperience: some View {
+    private func reachCalibrationExperience(backLabel: String) -> some View {
         TrainingDetailScaffold(
-            backLabel: "Competition",
+            backLabel: backLabel,
             title: "Reach Calibration",
             subtitle: "Measure both comfortable reaches",
             controlsDisabled: controlsDisabled,

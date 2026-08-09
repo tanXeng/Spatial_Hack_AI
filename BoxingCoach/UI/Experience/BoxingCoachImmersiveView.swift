@@ -79,9 +79,8 @@ struct BoxingCoachImmersiveView: View {
             }
         }
         .onChange(of: session.phase) { _, phase in
-            guard case .experience(.reactive) = flow.route,
-                  phase == .finished else { return }
-            announce("Reactive Strike complete")
+            guard isReactiveEngineExperience, phase == .finished else { return }
+            announce(isReachCalibrationExperience ? "Reach calibration complete" : "Reactive Strike complete")
             finishTraining()
         }
         .onChange(of: session.auraPunch.phase) { _, phase in
@@ -91,8 +90,7 @@ struct BoxingCoachImmersiveView: View {
             finishTraining()
         }
         .onChange(of: session.errorMessage) { _, message in
-            guard case .experience(.reactive) = flow.route,
-                  let message else { return }
+            guard isReactiveEngineExperience, let message else { return }
             announce(message)
             finishTraining()
         }
@@ -103,7 +101,7 @@ struct BoxingCoachImmersiveView: View {
             finishTraining()
         }
         .onChange(of: session.lastFeedback) { _, message in
-            guard case .experience(.reactive) = flow.route,
+            guard isReactiveEngineExperience,
                   session.phase == .running || session.phase == .calibrating else { return }
             announce(message)
         }
@@ -143,7 +141,8 @@ struct BoxingCoachImmersiveView: View {
             default:
                 return false
             }
-        case .experience(.competitionCalibration), .experience(.competition):
+        case .experience(.reachCalibration), .experience(.competitionCalibration),
+             .experience(.competition):
             return false
         default:
             return false
@@ -174,6 +173,25 @@ struct BoxingCoachImmersiveView: View {
     private var isAuraExperience: Bool {
         if case .experience(.aura) = flow.route { return true }
         return false
+    }
+
+    private var isReachCalibrationExperience: Bool {
+        switch flow.route {
+        case .experience(.reachCalibration), .experience(.competitionCalibration):
+            return true
+        default:
+            return false
+        }
+    }
+
+    private var isReactiveEngineExperience: Bool {
+        switch flow.route {
+        case .experience(.reactive), .experience(.reachCalibration),
+             .experience(.competitionCalibration), .experience(.competition):
+            return true
+        default:
+            return false
+        }
     }
 
     private var auraBannerStyle: ImmersiveInstructionBannerStyle {

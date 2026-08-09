@@ -108,8 +108,7 @@ final class CompetitionStore {
 
     func bootstrap() async {
         guard !didBootstrap else { return }
-        didBootstrap = true
-        await reloadBoards()
+        didBootstrap = await reloadBoards()
     }
 
     func open() {
@@ -129,6 +128,10 @@ final class CompetitionStore {
     }
 
     func join(name rawName: String) async {
+        guard !isLoading, !isSaving, activeRun == nil else {
+            present(CompetitionStoreError.runAlreadyActive)
+            return
+        }
         isLoading = true
         defer { isLoading = false }
         do {
@@ -176,7 +179,7 @@ final class CompetitionStore {
             present(CompetitionStoreError.noPlayer)
             return nil
         }
-        guard activeRun == nil else {
+        guard !isLoading, !isSaving, activeRun == nil else {
             present(CompetitionStoreError.runAlreadyActive)
             return nil
         }
@@ -193,6 +196,10 @@ final class CompetitionStore {
     }
 
     func chooseMode(_ mode: CompetitionMode) async -> TrainingSelection? {
+        guard !isLoading, !isSaving, activeRun == nil else {
+            present(CompetitionStoreError.runAlreadyActive)
+            return nil
+        }
         guard let player = currentPlayer else {
             present(CompetitionStoreError.noPlayer)
             return nil
@@ -337,7 +344,7 @@ final class CompetitionStore {
         mode: CompetitionMode,
         stance: Stance
     ) async -> TrainingSelection? {
-        guard activeRun == nil else {
+        guard activeRun == nil, !isLoading, !isSaving else {
             present(CompetitionStoreError.runAlreadyActive)
             return nil
         }
@@ -348,16 +355,21 @@ final class CompetitionStore {
         }
         player.rememberedStance = stance
         player.lastSeenAt = now()
+        let run = ActiveCompetitionRun(
+            id: UUID(),
+            playerID: player.id,
+            kind: .ranked(mode),
+            startedAt: now()
+        )
+        // Reserve the run before persistence suspends. A second tap therefore observes an active
+        // operation instead of starting a competing save and immersive transition.
+        activeRun = run
+        isSaving = true
+        defer { isSaving = false }
         do {
             try await repository.save(player: player)
             currentPlayer = player
             selectedStance = stance
-            activeRun = ActiveCompetitionRun(
-                id: UUID(),
-                playerID: player.id,
-                kind: .ranked(mode),
-                startedAt: now()
-            )
             errorMessage = nil
             sheetRoute = nil
             return .competition(
@@ -367,6 +379,7 @@ final class CompetitionStore {
                 reach: reach
             )
         } catch {
+            activeRun = nil
             present(error)
             return nil
         }
@@ -410,7 +423,8 @@ final class CompetitionStore {
         }
     }
 
-    private func reloadBoards() async {
+    @discardableResult
+    private func reloadBoards() async -> Bool {
         isLoading = true
         defer { isLoading = false }
         do {
@@ -423,8 +437,11 @@ final class CompetitionStore {
                 mode: .combination,
                 submissions: submissions
             )
+            errorMessage = nil
+            return true
         } catch {
             present(error)
+            return false
         }
     }
 

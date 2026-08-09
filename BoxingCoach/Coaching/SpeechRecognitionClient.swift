@@ -28,7 +28,7 @@ final class SpeechRecognitionClient {
         guard speechStatus == .authorized else { return false }
 
         let micStatus = await withCheckedContinuation { continuation in
-            AVAudioSession.sharedInstance().requestRecordPermission { granted in
+            AVAudioApplication.requestRecordPermission { granted in
                 continuation.resume(returning: granted)
             }
         }
@@ -52,9 +52,15 @@ final class SpeechRecognitionClient {
         let inputNode = audioEngine.inputNode
         let recordingFormat = Self.recordingFormat(for: inputNode)
         inputNode.removeTap(onBus: 0)
-        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
-            request.append(buffer)
-        }
+        try inputNode.installAudioTap(
+            onBus: 0,
+            bufferSize: 1024,
+            format: recordingFormat,
+            tapProvider: { buffer, _ in
+                guard let writable = Self.writableCopy(of: buffer) else { return }
+                request.append(writable)
+            }
+        )
 
         audioEngine.prepare()
         try audioEngine.start()
@@ -73,6 +79,36 @@ final class SpeechRecognitionClient {
                 }
             }
         }
+    }
+
+    nonisolated private static func writableCopy(
+        of source: AVReadOnlyAudioPCMBuffer
+    ) -> AVAudioPCMBuffer? {
+        guard let copy = AVAudioPCMBuffer(
+            pcmFormat: source.format,
+            frameCapacity: AVAudioFrameCount(source.frameLength)
+        ) else { return nil }
+        copy.frameLength = AVAudioFrameCount(source.frameLength)
+
+        source.withUnsafeAudioBufferList { sourceList in
+            let sourceBuffers = UnsafeMutableAudioBufferListPointer(
+                UnsafeMutablePointer(mutating: sourceList)
+            )
+            let destinationBuffers = UnsafeMutableAudioBufferListPointer(
+                copy.mutableAudioBufferList
+            )
+            for index in 0..<min(sourceBuffers.count, destinationBuffers.count) {
+                guard let sourceData = sourceBuffers[index].mData,
+                      let destinationData = destinationBuffers[index].mData else { continue }
+                let byteCount = min(
+                    Int(sourceBuffers[index].mDataByteSize),
+                    Int(destinationBuffers[index].mDataByteSize)
+                )
+                destinationData.copyMemory(from: sourceData, byteCount: byteCount)
+                destinationBuffers[index].mDataByteSize = UInt32(byteCount)
+            }
+        }
+        return copy
     }
 
     func stop() async -> SpeechRecognitionResult {

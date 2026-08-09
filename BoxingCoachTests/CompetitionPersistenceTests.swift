@@ -100,6 +100,52 @@ final class CompetitionPersistenceTests: XCTestCase {
         XCTAssertNotNil(retained)
     }
 
+    func testConcurrentJoinIsSerializedToOneLookupAndSave() async throws {
+        let repository = DelayedCompetitionRepository(delay: .milliseconds(80))
+        let store = CompetitionStore(repository: repository)
+
+        let first = Task { await store.join(name: "Alex") }
+        try? await Task.sleep(for: .milliseconds(10))
+        await store.join(name: "Alex")
+        await first.value
+
+        XCTAssertEqual(repository.normalizedLookupCount, 1)
+        XCTAssertEqual(repository.saveCount, 1)
+        XCTAssertNotNil(store.currentPlayer)
+    }
+
+    func testConcurrentRankedStartReservesExactlyOneRunBeforeSaveSuspends() async throws {
+        let repository = DelayedCompetitionRepository()
+        try await repository.save(player: makePlayer())
+        let store = CompetitionStore(repository: repository)
+        await store.join(name: "Alex")
+        repository.delay = .milliseconds(80)
+        repository.saveCount = 0
+
+        let first = Task { await store.chooseMode(.reactiveStrike) }
+        try? await Task.sleep(for: .milliseconds(10))
+        let second = await store.chooseMode(.reactiveStrike)
+        let firstSelection = await first.value
+
+        XCTAssertNotNil(firstSelection)
+        XCTAssertNil(second)
+        XCTAssertEqual(repository.saveCount, 1)
+        XCTAssertEqual(store.activeRun?.kind, .ranked(.reactiveStrike))
+    }
+
+    func testBootstrapRetriesAfterTransientLeaderboardLoadFailure() async {
+        let repository = DelayedCompetitionRepository()
+        repository.submissionFailuresRemaining = 1
+        let store = CompetitionStore(repository: repository)
+
+        await store.bootstrap()
+        XCTAssertNotNil(store.errorMessage)
+        await store.bootstrap()
+
+        XCTAssertEqual(repository.submissionsCount, 2)
+        XCTAssertNil(store.errorMessage)
+    }
+
     func testSwiftDataCompetitionSchemaRoundTripsWithoutEventEditionModels() async throws {
         let container = try CompetitionModelContainer.make(inMemory: true)
         let repository = SwiftDataCompetitionRepository(container: container)
@@ -144,5 +190,52 @@ final class CompetitionPersistenceTests: XCTestCase {
             endedAt: Date(timeIntervalSince1970: 20),
             trackingStatus: .complete
         )
+    }
+}
+
+@MainActor
+private final class DelayedCompetitionRepository: CompetitionRepository {
+    var delay: Duration
+    var normalizedLookupCount = 0
+    var saveCount = 0
+    var submissionsCount = 0
+    var submissionFailuresRemaining = 0
+    private let base = InMemoryCompetitionRepository()
+
+    init(delay: Duration = .zero) {
+        self.delay = delay
+    }
+
+    func player(normalizedName: String) async throws -> CompetitionPlayer? {
+        normalizedLookupCount += 1
+        try? await Task.sleep(for: delay)
+        return try await base.player(normalizedName: normalizedName)
+    }
+
+    func player(id: UUID) async throws -> CompetitionPlayer? {
+        try await base.player(id: id)
+    }
+
+    func save(player: CompetitionPlayer) async throws {
+        saveCount += 1
+        try? await Task.sleep(for: delay)
+        try await base.save(player: player)
+    }
+
+    func submit(_ submission: CompetitionSubmission) async throws -> CompetitionSubmission {
+        try await base.submit(submission)
+    }
+
+    func submissions() async throws -> [CompetitionSubmission] {
+        submissionsCount += 1
+        if submissionFailuresRemaining > 0 {
+            submissionFailuresRemaining -= 1
+            throw CompetitionRepositoryError.saveFailed("Temporary leaderboard load failure")
+        }
+        return try await base.submissions()
+    }
+
+    func reset() async throws {
+        try await base.reset()
     }
 }

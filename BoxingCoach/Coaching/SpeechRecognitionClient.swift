@@ -15,6 +15,7 @@ nonisolated struct SpeechRecognitionSessionUpdate: Sendable, Equatable {
 @MainActor
 protocol SpeechRecognitionSessionBackend: AnyObject {
     var isAvailable: Bool { get }
+    var supportsOnDeviceRecognition: Bool { get }
 
     func start(
         updateHandler: @escaping @MainActor @Sendable (SpeechRecognitionSessionUpdate) -> Void
@@ -45,11 +46,14 @@ final class SystemSpeechRecognitionSessionBackend: SpeechRecognitionSessionBacke
         speechRecognizer?.isAvailable == true
     }
 
+    var supportsOnDeviceRecognition: Bool {
+        speechRecognizer?.supportsOnDeviceRecognition == true
+    }
+
     func start(
         updateHandler: @escaping @MainActor @Sendable (SpeechRecognitionSessionUpdate) -> Void
     ) throws {
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
+        let request = Self.makeOnDeviceRecognitionRequest()
         self.request = request
 
         let inputNode = audioEngine.inputNode
@@ -83,6 +87,13 @@ final class SystemSpeechRecognitionSessionBackend: SpeechRecognitionSessionBacke
                 updateHandler(update)
             }
         }
+    }
+
+    static func makeOnDeviceRecognitionRequest() -> SFSpeechAudioBufferRecognitionRequest {
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        request.requiresOnDeviceRecognition = true
+        return request
     }
 
     func finishAudio() {
@@ -191,6 +202,9 @@ final class SpeechRecognitionClient: SpeechRecognizing {
         guard backend.isAvailable else {
             throw SpeechError.recognizerUnavailable
         }
+        guard backend.supportsOnDeviceRecognition else {
+            throw SpeechError.onDeviceRecognitionUnavailable
+        }
         guard activeCaptureGeneration == nil else { return }
 
         nextCaptureGeneration &+= 1
@@ -266,11 +280,14 @@ final class SpeechRecognitionClient: SpeechRecognizing {
 
     enum SpeechError: LocalizedError {
         case recognizerUnavailable
+        case onDeviceRecognitionUnavailable
 
         var errorDescription: String? {
             switch self {
             case .recognizerUnavailable:
                 return "Speech recognition is unavailable on this device."
+            case .onDeviceRecognitionUnavailable:
+                return "On-device speech recognition is unavailable on this device."
             }
         }
     }

@@ -1,10 +1,35 @@
 import Foundation
+import Speech
 import Testing
 @testable import BoxingCoach
 
 @Suite("Speech recognition capture generations")
 @MainActor
 struct SpeechRecognitionClientTests {
+    @Test("System recognition requests require on-device execution")
+    func systemRecognitionRequestIsOnDeviceOnly() {
+        let request = SystemSpeechRecognitionSessionBackend.makeOnDeviceRecognitionRequest()
+
+        #expect(request.requiresOnDeviceRecognition)
+    }
+
+    @Test("Unsupported on-device recognition fails before audio capture")
+    func unsupportedOnDeviceRecognitionFailsClosed() {
+        let backend = ControlledSpeechRecognitionSessionBackend()
+        backend.supportsOnDeviceRecognition = false
+        let client = SpeechRecognitionClient(backend: backend)
+
+        #expect {
+            try client.start()
+        } throws: { error in
+            error.localizedDescription
+                == "On-device speech recognition is unavailable on this device."
+        }
+        #expect(client.isRecording == false)
+        #expect(backend.startCount == 0)
+        #expect(backend.cancelCount == 0)
+    }
+
     @Test("A cancelled capture callback cannot overwrite the next capture")
     func staleCallbackCannotOverwriteReusedCapture() async throws {
         let backend = ControlledSpeechRecognitionSessionBackend()
@@ -35,6 +60,7 @@ private final class ControlledSpeechRecognitionSessionBackend: SpeechRecognition
     private(set) var startCount = 0
     private(set) var cancelCount = 0
     var isAvailable = true
+    var supportsOnDeviceRecognition = true
 
     func start(
         updateHandler: @escaping @MainActor @Sendable (SpeechRecognitionSessionUpdate) -> Void

@@ -59,6 +59,7 @@ final class TrainingAudioCoordinator {
     private struct CapturePreparation {
         let id: UInt64
         let generation: UInt64
+        let origin: TrainingAudioSceneOwner
         var duplicateWaiters: [CheckedContinuation<TrainingAudioEventOutcome, Never>] = []
     }
 
@@ -90,6 +91,7 @@ final class TrainingAudioCoordinator {
     private var nextImpactVariant = 0
     private var nextCapturePreparationID: UInt64 = 0
     private var capturePreparation: CapturePreparation?
+    private var activeCaptureOrigin: TrainingAudioSceneOwner?
     private var captureRevocationHandler: (@MainActor () -> Void)?
 
     private var sceneAttached: Bool { !attachedScenes.isEmpty }
@@ -133,8 +135,8 @@ final class TrainingAudioCoordinator {
 
     @discardableResult
     func handle(_ event: TrainingAudioEvent) async -> TrainingAudioEventOutcome {
-        if case .voiceCaptureDidBegin = event {
-            return await beginVoiceCapture()
+        if case let .voiceCaptureDidBegin(origin) = event {
+            return await beginVoiceCapture(origin: origin)
         }
         return handleImmediately(event)
     }
@@ -286,6 +288,7 @@ final class TrainingAudioCoordinator {
         }
 
         if cue.kind == .safety {
+            pendingVoiceResponse = nil
             presentation.caption = cue.caption
             captureRevocationHandler?()
         }
@@ -320,6 +323,7 @@ final class TrainingAudioCoordinator {
         generation &+= 1
         invalidateCapturePreparation()
         pendingVoiceResponse = nil
+        activeCaptureOrigin = nil
         presentation.isCapturing = false
 
         if wasCapturing {
@@ -395,6 +399,7 @@ final class TrainingAudioCoordinator {
         invalidateCapturePreparation()
         trackingPaused = true
         pendingVoiceResponse = nil
+        activeCaptureOrigin = nil
         presentation.status = .trackingPaused
         presentation.caption = "Tracking paused. Keep your space clear and bring both hands into view."
         presentation.isCapturing = false
@@ -420,8 +425,10 @@ final class TrainingAudioCoordinator {
         return .handled
     }
 
-    private func beginVoiceCapture() async -> TrainingAudioEventOutcome {
-        guard sceneAttached else { return .ignoredWhileDetached }
+    private func beginVoiceCapture(
+        origin: TrainingAudioSceneOwner
+    ) async -> TrainingAudioEventOutcome {
+        guard attachedScenes.contains(origin) else { return .ignoredWhileDetached }
         guard backendReady else { return .backendUnavailable }
         guard !trackingPaused, !presentation.requiresExplicitRecovery else { return .handled }
         guard !presentation.isCapturing else { return .captureReady }
@@ -438,7 +445,8 @@ final class TrainingAudioCoordinator {
         let preparationID = nextCapturePreparationID
         capturePreparation = CapturePreparation(
             id: preparationID,
-            generation: captureGeneration
+            generation: captureGeneration,
+            origin: origin
         )
         pendingVoiceResponse = nil
         presentation.status = .capturePreparing
@@ -454,7 +462,7 @@ final class TrainingAudioCoordinator {
                   capturePreparation?.id == preparationID,
                   capturePreparation?.generation == captureGeneration,
                   generation == captureGeneration,
-                  sceneAttached,
+                  attachedScenes.contains(origin),
                   !trackingPaused,
                   !presentation.requiresExplicitRecovery else {
                 cancelCapturePreparationIfCurrent(id: preparationID)
@@ -465,6 +473,7 @@ final class TrainingAudioCoordinator {
             presentation.caption = "Listening…"
             presentation.isCapturing = true
             presentation.mix = .voiceCapture
+            activeCaptureOrigin = origin
             completeCapturePreparation(id: preparationID, with: .captureReady)
             return .captureReady
         } catch is CancellationError {
@@ -472,6 +481,7 @@ final class TrainingAudioCoordinator {
             return .staleGeneration
         } catch {
             pendingVoiceResponse = nil
+            activeCaptureOrigin = nil
             completeCapturePreparation(id: preparationID, with: .backendUnavailable)
             presentation.status = .unavailable
             presentation.caption = "Microphone audio is unavailable. Use the visible controls."
@@ -493,6 +503,7 @@ final class TrainingAudioCoordinator {
         invalidateCapturePreparation()
         backend.endVoiceCapture()
         presentation.isCapturing = false
+        activeCaptureOrigin = nil
 
         do {
             try backend.recoverPlaybackSession()
@@ -575,13 +586,19 @@ final class TrainingAudioCoordinator {
 
     private func detachScene(_ owner: TrainingAudioSceneOwner) -> TrainingAudioEventOutcome {
         guard attachedScenes.remove(owner) != nil else { return .handled }
-        guard attachedScenes.isEmpty else { return .handled }
+        let captureBelongsToDepartingScene = capturePreparation?.origin == owner
+            || activeCaptureOrigin == owner
+        if !attachedScenes.isEmpty {
+            guard captureBelongsToDepartingScene else { return .handled }
+            return stopTrainingAudio(preservingVoiceCapture: false)
+        }
         captureRevocationHandler?()
         generation &+= 1
         invalidateCapturePreparation()
         backendReady = false
         trackingPaused = false
         pendingVoiceResponse = nil
+        activeCaptureOrigin = nil
         backend.endVoiceCapture()
         backend.stopAll()
         backend.detachScene()
@@ -592,27 +609,51 @@ final class TrainingAudioCoordinator {
 
     private func prepareForTrainingStart() -> TrainingAudioEventOutcome {
         let coordinatorCaptureNeedsEnding = capturePreparation != nil || presentation.isCapturing
+        let shouldRecoverDeferredVoiceResponse = presentation.requiresExplicitRecovery
+            && pendingVoiceResponse != nil
+        pendingVoiceResponse = nil
         captureRevocationHandler?()
         guard sceneAttached else { return .ignoredWhileDetached }
-        guard coordinatorCaptureNeedsEnding else { return .handled }
-        return endVoiceCapture()
+
+        var stoppedVoiceResponse = false
+        if foreground?.priority == .voiceResponse, let foreground {
+            backend.stop(foreground.handle)
+            self.foreground = nil
+            presentation.activePriority = highestActivePriority
+            stoppedVoiceResponse = true
+        }
+
+        if coordinatorCaptureNeedsEnding {
+            return endVoiceCapture()
+        }
+        if shouldRecoverDeferredVoiceResponse {
+            return recoverAfterExplicitConfirmation()
+        }
+        if stoppedVoiceResponse {
+            presentation.caption = presentation.stage.caption
+            applyCurrentMix()
+        }
+        return .handled
     }
 
     private func stopTrainingAudio(
         preservingVoiceCapture: Bool
     ) -> TrainingAudioEventOutcome {
-        if preservingVoiceCapture,
+        let preservesWindowCapture = preservingVoiceCapture
+            && attachedScenes.contains(.controlWindow)
+            && (capturePreparation?.origin == .controlWindow
+                || activeCaptureOrigin == .controlWindow)
+        if preservesWindowCapture,
            capturePreparation != nil || presentation.isCapturing {
             return .handled
         }
-        if !preservingVoiceCapture {
-            captureRevocationHandler?()
-        }
+        captureRevocationHandler?()
         guard sceneAttached else { return .ignoredWhileDetached }
         generation &+= 1
         let wasCapturing = presentation.isCapturing
         invalidateCapturePreparation()
         pendingVoiceResponse = nil
+        activeCaptureOrigin = nil
         backend.stop(channels: Self.captureChannels)
         clearPlaybackRecords(in: Self.captureChannels)
         presentation.isCapturing = false
@@ -650,6 +691,7 @@ final class TrainingAudioCoordinator {
         generation &+= 1
         invalidateCapturePreparation()
         pendingVoiceResponse = nil
+        activeCaptureOrigin = nil
         backend.endVoiceCapture()
         if hardStopEnvironment {
             backend.stopAll()
@@ -867,6 +909,7 @@ final class TrainingAudioCoordinator {
             ? .trackingPaused
             : (presentation.requiresExplicitRecovery ? .awaitingExplicitRecovery : .ready)
         presentation.isCapturing = false
+        activeCaptureOrigin = nil
         applyCurrentMix()
     }
 

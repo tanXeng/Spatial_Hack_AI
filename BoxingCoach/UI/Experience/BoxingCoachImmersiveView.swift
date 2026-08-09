@@ -81,7 +81,9 @@ struct BoxingCoachImmersiveView: View {
                                 isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
                                 isDisabled: flow.controlsDisabled,
                                 style: .compactSpatial,
-                                onPress: { session.voiceCoach.beginPushToTalk() },
+                                onPress: {
+                                    session.voiceCoach.beginPushToTalk(origin: .immersiveSpace)
+                                },
                                 onRelease: { session.voiceCoach.endPushToTalk() }
                             )
                         }

@@ -94,7 +94,7 @@ struct TrainingAudioCoordinatorTests {
         await coordinator.handle(.experienceDidEnter(.compete))
         await coordinator.handle(.trackingDidPause(.handsUnavailable))
         await coordinator.handle(.trackingDidResume)
-        await coordinator.handle(.voiceCaptureDidBegin)
+        await coordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace))
         await coordinator.handle(.voiceCaptureDidEnd)
 
         let fades = backend.commands.compactMap { command -> Duration? in
@@ -126,7 +126,7 @@ struct TrainingAudioCoordinatorTests {
         )))
         journal.removeAll()
 
-        let captureOutcome = await coordinator.handle(.voiceCaptureDidBegin)
+        let captureOutcome = await coordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace))
 
         #expect(captureOutcome == .captureReady)
         #expect(journal.entries.prefix(4) == [
@@ -166,7 +166,7 @@ struct TrainingAudioCoordinatorTests {
         let resources = StubTrainingAudioResources(available: [.coach(.qaWhatFix)])
         let coordinator = makeCoordinator(backend: backend, resources: resources)
         await coordinator.handle(.sceneDidAttach(.immersiveSpace))
-        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .captureReady)
+        #expect(await coordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace)) == .captureReady)
         #expect(await coordinator.handle(.coachCue(.init(
             kind: .voiceResponse,
             clip: .qaWhatFix,
@@ -187,6 +187,100 @@ struct TrainingAudioCoordinatorTests {
         #expect(backend.playedResources == [.coach(.qaWhatFix)])
     }
 
+    @Test("Training start clears custom voice audio without weakening safety priority")
+    func trainingStartCannotCarryVoiceResponsesIntoTraining() async throws {
+        let playingBackend = RecordingTrainingAudioBackend()
+        let playingCoordinator = makeCoordinator(
+            backend: playingBackend,
+            resources: StubTrainingAudioResources(available: [
+                .coach(.qaWhatFix),
+                .coach(.guardUp)
+            ])
+        )
+        await playingCoordinator.handle(.sceneDidAttach(.immersiveSpace))
+        #expect(await playingCoordinator.handle(.coachCue(.init(
+            kind: .voiceResponse,
+            clip: .qaWhatFix,
+            caption: "Coach response"
+        ))) == .handled)
+        let playingResponseHandles: [TrainingAudioPlaybackHandle] = playingBackend.commands.compactMap { command in
+            guard case let .play(handle, resource) = command,
+                  resource == .coach(.qaWhatFix) else { return nil }
+            return handle
+        }
+        let playingResponseHandle = try #require(playingResponseHandles.last)
+
+        #expect(await playingCoordinator.handle(.trainingWillBegin) == .handled)
+        #expect(playingBackend.stoppedHandles.contains(playingResponseHandle))
+        #expect(await playingCoordinator.handle(.coachCue(.init(
+            kind: .phaseInstruction,
+            clip: .guardUp,
+            caption: "Guard up"
+        ))) == .handled)
+
+        let recoveryBackend = RecordingTrainingAudioBackend()
+        let recoveryCoordinator = makeCoordinator(
+            backend: recoveryBackend,
+            resources: StubTrainingAudioResources(available: [
+                .coach(.qaWhatFix),
+                .coach(.guardUp)
+            ])
+        )
+        await recoveryCoordinator.handle(.sceneDidAttach(.immersiveSpace))
+        #expect(await recoveryCoordinator.handle(.voiceCaptureDidBegin(
+            origin: .immersiveSpace
+        )) == .captureReady)
+        #expect(await recoveryCoordinator.handle(.coachCue(.init(
+            kind: .voiceResponse,
+            clip: .qaWhatFix,
+            caption: "Deferred response"
+        ))) == .deferredUntilCaptureEnds)
+        recoveryBackend.recoverPlaybackFailuresRemaining = 1
+        #expect(await recoveryCoordinator.handle(.voiceCaptureDidEnd) == .backendUnavailable)
+        #expect(recoveryCoordinator.presentation.requiresExplicitRecovery)
+
+        #expect(await recoveryCoordinator.handle(.trainingWillBegin) == .handled)
+        #expect(recoveryCoordinator.presentation.requiresExplicitRecovery == false)
+        #expect(await recoveryCoordinator.handle(.audioRecoveryConfirmed) == .handled)
+        #expect(recoveryBackend.playedResources.contains(.coach(.qaWhatFix)) == false)
+        #expect(await recoveryCoordinator.handle(.coachCue(.init(
+            kind: .phaseInstruction,
+            clip: .guardUp,
+            caption: "Guard up"
+        ))) == .handled)
+
+        let safetyBackend = RecordingTrainingAudioBackend()
+        let safetyCoordinator = makeCoordinator(
+            backend: safetyBackend,
+            resources: StubTrainingAudioResources(available: [
+                .coach(.pauseAck),
+                .coach(.guardUp)
+            ])
+        )
+        await safetyCoordinator.handle(.sceneDidAttach(.immersiveSpace))
+        #expect(await safetyCoordinator.handle(.coachCue(.init(
+            kind: .safety,
+            clip: .pauseAck,
+            caption: "Stop now."
+        ))) == .handled)
+        let safetyHandles: [TrainingAudioPlaybackHandle] = safetyBackend.commands.compactMap { command in
+            guard case let .play(handle, resource) = command,
+                  resource == .coach(.pauseAck) else { return nil }
+            return handle
+        }
+        let safetyHandle = try #require(safetyHandles.last)
+
+        #expect(await safetyCoordinator.handle(.trainingWillBegin) == .handled)
+        #expect(safetyBackend.stoppedHandles.contains(safetyHandle) == false)
+        #expect(safetyCoordinator.presentation.activePriority == .safety)
+        #expect(safetyCoordinator.presentation.caption == "Stop now.")
+        #expect(await safetyCoordinator.handle(.coachCue(.init(
+            kind: .phaseInstruction,
+            clip: .guardUp,
+            caption: "Guard up"
+        ))) == .suppressed(by: .safety))
+    }
+
     @Test("Voice responses arriving during acoustic decay wait until capture has ended")
     func cueDuringCapturePreparationCannotPlayIntoMicrophone() async {
         let backend = RecordingTrainingAudioBackend()
@@ -200,7 +294,7 @@ struct TrainingAudioCoordinatorTests {
         await coordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         let captureTask = Task { @MainActor in
-            await coordinator.handle(.voiceCaptureDidBegin)
+            await coordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace))
         }
         await waiter.waitUntilSuspended()
 
@@ -233,14 +327,14 @@ struct TrainingAudioCoordinatorTests {
         await coordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         let first = Task { @MainActor in
-            await coordinator.handle(.voiceCaptureDidBegin)
+            await coordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace))
         }
         await waiter.waitUntilSuspended()
 
         var secondEntered = false
         let second = Task { @MainActor in
             secondEntered = true
-            return await coordinator.handle(.voiceCaptureDidBegin)
+            return await coordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace))
         }
         while !secondEntered {
             await Task.yield()
@@ -266,7 +360,7 @@ struct TrainingAudioCoordinatorTests {
         await coordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         let preparation = Task { @MainActor in
-            await coordinator.handle(.voiceCaptureDidBegin)
+            await coordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace))
         }
         await waiter.waitUntilSuspended()
         preparation.cancel()
@@ -291,7 +385,7 @@ struct TrainingAudioCoordinatorTests {
         await preparingCoordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         let preparation = Task { @MainActor in
-            await preparingCoordinator.handle(.voiceCaptureDidBegin)
+            await preparingCoordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace))
         }
         await waiter.waitUntilSuspended()
 
@@ -314,7 +408,7 @@ struct TrainingAudioCoordinatorTests {
             resources: resources
         )
         await capturingCoordinator.handle(.sceneDidAttach(.immersiveSpace))
-        #expect(await capturingCoordinator.handle(.voiceCaptureDidBegin) == .captureReady)
+        #expect(await capturingCoordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace)) == .captureReady)
 
         let capturingSafety = await capturingCoordinator.handle(.coachCue(.init(
             kind: .safety,
@@ -339,7 +433,7 @@ struct TrainingAudioCoordinatorTests {
             resources: StubTrainingAudioResources(available: [.coach(.pauseAck)])
         )
         await coordinator.handle(.sceneDidAttach(.immersiveSpace))
-        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .captureReady)
+        #expect(await coordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace)) == .captureReady)
 
         let outcome = coordinator.handleImmediately(.coachCue(.init(
             kind: .safety,
@@ -427,7 +521,7 @@ struct TrainingAudioCoordinatorTests {
         await coordinator.handle(.trackingDidResume)
         let safetyCaption = coordinator.presentation.caption
 
-        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .suppressed(by: .safety))
+        #expect(await coordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace)) == .suppressed(by: .safety))
         #expect(backend.commands.contains(.beginCapture) == false)
 
         let suppressed = await coordinator.handle(.coachCue(.init(
@@ -623,16 +717,20 @@ struct TrainingAudioCoordinatorTests {
         )
 
         session.controlWindowDidOpen()
-        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .captureReady)
+        #expect(await coordinator.handle(.voiceCaptureDidBegin(
+            origin: .controlWindow
+        )) == .captureReady)
         #expect(await coordinator.handle(.voiceCaptureDidEnd) == .handled)
 
         session.immersiveSpaceDidOpen()
         session.controlWindowDidClose()
-        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .captureReady)
+        #expect(await coordinator.handle(.voiceCaptureDidBegin(
+            origin: .immersiveSpace
+        )) == .captureReady)
         #expect(await coordinator.handle(.voiceCaptureDidEnd) == .handled)
 
         session.controlWindowDidOpen()
-        session.voiceCoach.beginPushToTalk()
+        session.voiceCoach.beginPushToTalk(origin: .controlWindow)
         await speechClient.waitForStartCount(1)
         session.immersiveSpaceDidClose()
 
@@ -641,7 +739,9 @@ struct TrainingAudioCoordinatorTests {
         #expect(speechClient.isRecording)
         session.controlWindowDidClose()
 
-        #expect(await coordinator.handle(.voiceCaptureDidBegin) == .ignoredWhileDetached)
+        #expect(await coordinator.handle(.voiceCaptureDidBegin(
+            origin: .controlWindow
+        )) == .ignoredWhileDetached)
         #expect(session.voiceCoach.isListening == false)
         #expect(speechClient.isRecording == false)
         #expect(backend.commands.filter { $0 == .attachScene }.count == 1)
@@ -664,7 +764,7 @@ struct TrainingAudioCoordinatorTests {
         let flow = TrainingFlowCoordinator()
         flow.immersiveSceneDidBecomeReady(session: session)
         session.controlWindowDidOpen()
-        session.voiceCoach.beginPushToTalk()
+        session.voiceCoach.beginPushToTalk(origin: .controlWindow)
         await speechClient.waitForStartCount(1)
 
         flow.immersiveSceneDidClose(session: session)
@@ -674,6 +774,38 @@ struct TrainingAudioCoordinatorTests {
         #expect(session.voiceCoach.isCaptureReady)
         #expect(speechClient.isRecording)
         #expect(coordinator.presentation.status == .capturing)
+        #expect(backend.commands.filter { $0 == .detachScene }.isEmpty)
+
+        session.controlWindowDidClose()
+    }
+
+    @Test("The live immersive finalizer revokes capture owned by the disappearing immersion")
+    func immersiveFinalizerRevokesImmersiveCaptureAfterWindowRestores() async {
+        let backend = RecordingTrainingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: StubTrainingAudioResources()
+        )
+        let speechClient = RecordingSpeechRecognitionClient()
+        let session = ReactiveStrikeSession(
+            feedbackGenerator: MockFeedbackGenerator(),
+            audioCoordinator: coordinator,
+            speechClient: speechClient
+        )
+        let flow = TrainingFlowCoordinator()
+        flow.immersiveSceneDidBecomeReady(session: session)
+        session.voiceCoach.beginPushToTalk(origin: .immersiveSpace)
+        await speechClient.waitForStartCount(1)
+
+        session.controlWindowDidOpen()
+        flow.immersiveSceneDidClose(session: session)
+
+        #expect(session.isImmersiveSpaceOpen == false)
+        #expect(session.voiceCoach.isListening == false)
+        #expect(session.voiceCoach.isCaptureReady == false)
+        #expect(speechClient.isRecording == false)
+        #expect(coordinator.presentation.isCapturing == false)
+        #expect(backend.commands.filter { $0 == .endCapture }.count == 1)
         #expect(backend.commands.filter { $0 == .detachScene }.isEmpty)
 
         session.controlWindowDidClose()
@@ -700,7 +832,7 @@ struct TrainingAudioCoordinatorTests {
         )
         flow.navigate(to: .experience(selection))
         session.controlWindowDidOpen()
-        session.voiceCoach.beginPushToTalk()
+        session.voiceCoach.beginPushToTalk(origin: .controlWindow)
         await speechClient.waitForStartCount(1)
         flow.immersiveSceneDidBecomeReady(session: session)
         var hideCount = 0
@@ -783,7 +915,7 @@ struct TrainingAudioCoordinatorTests {
         await coordinator.handle(.sceneDidAttach(.immersiveSpace))
 
         let captureTask = Task { @MainActor in
-            await coordinator.handle(.voiceCaptureDidBegin)
+            await coordinator.handle(.voiceCaptureDidBegin(origin: .immersiveSpace))
         }
         await waiter.waitUntilSuspended()
         await coordinator.handle(.sceneDidDetach(.immersiveSpace))
@@ -843,7 +975,7 @@ struct TrainingAudioCoordinatorTests {
         )
         session.controlWindowDidOpen()
 
-        session.voiceCoach.beginPushToTalk()
+        session.voiceCoach.beginPushToTalk(origin: .controlWindow)
         await speechClient.waitForStartCount(1)
         #expect(session.voiceCoach.isListening)
         #expect(session.voiceCoach.isCaptureReady)
@@ -855,7 +987,7 @@ struct TrainingAudioCoordinatorTests {
         #expect(speechClient.isRecording == false)
 
         #expect(session.resumeAudio() == .handled)
-        session.voiceCoach.beginPushToTalk()
+        session.voiceCoach.beginPushToTalk(origin: .controlWindow)
         await speechClient.waitForStartCount(2)
         #expect(session.voiceCoach.isCaptureReady)
 
@@ -877,7 +1009,7 @@ struct TrainingAudioCoordinatorTests {
         let safetyHandle = try #require(safetyHandles.last)
         backend.playbackDidFinish?(safetyHandle)
 
-        session.voiceCoach.beginPushToTalk()
+        session.voiceCoach.beginPushToTalk(origin: .controlWindow)
         await speechClient.waitForStartCount(3)
         #expect(session.voiceCoach.isCaptureReady)
 

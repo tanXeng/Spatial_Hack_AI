@@ -47,7 +47,7 @@ final class CoachVoiceCoach {
         }
     }
 
-    func beginPushToTalk() {
+    func beginPushToTalk(origin: TrainingAudioSceneOwner) {
         guard !isListening, !isRouting, !isGeneratingResponse else { return }
         lastError = nil
         isListening = true
@@ -71,7 +71,9 @@ final class CoachVoiceCoach {
             }
 
             do {
-                let captureOutcome = await audioCoordinator.handle(.voiceCaptureDidBegin)
+                let captureOutcome = await audioCoordinator.handle(.voiceCaptureDidBegin(
+                    origin: origin
+                ))
                 guard captureOutcome == .captureReady else {
                     throw VoiceCoachError.captureUnavailable
                 }

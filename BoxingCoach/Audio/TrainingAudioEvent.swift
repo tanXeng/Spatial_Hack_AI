@@ -117,7 +117,7 @@ nonisolated enum TrainingAudioEvent: Equatable, Sendable {
     case coachCue(TrainingCoachCue)
     case trackingDidPause(TrainingTrackingPauseReason)
     case trackingDidResume
-    case voiceCaptureDidBegin
+    case voiceCaptureDidBegin(origin: TrainingAudioSceneOwner)
     case voiceCaptureDidEnd
     case audioSystemEvent(TrainingAudioSystemEvent)
     case audioRecoveryConfirmed

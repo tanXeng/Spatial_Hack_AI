@@ -100,3 +100,20 @@ nonisolated enum TrainingAccessibility {
         prefersHeadAnchoredGuidance ? .headAnchored : .bodyRelative
     }
 }
+
+nonisolated struct SpatialAccessibilityCopy: Equatable, Sendable {
+    let label: String
+    let value: String
+}
+
+nonisolated enum SpatialTrainingAccessibility {
+    static let target = SpatialAccessibilityCopy(
+        label: "Punch target",
+        value: "Orange target. A valid punch turns it green; rejected or missed evidence turns it coral."
+    )
+
+    static let fittedArm = SpatialAccessibilityCopy(
+        label: "Estimated punch guide",
+        value: "Cyan fitted arm guide. Shoulder and elbow placement are estimated from headset and hand tracking."
+    )
+}

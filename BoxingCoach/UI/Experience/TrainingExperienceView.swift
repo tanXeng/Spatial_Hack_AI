@@ -18,6 +18,8 @@ nonisolated enum AuraResultPresentation: Equatable, Sendable {
 }
 
 struct TrainingExperienceView: View {
+    @AccessibilityFocusState private var resultPrimaryActionFocused: Bool
+
     let selection: TrainingSelection
     let session: ReactiveStrikeSession
     let presentationError: String?
@@ -26,21 +28,29 @@ struct TrainingExperienceView: View {
     let onChangeSelection: () -> Void
 
     var body: some View {
-        switch selection {
-        case .reactive(let mode, let combination, let stance):
-            reactiveExperience(mode: mode, combination: combination, stance: stance)
-        case .aura(let track, let technique, let stance):
-            auraExperience(track: track, technique: technique, stance: stance)
-        case .reachCalibration:
-            reachCalibrationExperience(backLabel: "Home")
-        case .competitionCalibration:
-            reachCalibrationExperience(backLabel: "Competition")
-        case .competition(_, let mode, let stance, _):
-            reactiveExperience(
-                mode: mode == .combination ? .combination : .air,
-                combination: mode == .combination ? .jabCrossHookCross : nil,
-                stance: stance
-            )
+        Group {
+            switch selection {
+            case .reactive(let mode, let combination, let stance):
+                reactiveExperience(mode: mode, combination: combination, stance: stance)
+            case .aura(let track, let technique, let stance):
+                auraExperience(track: track, technique: technique, stance: stance)
+            case .reachCalibration:
+                reachCalibrationExperience(backLabel: "Home")
+            case .competitionCalibration:
+                reachCalibrationExperience(backLabel: "Competition")
+            case .competition(_, let mode, let stance, _):
+                reactiveExperience(
+                    mode: mode == .combination ? .combination : .air,
+                    combination: mode == .combination ? .jabCrossHookCross : nil,
+                    stance: stance
+                )
+            }
+        }
+        .onChange(of: session.phase) { _, phase in
+            if phase == .finished { resultPrimaryActionFocused = true }
+        }
+        .onChange(of: session.auraPunch.phase) { _, phase in
+            if phase == .results { resultPrimaryActionFocused = true }
         }
     }
 
@@ -60,6 +70,7 @@ struct TrainingExperienceView: View {
                 }
                 .disabled(session.phase == .running || session.phase == .calibrating || controlsDisabled)
                 .buttonStyle(.borderedProminent)
+                .accessibilityFocused($resultPrimaryActionFocused)
             }
         }
     }
@@ -99,6 +110,7 @@ struct TrainingExperienceView: View {
                     session.phase == .running || session.phase == .calibrating || controlsDisabled
                 )
                 .buttonStyle(.borderedProminent)
+                .accessibilityFocused($resultPrimaryActionFocused)
             }
         }
     }
@@ -160,6 +172,7 @@ struct TrainingExperienceView: View {
                 }
                 .disabled(aura.isRunning || controlsDisabled)
                 .buttonStyle(.borderedProminent)
+                .accessibilityFocused($resultPrimaryActionFocused)
             }
         }
     }

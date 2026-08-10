@@ -51,6 +51,15 @@ final class TargetController {
         let entity = ModelEntity(mesh: mesh, materials: [material])
         entity.name = "PunchTarget"
         entity.position = position
+        var accessibility = AccessibilityComponent()
+        accessibility.isAccessibilityElement = true
+        accessibility.label = LocalizedStringResource(
+            stringLiteral: SpatialTrainingAccessibility.target.label
+        )
+        accessibility.value = LocalizedStringResource(
+            stringLiteral: SpatialTrainingAccessibility.target.value
+        )
+        entity.components.set(accessibility)
 
         root?.addChild(entity)
         activeTarget = entity

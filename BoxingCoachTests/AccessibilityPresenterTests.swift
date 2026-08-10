@@ -40,4 +40,12 @@ struct AccessibilityPresenterTests {
             #expect(!preset.symbolName.isEmpty)
         }
     }
+
+    @Test("Spatial target and fitted arm expose explicit nonvisual meaning")
+    func spatialAccessibilityCopyIsAuthored() {
+        #expect(SpatialTrainingAccessibility.target.label == "Punch target")
+        #expect(SpatialTrainingAccessibility.target.value.contains("orange"))
+        #expect(SpatialTrainingAccessibility.fittedArm.label == "Estimated punch guide")
+        #expect(SpatialTrainingAccessibility.fittedArm.value.contains("estimated"))
+    }
 }

@@ -4,6 +4,7 @@ enum BoxingCoachSceneID {
     // Versioned once to prevent visionOS from restoring WindowGroup sessions created by builds
     // before the control scene became single-instance.
     static let controlWindow = "BoxingCoachControlWindow.Single"
+    static let audienceMirror = "BoxingCoachAudienceMirror.Single"
     static let immersiveSpace = "ReactiveStrike"
 }
 
@@ -25,6 +26,14 @@ struct BoxingCoachApp: App {
                 .environment(composition.flow)
                 .environment(composition.competitionStore)
         }
+
+        Window("Audience Mirror", id: BoxingCoachSceneID.audienceMirror) {
+            AudienceMirrorView()
+                .environment(composition.session)
+                .environment(composition.flow)
+                .environment(composition.competitionStore)
+        }
+        .defaultSize(width: 960, height: 640)
 
         ImmersiveSpace(id: BoxingCoachSceneID.immersiveSpace) {
             BoxingCoachImmersiveView()

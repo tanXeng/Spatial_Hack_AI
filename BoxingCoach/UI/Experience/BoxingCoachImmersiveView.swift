@@ -21,6 +21,8 @@ struct BoxingCoachImmersiveView: View {
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openWindow) private var openWindow
     @State private var voiceCommandRegistrationID: UUID?
+    @State private var thermalProfile = ThermalPerformancePolicy.profile(for: .nominal)
+    @State private var announcementGate = TrainingAccessibilityAnnouncementGate()
 
     private let controlsAttachmentID = "TrainingControls"
     private let voiceCoachAttachmentID = "VoiceCoachControl"
@@ -74,7 +76,7 @@ struct BoxingCoachImmersiveView: View {
         } attachments: {
             Attachment(id: instructionsAttachmentID) {
                 ImmersiveInstructionBanner(
-                    instruction: currentInstruction,
+                    instruction: sharedPresentationInstruction,
                     style: auraBannerStyle
                 )
             }
@@ -130,6 +132,13 @@ struct BoxingCoachImmersiveView: View {
                         .accessibilityElement(children: .combine)
                         .accessibilityLabel("Training status: \(caption)")
                     }
+                    if let caption = thermalProfile.caption {
+                        Label(caption, systemImage: "gauge.with.dots.needle.33percent")
+                            .font(.caption)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 280)
+                            .accessibilityLabel(caption)
+                    }
                 }
                 .padding(10)
                 .glassBackgroundEffect()
@@ -171,7 +180,7 @@ struct BoxingCoachImmersiveView: View {
                     wasStoppedBeforeCompletion: session.wasStoppedBeforeCompletion
                 )
                 if let announcement {
-                    announce(announcement)
+                    announceSemantic(.result(announcement))
                 }
             }
             finishTraining()
@@ -179,7 +188,7 @@ struct BoxingCoachImmersiveView: View {
         .onChange(of: session.auraPunch.phase) { _, phase in
             guard case .experience(.aura) = flow.route,
                   phase == .results else { return }
-            announce("Aura Punch scoring complete")
+            announceSemantic(.result("Aura Punch scoring complete"))
             finishTraining()
         }
         .onChange(of: session.errorMessage) { _, message in
@@ -193,15 +202,16 @@ struct BoxingCoachImmersiveView: View {
             announce(message)
             finishTraining()
         }
-        .onChange(of: session.lastFeedback) { _, message in
-            guard isReactiveEngineExperience,
-                  session.phase == .running || session.phase == .calibrating else { return }
-            announce(message)
+        .onChange(of: sharedPresentationInstruction.stage) { _, stage in
+            announceSemantic(.stage(stage))
         }
-        .onChange(of: session.auraPunch.statusMessage) { _, message in
-            guard case .experience(.aura) = flow.route,
-                  session.auraPunch.isRunning else { return }
-            announce(message)
+        .onChange(of: session.isTrackingPaused) { wasPaused, isPaused in
+            guard wasPaused != isPaused else { return }
+            announceSemantic(isPaused ? .trackingPaused : .trackingRecovered)
+        }
+        .onChange(of: session.auraPunch.isTrackingPaused) { wasPaused, isPaused in
+            guard wasPaused != isPaused else { return }
+            announceSemantic(isPaused ? .trackingPaused : .trackingRecovered)
         }
         .onDisappear {
             session.auraPunch.cycleDidComplete = nil
@@ -215,6 +225,7 @@ struct BoxingCoachImmersiveView: View {
             flow.immersiveSceneDidClose(session: session)
         }
         .task {
+            refreshThermalProfile()
             bindVoiceCommands()
             session.auraPunch.cycleDidComplete = { result, reach in
                 try await competitionStore.persistStandaloneCoachingCycle(
@@ -227,6 +238,11 @@ struct BoxingCoachImmersiveView: View {
         .onChange(of: flow.route) { _, _ in refreshVoiceCoachContext() }
         .onChange(of: session.phase) { _, _ in refreshVoiceCoachContext() }
         .onChange(of: session.auraPunch.phase) { _, _ in refreshVoiceCoachContext() }
+        .onReceive(NotificationCenter.default.publisher(
+            for: ProcessInfo.thermalStateDidChangeNotification
+        )) { _ in
+            refreshThermalProfile()
+        }
     }
 
     private func bindVoiceCommands() {
@@ -251,6 +267,12 @@ struct BoxingCoachImmersiveView: View {
                 on: target
             )
         }
+    }
+
+    private func refreshThermalProfile() {
+        let level = ThermalPerformanceLevel(ProcessInfo.processInfo.thermalState)
+        thermalProfile = ThermalPerformancePolicy.profile(for: level)
+        session.audioCoordinator.setThermalPerformanceProfile(thermalProfile)
     }
 
     private var immersivePrivacyNoticeBinding: Binding<Bool> {
@@ -359,6 +381,23 @@ struct BoxingCoachImmersiveView: View {
         }
     }
 
+    private var sharedPresentationInstruction: ImmersiveInstruction {
+        let publicState = TrainingPresentationPolicy.liveState(
+            flow: flow,
+            session: session,
+            competitionStore: competitionStore
+        )
+        let detailed = currentInstruction
+        return ImmersiveInstruction(
+            stage: publicState.stage.rawValue,
+            message: publicState.instruction.text,
+            symbol: detailed.symbol,
+            action: detailed.action,
+            progress: publicState.progress?.text ?? detailed.progress,
+            metric: publicState.proof?.text ?? detailed.metric
+        )
+    }
+
     private func endTraining() {
         Task {
             await flow.endExperience(
@@ -392,6 +431,16 @@ struct BoxingCoachImmersiveView: View {
 
     private func announce(_ message: String) {
         AccessibilityNotification.Announcement(message).post()
+    }
+
+    private func announceSemantic(_ event: TrainingAccessibilityEvent) {
+        var gate = announcementGate
+        guard let message = gate.announcement(
+            for: event,
+            at: ProcessInfo.processInfo.systemUptime
+        ) else { return }
+        announcementGate = gate
+        announce(message)
     }
 
     private var currentInstruction: ImmersiveInstruction {

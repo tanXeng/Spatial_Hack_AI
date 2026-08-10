@@ -128,6 +128,7 @@ final class TrainingAudioCoordinator {
     private var spatialSceneAttached = false
     private var roundStartPresented = false
     private var resultPresented = false
+    private var thermalProfile = ThermalPerformancePolicy.profile(for: .nominal)
 
     private var sceneAttached: Bool { !attachedScenes.isEmpty }
 
@@ -141,6 +142,17 @@ final class TrainingAudioCoordinator {
             resources: CoachClipLibrary(),
             decayWaiter: SystemTrainingAudioDecayWaiter()
         )
+    }
+
+    func setThermalPerformanceProfile(_ profile: ThermalPerformanceProfile) {
+        guard thermalProfile != profile else { return }
+        thermalProfile = profile
+        if !profile.crowdEnabled, let crowd {
+            backend.stop(crowd.handle)
+            self.crowd = nil
+        }
+        startEnvironmentBedsIfNeeded()
+        applyCurrentMix()
     }
 
     init(
@@ -1066,6 +1078,7 @@ final class TrainingAudioCoordinator {
             break
         case .decibels:
             if crowd == nil,
+               thermalProfile.crowdEnabled,
                presentation.preset.allows(.crowd),
                let url = resources.url(for: .competitionCrowd),
                let handle = backend.play(TrainingAudioPlaybackRequest(
@@ -1119,9 +1132,10 @@ final class TrainingAudioCoordinator {
             mix = TrainingAudioMix.stage(presentation.stage)
         }
         let presetMix = presentation.preset.applying(to: mix)
-        presentation.mix = presetMix
+        let thermalMix = thermalProfile.applying(to: presetMix)
+        presentation.mix = thermalMix
         guard sceneAttached, backendReady else { return }
-        backend.apply(mix: presetMix, fadeDuration: fadeDuration)
+        backend.apply(mix: thermalMix, fadeDuration: fadeDuration)
     }
 
     private func playbackFinished(_ handle: TrainingAudioPlaybackHandle) {

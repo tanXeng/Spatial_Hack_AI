@@ -94,6 +94,15 @@ final class ArmSilhouetteEntity {
         )
 
         root.name = "ArmSilhouette-\(side.rawValue)"
+        var accessibility = AccessibilityComponent()
+        accessibility.isAccessibilityElement = true
+        accessibility.label = LocalizedStringResource(
+            stringLiteral: SpatialTrainingAccessibility.fittedArm.label
+        )
+        accessibility.value = LocalizedStringResource(
+            stringLiteral: SpatialTrainingAccessibility.fittedArm.value
+        )
+        root.components.set(accessibility)
         for part in [upperArmSegment, forearmSegment, shoulderJoint, elbowJoint, fistJoint] {
             root.addChild(part)
         }

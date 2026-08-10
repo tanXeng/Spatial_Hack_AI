@@ -144,3 +144,183 @@ nonisolated enum AudienceMirrorPresenter {
         AudienceMirrorPresentation(state: state)
     }
 }
+
+nonisolated enum TrainingPresentationContext: Sendable {
+    case welcome
+    case nextBoxer
+    case coachOffline
+    case aura(
+        stage: LearningStage,
+        trackingPaused: Bool,
+        proof: TrainingProofPresentation?,
+        aiPhrasingAvailable: Bool
+    )
+    case reactive(
+        context: ImmersiveTrainingContext,
+        phase: DrillPhase,
+        trackingPaused: Bool,
+        progress: TrainingProgressPresentation?,
+        score: Int?,
+        rank: Int?,
+        publicHandle: ParticipantPublicHandle?
+    )
+}
+
+nonisolated enum TrainingPresentationPolicy {
+    static func state(for context: TrainingPresentationContext) -> TrainingPresentationState? {
+        switch context {
+        case .welcome:
+            return TrainingPresentationState(stage: .welcome, instruction: .chooseTrack)
+        case .nextBoxer:
+            return .nextBoxer
+        case .coachOffline:
+            return TrainingPresentationState(stage: .coachOffline, instruction: .localCoachAvailable)
+        case let .aura(stage, trackingPaused, proof, _):
+            if trackingPaused {
+                return TrainingPresentationState(
+                    stage: .trackingPaused,
+                    instruction: .recoverTracking
+                )
+            }
+            let output: (TrainingPresentationStage, TrainingPublicInstruction)
+            switch stage {
+            case .fit:
+                output = (.fit, .fitReach)
+            case .learnWatch, .learnOutbound, .learnLanding, .learnReturn,
+                 .guidedRehearsal:
+                output = (.learn, .followGuide)
+            case .baseline:
+                output = (.baseline, .controlledPunch)
+            case .correction, .correctiveDrill:
+                output = (.correct, .repeatPunch)
+            case .retest, .proof:
+                output = (.prove, .repeatPunch)
+            case .transfer:
+                output = (.transfer, .transferOneTwo)
+            case .complete:
+                output = (.celebrate, .roundComplete)
+            }
+            return TrainingPresentationState(
+                stage: output.0,
+                instruction: output.1,
+                proof: proof
+            )
+        case let .reactive(
+            context,
+            phase,
+            trackingPaused,
+            progress,
+            score,
+            rank,
+            publicHandle
+        ):
+            if trackingPaused {
+                return TrainingPresentationState(
+                    stage: .trackingPaused,
+                    instruction: .recoverTracking
+                )
+            }
+            let output: (TrainingPresentationStage, TrainingPublicInstruction)
+            switch context {
+            case .reachCalibration, .competitionCalibration:
+                output = (.fit, .fitReach)
+            case .aura:
+                output = (.learn, .followGuide)
+            case .standard, .competition:
+                switch phase {
+                case .idle:
+                    output = (.safety, .clearSafeSpace)
+                case .calibrating:
+                    output = (.fit, .fitReach)
+                case .running:
+                    output = (.compete, .competeTarget)
+                case .finished:
+                    output = (.celebrate, .roundComplete)
+                }
+            }
+            return TrainingPresentationState(
+                stage: output.0,
+                instruction: output.1,
+                progress: phase == .running ? progress : nil,
+                competitionScore: phase == .finished ? score : nil,
+                competitionRank: phase == .finished ? rank : nil,
+                publicHandle: publicHandle
+            )
+        }
+    }
+
+    @MainActor
+    static func liveState(
+        flow: TrainingFlowCoordinator,
+        session: ReactiveStrikeSession,
+        competitionStore: CompetitionStore
+    ) -> TrainingPresentationState {
+        guard case .experience(let selection) = flow.route else {
+            return state(for: .nextBoxer)!
+        }
+        switch selection {
+        case .aura:
+            let proof = session.auraPunch.proofMetric.flatMap {
+                TrainingProofPresentation(
+                    metric: $0.kind,
+                    baseline: Int($0.baseline.rounded()),
+                    retest: Int($0.retest.rounded())
+                )
+            }
+            return state(for: .aura(
+                stage: session.auraPunch.learningStage,
+                trackingPaused: session.auraPunch.isTrackingPaused,
+                proof: proof,
+                aiPhrasingAvailable: CoachSecrets.relayEndpoint != nil
+            ))!
+        case .reactive(_, let combination, _):
+            return state(for: .reactive(
+                context: .standard(isCombination: combination != nil),
+                phase: session.phase,
+                trackingPaused: session.isTrackingPaused,
+                progress: nil,
+                score: nil,
+                rank: nil,
+                publicHandle: nil
+            ))!
+        case .reachCalibration:
+            return state(for: .reactive(
+                context: .reachCalibration,
+                phase: session.phase,
+                trackingPaused: session.isTrackingPaused,
+                progress: nil,
+                score: nil,
+                rank: nil,
+                publicHandle: nil
+            ))!
+        case .competitionCalibration:
+            return state(for: .reactive(
+                context: .competitionCalibration,
+                phase: session.phase,
+                trackingPaused: session.isTrackingPaused,
+                progress: nil,
+                score: nil,
+                rank: nil,
+                publicHandle: competitionStore.currentPlayer?.publicHandle
+            ))!
+        case .competition(_, let mode, _, _):
+            let submission = competitionStore.latestSubmission.flatMap { submission in
+                submission.playerID == competitionStore.currentPlayer?.id ? submission : nil
+            }
+            let rank = submission.flatMap { submission in
+                competitionStore.standings(for: mode).first(where: {
+                    $0.submission.id == submission.id
+                })?.rank
+            }
+            return state(for: .reactive(
+                context: .competition(isCombination: mode == .combination),
+                phase: session.phase,
+                trackingPaused: session.isTrackingPaused,
+                progress: nil,
+                score: submission?.score,
+                rank: rank,
+                publicHandle: competitionStore.currentPlayer?.publicHandle
+            ))!
+        }
+    }
+}

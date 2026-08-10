@@ -11,6 +11,7 @@ struct BoxingCoachRootView: View {
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
     @Environment(\.dismissWindow) private var dismissWindow
+    @Environment(\.openWindow) private var openWindow
     @AccessibilityFocusState private var landingActionFocused: LandingAction?
     @State private var voiceCommandRegistrationID: UUID?
 
@@ -148,6 +149,17 @@ struct BoxingCoachRootView: View {
             .padding(.top, 64)
 
             HStack(spacing: 12) {
+                Button {
+                    openWindow(id: BoxingCoachSceneID.audienceMirror)
+                } label: {
+                    Label("Audience View", systemImage: "airplayvideo")
+                }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .frame(minWidth: 60, minHeight: 60)
+                .accessibilityHint("Opens the privacy-safe audience presentation window")
+                .accessibilityInputLabels(["Audience View", "AirPlay View"])
+
                 Button(action: openLandingCalibration) {
                     Label(
                         session.hasCalibratedReach
@@ -159,7 +171,7 @@ struct BoxingCoachRootView: View {
                 }
                 .buttonStyle(.bordered)
                 .controlSize(.large)
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(minWidth: 60, minHeight: 60)
                 .disabled(
                     flow.controlsDisabled
                         || competitionStore.activeRun != nil
@@ -183,7 +195,7 @@ struct BoxingCoachRootView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .frame(minWidth: 44, minHeight: 44)
+                .frame(minWidth: 60, minHeight: 60)
                 .disabled(
                     flow.controlsDisabled
                         || competitionStore.activeRun != nil

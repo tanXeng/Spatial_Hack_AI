@@ -273,7 +273,7 @@ struct TrainingExperienceView: View {
 }
 
 struct MusicControlBar: View {
-    let music: CoachMusicPlayer
+    @Bindable var music: CoachMusicPlayer
 
     var body: some View {
         VStack(spacing: 6) {

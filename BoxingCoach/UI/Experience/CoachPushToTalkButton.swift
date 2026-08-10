@@ -39,6 +39,16 @@ struct CoachPushToTalkButton: View {
             }
         }
         .disabled(isDisabled || isBusy)
+        .onChange(of: isListening) { _, listening in
+            if !listening, !isBusy {
+                isPressed = false
+            }
+        }
+        .onChange(of: isBusy) { _, busy in
+            if !busy, !isListening {
+                isPressed = false
+            }
+        }
         .accessibilityLabel("Ask Coach")
         .accessibilityHint("Hold while speaking, then release to hear a ChatGPT answer")
         .accessibilityInputLabels(["Ask Coach", "Hold to Ask Coach", "Voice command"])
@@ -112,20 +122,24 @@ private struct PressAndHoldModifier: ViewModifier {
     let onPress: () -> Void
     let onRelease: () -> Void
 
+    @State private var isHolding = false
+
     func body(content: Content) -> some View {
         content
-            .onLongPressGesture(
-                minimumDuration: 0,
-                maximumDistance: 80,
-                pressing: { pressing in
-                    guard !isDisabled else { return }
-                    if pressing {
-                        onPress()
-                    } else {
+            .gesture(
+                DragGesture(minimumDistance: 0, coordinateSpace: .local)
+                    .onChanged { _ in
+                        guard !isDisabled else { return }
+                        if !isHolding {
+                            isHolding = true
+                            onPress()
+                        }
+                    }
+                    .onEnded { _ in
+                        guard isHolding else { return }
+                        isHolding = false
                         onRelease()
                     }
-                },
-                perform: {}
             )
     }
 }

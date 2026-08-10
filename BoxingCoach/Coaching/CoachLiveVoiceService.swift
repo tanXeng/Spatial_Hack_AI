@@ -11,6 +11,11 @@ final class CoachLiveVoiceService {
     private let cache = CoachTTSCache()
     private var speakTasks: [Task<Void, Never>] = []
     private(set) var isUserInteractionActive = false
+    private weak var musicPlayer: CoachMusicPlayer?
+
+    func attachMusicPlayer(_ player: CoachMusicPlayer) {
+        musicPlayer = player
+    }
 
     func prepare() {
         audioPlayer.prepare()
@@ -31,17 +36,20 @@ final class CoachLiveVoiceService {
     func beginUserInteraction() {
         isUserInteractionActive = true
         stop()
+        musicPlayer?.suspendForVoice()
     }
 
     func endUserInteraction() {
         isUserInteractionActive = false
+        musicPlayer?.resumeAfterVoice()
+        musicPlayer?.resumePlaybackIfNeeded()
     }
 
     func speakMilestone(_ milestone: CoachClipID) {
         guard !isUserInteractionActive else { return }
         guard let text = CoachMilestoneScripts.text(for: milestone) else { return }
         let task = Task { [weak self] in
-            _ = await self?.speakText(text, waitForCompletion: false)
+            _ = await self?.speakText(text, waitForCompletion: true)
         }
         speakTasks.append(task)
         trimFinishedTasks()
@@ -67,6 +75,16 @@ final class CoachLiveVoiceService {
         guard CoachSecrets.hasOpenAIKey else {
             Self.logger.error("Skipping speech — no OpenAI API key")
             return "OpenAI API key is missing. Add it to Secrets.xcconfig and rebuild."
+        }
+
+        let shouldDuckMusic = !isUserInteractionActive
+        if shouldDuckMusic {
+            musicPlayer?.duckForVoice()
+        }
+        defer {
+            if shouldDuckMusic {
+                musicPlayer?.restoreAfterVoiceDuck()
+            }
         }
 
         do {

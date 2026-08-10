@@ -1,12 +1,17 @@
 import AVFoundation
 import Foundation
+import Observation
 import os
 
+@Observable
 @MainActor
 final class CoachMusicPlayer {
     private static let logger = Logger(
         subsystem: "com.josephkwokpersonalteam.BoxingCoach", category: "CoachMusic"
     )
+
+    private static let normalVolume: Float = 0.4
+    private static let duckedVolume: Float = 0.12
 
     private var player: AVAudioPlayer?
     private var queuePlayer: AVQueuePlayer?
@@ -15,6 +20,10 @@ final class CoachMusicPlayer {
     private var interruptionObserver: NSObjectProtocol?
     private var playbackObserver: Any?
     private var usingBundledTracks = false
+    private var voiceSuspendCount = 0
+    private var voiceDuckCount = 0
+    private var wasPlayingBeforeVoice = false
+    private var volumeBeforeDuck = CoachMusicPlayer.normalVolume
 
     private(set) var isPlaying = false
     private(set) var currentTrackName: String?
@@ -56,6 +65,7 @@ final class CoachMusicPlayer {
         if player == nil, queuePlayer == nil {
             prepare()
         }
+        configurePlaybackSession()
         if usingBundledTracks {
             queuePlayer?.play()
         } else {
@@ -63,6 +73,64 @@ final class CoachMusicPlayer {
         }
         isPlaying = true
         Self.logger.debug("Music playing")
+    }
+
+    /// Lowers music volume while coach milestone speech plays, keeping the beat audible underneath.
+    func duckForVoice() {
+        if voiceDuckCount == 0 {
+            volumeBeforeDuck = volume > 0 ? volume : Self.normalVolume
+            if isPlaying {
+                volume = Self.duckedVolume
+            }
+        }
+        voiceDuckCount += 1
+    }
+
+    /// Restores music volume after coach speech ends.
+    func restoreAfterVoiceDuck() {
+        guard voiceDuckCount > 0 else { return }
+        voiceDuckCount -= 1
+        guard voiceDuckCount == 0 else { return }
+        if isPlaying {
+            volume = volumeBeforeDuck
+        }
+    }
+
+    /// Pauses music while mic capture owns the audio session (push-to-talk).
+    func suspendForVoice() {
+        if voiceSuspendCount == 0 {
+            wasPlayingBeforeVoice = isPlaying
+            if isPlaying {
+                pause()
+            }
+        }
+        voiceSuspendCount += 1
+    }
+
+    /// Restores music after voice activity ends. Refcounted so nested PTT + TTS calls pair correctly.
+    func resumeAfterVoice() {
+        guard voiceSuspendCount > 0 else { return }
+        voiceSuspendCount -= 1
+        guard voiceSuspendCount == 0 else { return }
+
+        configurePlaybackSession()
+        if wasPlayingBeforeVoice {
+            play()
+        }
+        wasPlayingBeforeVoice = false
+    }
+
+    /// Re-starts playback when the session flag is still "playing" but AVFoundation paused the engine.
+    func resumePlaybackIfNeeded() {
+        guard isPlaying else { return }
+        configurePlaybackSession()
+        if usingBundledTracks {
+            if queuePlayer?.rate == 0 {
+                queuePlayer?.play()
+            }
+        } else if player?.isPlaying == false {
+            player?.play()
+        }
     }
 
     func pause() {
@@ -110,12 +178,26 @@ final class CoachMusicPlayer {
 
     func shutdown() {
         stop()
+        voiceSuspendCount = 0
+        voiceDuckCount = 0
+        wasPlayingBeforeVoice = false
+        volumeBeforeDuck = Self.normalVolume
         if let obs = interruptionObserver {
             NotificationCenter.default.removeObserver(obs)
             interruptionObserver = nil
         }
         player = nil
         queuePlayer = nil
+    }
+
+    private func configurePlaybackSession() {
+        let session = AVAudioSession.sharedInstance()
+        do {
+            try session.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+            try session.setActive(true)
+        } catch {
+            Self.logger.error("Music session setup failed: \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     private func playTrack(at index: Int, autoplay: Bool) {
@@ -130,7 +212,7 @@ final class CoachMusicPlayer {
         let url = allTrackURLs[index]
         let item = AVPlayerItem(url: url)
         let player = AVQueuePlayer(items: [item])
-        player.volume = 0.4
+        player.volume = Self.normalVolume
         queuePlayer = player
 
         currentTrackName = url.deletingPathExtension().lastPathComponent
@@ -164,11 +246,8 @@ final class CoachMusicPlayer {
         else { return }
 
         if type == .ended, isPlaying {
-            if usingBundledTracks {
-                queuePlayer?.play()
-            } else {
-                player?.play()
-            }
+            configurePlaybackSession()
+            resumePlaybackIfNeeded()
             Self.logger.debug("Music resumed after interruption")
         }
     }
@@ -222,7 +301,7 @@ final class CoachMusicPlayer {
             return
         }
         player = try? AVAudioPlayer(contentsOf: url)
-        player?.volume = 0.4
+        player?.volume = Self.normalVolume
         player?.numberOfLoops = -1
         player?.prepareToPlay()
         currentTrackName = nil

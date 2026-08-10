@@ -82,6 +82,7 @@ final class ReactiveStrikeSession {
     init() {
         let liveVoice = CoachLiveVoiceService()
         self.liveVoice = liveVoice
+        liveVoice.attachMusicPlayer(musicPlayer)
         voiceCoach = CoachVoiceCoach(liveVoice: liveVoice)
         auraPunch = AuraPunchSession(hands: hands, liveVoice: liveVoice)
     }
@@ -120,6 +121,9 @@ final class ReactiveStrikeSession {
     func immersiveSpaceDidClose() {
         isImmersiveSpaceOpen = false
         voiceCoach.shutdown()
+        musicPlayer.restoreAfterVoiceDuck()
+        musicPlayer.resumeAfterVoice()
+        musicPlayer.resumePlaybackIfNeeded()
     }
 
     func liveVoicePrefetchIfNeeded() async {

@@ -19,51 +19,49 @@ struct BoxingCoachRootView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            Group {
-                switch flow.route {
-                case .features:
-                    featureSelection
+        Group {
+            switch flow.route {
+            case .features:
+                featureSelection
 
-                case .reactiveSetup:
-                    ReactiveSetupView(
-                        controlsDisabled: flow.controlsDisabled,
-                        onSelect: flow.chooseReactiveMode,
-                        onBack: flow.backFromSetup
-                    )
+            case .reactiveSetup:
+                ReactiveSetupView(
+                    controlsDisabled: flow.controlsDisabled,
+                    onSelect: flow.chooseReactiveMode,
+                    onBack: flow.backFromSetup
+                )
 
-                case .combinationSetup:
-                    CombinationSetupView(
-                        stance: flow.draftStance,
-                        controlsDisabled: flow.controlsDisabled,
-                        onStanceChange: flow.setDraftStance,
-                        onSelect: flow.chooseCombination,
-                        onBack: flow.backFromSetup
-                    )
+            case .combinationSetup:
+                CombinationSetupView(
+                    stance: flow.draftStance,
+                    controlsDisabled: flow.controlsDisabled,
+                    onStanceChange: flow.setDraftStance,
+                    onSelect: flow.chooseCombination,
+                    onBack: flow.backFromSetup
+                )
 
-                case .auraSetup:
-                    AuraSetupView(
-                        stance: flow.draftStance,
-                        controlsDisabled: flow.controlsDisabled,
-                        onStanceChange: flow.setDraftStance,
-                        onSelect: flow.chooseAuraTechnique,
-                        onBack: flow.backFromSetup
-                    )
+            case .auraSetup:
+                AuraSetupView(
+                    stance: flow.draftStance,
+                    controlsDisabled: flow.controlsDisabled,
+                    onStanceChange: flow.setDraftStance,
+                    onSelect: flow.chooseAuraTechnique,
+                    onBack: flow.backFromSetup
+                )
 
-                case .experience(let selection):
-                    TrainingExperienceView(
-                        selection: selection,
-                        session: session,
-                        presentationError: flow.presentationError,
-                        controlsDisabled: flow.controlsDisabled,
-                        onStart: { start(selection) },
-                        onChangeSelection: { changeSelection(selection) }
-                    )
-                }
+            case .experience(let selection):
+                TrainingExperienceView(
+                    selection: selection,
+                    session: session,
+                    presentationError: flow.presentationError,
+                    controlsDisabled: flow.controlsDisabled,
+                    onStart: { start(selection) },
+                    onChangeSelection: { changeSelection(selection) }
+                )
             }
-
+        }
+        .safeAreaInset(edge: .bottom, spacing: 12) {
             CoachVoiceCoachPanel(isDisabled: flow.controlsDisabled)
-                .padding(.bottom, 8)
         }
         .padding(32)
         .frame(
@@ -82,6 +80,12 @@ struct BoxingCoachRootView: View {
         .onChange(of: flow.route) {
             AccessibilityNotification.ScreenChanged().post()
             refreshWindowVoiceContext()
+            session.musicPlayer.resumePlaybackIfNeeded()
+        }
+        .onChange(of: flow.controlsDisabled) { _, disabled in
+            guard !disabled else { return }
+            session.musicPlayer.resumeAfterVoice()
+            session.musicPlayer.resumePlaybackIfNeeded()
         }
         .onChange(of: competitionStore.currentPlayer) { oldPlayer, newPlayer in
             guard oldPlayer?.id != newPlayer?.id
@@ -95,6 +99,7 @@ struct BoxingCoachRootView: View {
             session.auraPunch.prepareCoachAudio()
             session.voiceCoach.prepare()
             refreshWindowVoiceContext()
+            session.musicPlayer.resumePlaybackIfNeeded()
             Task {
                 await session.liveVoicePrefetchIfNeeded()
             }
@@ -133,62 +138,62 @@ struct BoxingCoachRootView: View {
         VStack(spacing: 16) {
             MusicControlBar(music: session.musicPlayer)
 
-            ZStack(alignment: .topTrailing) {
-                FeatureSelectionView(
-                    controlsDisabled: flow.controlsDisabled,
-                    onSelect: flow.chooseFeature
-                )
-                .padding(.top, 20)
-
-                HStack(spacing: 12) {
-                    Button(action: openLandingCalibration) {
-                        Label(
-                            session.hasCalibratedReach
-                                ? "Recalibrate"
-                                : "Calibrate",
-                            systemImage: "ruler"
-                        )
-                        .padding(.horizontal, 4)
-                    }
-                    .buttonStyle(.bordered)
-                    .controlSize(.large)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .disabled(
-                        flow.controlsDisabled
-                            || competitionStore.activeRun != nil
-                            || competitionStore.isLoading
-                            || competitionStore.isSaving
-                    )
-                    .accessibilityLabel(
+            HStack(spacing: 12) {
+                Button(action: openLandingCalibration) {
+                    Label(
                         session.hasCalibratedReach
-                            ? "Recalibrate reach"
-                            : "Calibrate reach"
+                            ? "Recalibrate"
+                            : "Calibrate",
+                        systemImage: "ruler"
                     )
-                    .accessibilityHint("Measures comfortable reach for Reactive Strike and Combo without joining the competition")
-                    .accessibilityInputLabels(["Calibrate", "Recalibrate reach", "Reach settings"])
-                    .accessibilityFocused($landingActionFocused, equals: .calibration)
-
-                    Button {
-                        competitionStore.open()
-                    } label: {
-                        Label("Join Competition", systemImage: "trophy.fill")
-                            .padding(.horizontal, 4)
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .frame(minWidth: 44, minHeight: 44)
-                    .disabled(
-                        flow.controlsDisabled
-                            || competitionStore.activeRun != nil
-                            || competitionStore.isLoading
-                            || competitionStore.isSaving
-                    )
-                    .accessibilityLabel("Join Competition")
-                    .accessibilityHint("Enter a player name, calibrate reach, and compete on two leaderboards")
-                    .accessibilityInputLabels(["Join Competition", "Competition", "Leaderboard"])
-                    .accessibilityFocused($landingActionFocused, equals: .competition)
+                    .padding(.horizontal, 4)
                 }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .frame(minWidth: 44, minHeight: 44)
+                .disabled(
+                    flow.controlsDisabled
+                        || competitionStore.activeRun != nil
+                        || competitionStore.isLoading
+                        || competitionStore.isSaving
+                )
+                .accessibilityLabel(
+                    session.hasCalibratedReach
+                        ? "Recalibrate reach"
+                        : "Calibrate reach"
+                )
+                .accessibilityHint("Measures comfortable reach for Reactive Strike and Combo without joining the competition")
+                .accessibilityInputLabels(["Calibrate", "Recalibrate reach", "Reach settings"])
+                .accessibilityFocused($landingActionFocused, equals: .calibration)
+
+                Spacer()
+
+                Button {
+                    competitionStore.open()
+                } label: {
+                    Label("Join Competition", systemImage: "trophy.fill")
+                        .padding(.horizontal, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .frame(minWidth: 44, minHeight: 44)
+                .disabled(
+                    flow.controlsDisabled
+                        || competitionStore.activeRun != nil
+                        || competitionStore.isLoading
+                        || competitionStore.isSaving
+                )
+                .accessibilityLabel("Join Competition")
+                .accessibilityHint("Enter a player name, calibrate reach, and compete on two leaderboards")
+                .accessibilityInputLabels(["Join Competition", "Competition", "Leaderboard"])
+                .accessibilityFocused($landingActionFocused, equals: .competition)
             }
+
+            FeatureSelectionView(
+                controlsDisabled: flow.controlsDisabled,
+                onSelect: flow.chooseFeature
+            )
+            .frame(maxHeight: .infinity)
         }
     }
 

@@ -18,6 +18,14 @@ struct CoachVoiceCoachPanel: View {
                 onRelease: { session.voiceCoach.endPushToTalk() }
             )
 
+            if session.voiceCoach.isListening, !session.voiceCoach.isCaptureReady {
+                Button("Cancel") {
+                    session.voiceCoach.cancelActiveCapture()
+                }
+                .font(.caption.weight(.semibold))
+                .buttonStyle(.borderless)
+            }
+
             Text("Hold to ask anything · Wait for Listening… · ChatGPT answers live")
                 .font(.caption)
                 .foregroundStyle(.secondary)

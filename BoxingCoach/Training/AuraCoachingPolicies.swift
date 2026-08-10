@@ -364,7 +364,7 @@ enum AuraImmersiveInstructionPolicy {
 
 extension ImmersiveInstruction {
     var accessibilityValue: String {
-        [message, progress, metric, action]
+        [message, progress, metric, source, action]
             .compactMap { $0 }
             .joined(separator: ". ")
     }

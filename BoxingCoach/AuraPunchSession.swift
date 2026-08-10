@@ -198,6 +198,7 @@ final class AuraPunchSession {
     var proofMetric: CoachingProofMetric? { coachingCycle.proofMetric }
     var publicProgress: CoachingCycleProgress? { coachingCycle.publicProgress }
     var correctionFocus: SubMetricKind? { coachingCycle.correctionFocus }
+    var proofDisposition: CoachingProofDisposition { coachingCycle.proofDisposition }
     var correctionOverlay: CorrectionPathOverlay? { coachingCycle.correctionOverlay }
     var cycleResult: CoachingCycleResult? { coachingCycle.result }
     var fittedReach: BilateralReach? { coachingCycle.fittedReach }

@@ -44,9 +44,11 @@ struct AudienceMirrorView: View {
                 .foregroundStyle(.white)
                 .fixedSize(horizontal: false, vertical: true)
 
-            Text(presentation.coachingSource)
-                .font(.headline)
-                .foregroundStyle(.white.opacity(0.76))
+            if let source = presentation.coachingSource {
+                Text(source)
+                    .font(.headline)
+                    .foregroundStyle(.white.opacity(0.76))
+            }
 
             if let progress = presentation.progress {
                 publicMetric("Progress", progress)

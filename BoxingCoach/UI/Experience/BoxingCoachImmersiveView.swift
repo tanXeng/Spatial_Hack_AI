@@ -394,7 +394,8 @@ struct BoxingCoachImmersiveView: View {
             symbol: detailed.symbol,
             action: detailed.action,
             progress: publicState.progress?.text,
-            metric: publicState.proof?.text
+            metric: publicState.proof?.text,
+            source: publicState.coachingSource?.text
         )
     }
 

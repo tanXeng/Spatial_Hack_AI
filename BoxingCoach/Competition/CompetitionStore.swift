@@ -52,7 +52,6 @@ final class CompetitionStore {
     private(set) var sheetRoute: CompetitionSheetRoute?
     private(set) var currentPlayer: CompetitionPlayer?
     private(set) var latestSubmission: CompetitionSubmission?
-    private(set) var audiencePublicHandle: ParticipantPublicHandle?
     private(set) var reactiveStandings: [CompetitionStanding] = []
     private(set) var combinationStandings: [CompetitionStanding] = []
     private(set) var activeRun: ActiveCompetitionRun?
@@ -66,7 +65,6 @@ final class CompetitionStore {
     private let repository: any CompetitionRepository
     private let now: () -> Date
     private var didBootstrap = false
-    private let audienceEventID = UUID()
 
     init(
         repository: any CompetitionRepository,
@@ -176,10 +174,6 @@ final class CompetitionStore {
             }
             try await repository.save(player: player)
             currentPlayer = player
-            audiencePublicHandle = Self.makeAudienceHandle(
-                eventID: audienceEventID,
-                playerID: player.id
-            )
             selectedStance = player.rememberedStance
             nameDraft = player.name
             errorMessage = nil
@@ -346,7 +340,6 @@ final class CompetitionStore {
         do {
             try await repository.reset()
             currentPlayer = nil
-            audiencePublicHandle = nil
             latestSubmission = nil
             reactiveStandings = []
             combinationStandings = []
@@ -363,20 +356,6 @@ final class CompetitionStore {
         mode == .reactiveStrike ? reactiveStandings : combinationStandings
     }
 
-    private static func makeAudienceHandle(
-        eventID: UUID,
-        playerID: UUID
-    ) -> ParticipantPublicHandle? {
-        let numeric = playerID.uuidString.utf8.reduce(0) { partial, byte in
-            (partial * 31 + Int(byte)) % 10_000
-        }
-        return ParticipantPublicHandle.reserving(
-            eventID: eventID,
-            displayName: "Boxer",
-            displayCode: String(format: "%04d", numeric),
-            against: []
-        )
-    }
 
     /// Persists the six original admitted attempts and the fitted reach at the deterministic Aura
     /// completion boundary. No aggregate score is assigned a punch identity.

@@ -27,7 +27,8 @@ struct AudienceMirrorPresenterTests {
                 proof: nil,
                 progress: nil,
                 focus: nil,
-                aiPhrasingAvailable: false
+                proofDisposition: .retry,
+                source: .offline
             )
         ))
 

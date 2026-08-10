@@ -28,8 +28,11 @@ nonisolated enum TrainingPublicInstruction: Equatable, Sendable {
     case meetTarget
     case returnToGuard
     case controlledPunch
+    case extendComfortably
     case focus(SubMetricKind)
     case repeatPunch
+    case proofReady
+    case practiceAgain
     case transferOneTwo
     case competeTarget
     case roundComplete
@@ -50,8 +53,11 @@ nonisolated enum TrainingPublicInstruction: Equatable, Sendable {
         case .meetTarget: "Meet the target inside comfortable reach."
         case .returnToGuard: "Return the fist on the same path to guard."
         case .controlledPunch: "Throw one controlled punch."
+        case .extendComfortably: "Extend to your fitted reach without leaning or locking out."
         case .focus(let metric): "Focus on \(metric.title.lowercased())."
         case .repeatPunch: "Repeat the same punch."
+        case .proofReady: "Proof recorded. Continue to the transfer round."
+        case .practiceAgain: "The selected metric needs another correction round."
         case .transferOneTwo: "Throw a stance-correct 1–2."
         case .competeTarget: "Hit the target and return to guard."
         case .roundComplete: "Round complete."
@@ -113,7 +119,7 @@ nonisolated struct TrainingPresentationState: Equatable, Sendable {
     let competitionScore: Int?
     let competitionRank: Int?
     let publicHandle: ParticipantPublicHandle?
-    let coachingSource: TrainingCoachingSource
+    let coachingSource: TrainingCoachingSource?
 
     init?(
         stage: TrainingPresentationStage,
@@ -123,7 +129,7 @@ nonisolated struct TrainingPresentationState: Equatable, Sendable {
         competitionScore: Int? = nil,
         competitionRank: Int? = nil,
         publicHandle: ParticipantPublicHandle? = nil,
-        coachingSource: TrainingCoachingSource = .offline
+        coachingSource: TrainingCoachingSource? = nil
     ) {
         guard competitionScore.map({ (0...100).contains($0) }) ?? true,
               competitionRank.map({ $0 > 0 }) ?? true
@@ -154,7 +160,7 @@ nonisolated struct AudienceMirrorPresentation: Equatable, Sendable {
     let score: String?
     let rank: String?
     let publicIdentity: String?
-    let coachingSource: String
+    let coachingSource: String?
 
     fileprivate init(state: TrainingPresentationState) {
         stage = state.stage.rawValue
@@ -164,7 +170,7 @@ nonisolated struct AudienceMirrorPresentation: Equatable, Sendable {
         score = state.competitionScore.map { "\($0) points" }
         rank = state.competitionRank.map { "Rank \($0)" }
         publicIdentity = state.publicHandle?.displayValue
-        coachingSource = state.coachingSource.text
+        coachingSource = state.coachingSource?.text
     }
 }
 
@@ -186,7 +192,8 @@ nonisolated enum TrainingPresentationContext: Sendable {
         proof: TrainingProofPresentation?,
         progress: TrainingProgressPresentation?,
         focus: SubMetricKind?,
-        aiPhrasingAvailable: Bool
+        proofDisposition: CoachingProofDisposition,
+        source: TrainingCoachingSource
     )
     case reactive(
         context: ImmersiveTrainingContext,
@@ -212,7 +219,15 @@ nonisolated enum TrainingPresentationPolicy {
             return TrainingPresentationState(stage: .coachOffline, instruction: .sessionOnlyResults)
         case .recovery:
             return TrainingPresentationState(stage: .safety, instruction: .recoverSystem)
-        case let .aura(stage, trackingPaused, proof, progress, focus, aiPhrasingAvailable):
+        case let .aura(
+            stage,
+            trackingPaused,
+            proof,
+            progress,
+            focus,
+            proofDisposition,
+            source
+        ):
             if trackingPaused {
                 return TrainingPresentationState(
                     stage: .trackingPaused,
@@ -236,9 +251,14 @@ nonisolated enum TrainingPresentationPolicy {
             case .baseline:
                 output = (.baseline, .controlledPunch)
             case .correction, .correctiveDrill:
-                output = (.correct, focus.map(TrainingPublicInstruction.focus) ?? .repeatPunch)
-            case .retest, .proof:
+                output = (.correct, focus.map(Self.correctionInstruction) ?? .repeatPunch)
+            case .retest:
                 output = (.prove, .repeatPunch)
+            case .proof:
+                output = (
+                    .prove,
+                    proofDisposition == .retry ? .practiceAgain : .proofReady
+                )
             case .transfer:
                 output = (.transfer, .transferOneTwo)
             case .complete:
@@ -249,7 +269,7 @@ nonisolated enum TrainingPresentationPolicy {
                 instruction: output.1,
                 proof: proof,
                 progress: progress,
-                coachingSource: aiPhrasingAvailable ? .aiPhrasing : .offline
+                coachingSource: source
             )
         case let .reactive(
             context,
@@ -301,13 +321,13 @@ nonisolated enum TrainingPresentationPolicy {
         session: ReactiveStrikeSession,
         competitionStore: CompetitionStore
     ) -> TrainingPresentationState {
-        if competitionStore.coachingCyclePersistenceScope == .sessionOnly {
-            return state(for: .persistenceFallback)!
-        }
         if flow.presentationError != nil {
             return state(for: .recovery)!
         }
         guard case .experience(let selection) = flow.route else {
+            if competitionStore.coachingCyclePersistenceScope == .sessionOnly {
+                return state(for: .persistenceFallback)!
+            }
             return state(for: competitionStore.currentPlayer == nil ? .welcome : .nextBoxer)!
         }
         switch selection {
@@ -327,7 +347,8 @@ nonisolated enum TrainingPresentationPolicy {
                     TrainingProgressPresentation(current: $0.current, total: $0.total)
                 },
                 focus: session.auraPunch.correctionFocus,
-                aiPhrasingAvailable: CoachSecrets.relayEndpoint != nil
+                proofDisposition: session.auraPunch.proofDisposition,
+                source: .offline
             ))!
         case .reactive(_, let combination, _):
             return state(for: .reactive(
@@ -357,7 +378,7 @@ nonisolated enum TrainingPresentationPolicy {
                 progress: nil,
                 score: nil,
                 rank: nil,
-                publicHandle: competitionStore.audiencePublicHandle
+                publicHandle: competitionStore.currentPlayer?.publicHandle
             ))!
         case .competition(_, let mode, _, _):
             let submission: CompetitionSubmission? = competitionStore.latestSubmission.flatMap { submission in
@@ -383,8 +404,20 @@ nonisolated enum TrainingPresentationPolicy {
                 progress: reactiveProgress(session),
                 score: submission?.score,
                 rank: rank,
-                publicHandle: competitionStore.audiencePublicHandle
+                publicHandle: competitionStore.currentPlayer?.publicHandle
             ))!
+        }
+    }
+
+    private static func correctionInstruction(
+        _ metric: SubMetricKind
+    ) -> TrainingPublicInstruction {
+        switch metric {
+        case .extensionReach: .extendComfortably
+        case .path: .followOutbound
+        case .elbow: .focus(.elbow)
+        case .guardHand: .focus(.guardHand)
+        case .retraction: .returnToGuard
         }
     }
 

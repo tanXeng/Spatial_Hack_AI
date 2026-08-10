@@ -7,6 +7,7 @@ struct ImmersiveInstruction: Equatable {
     var action: String? = nil
     var progress: String? = nil
     var metric: String? = nil
+    var source: String? = nil
 }
 
 enum ImmersiveInstructionBannerStyle {
@@ -119,6 +120,11 @@ struct ImmersiveInstructionBanner: View {
             Text(metric)
                 .font(.headline.monospacedDigit())
                 .foregroundStyle(.cyan)
+        }
+        if let source = instruction.source {
+            Text(source)
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
         }
         if let action = instruction.action {
             Label(action, systemImage: "arrow.right.circle.fill")

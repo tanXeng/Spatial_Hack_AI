@@ -130,7 +130,7 @@ struct CompetitionSheetView: View {
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
                 .disabled(store.isLoading)
-                .frame(minHeight: 44)
+                .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
 
             if store.isLoading {
                 ProgressView("Finding player…")
@@ -162,7 +162,7 @@ struct CompetitionSheetView: View {
             .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
 
             Button("Use a Different Player") { store.showNameEntry() }
-                .frame(minHeight: 44)
+                .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
         }
     }
 
@@ -208,7 +208,7 @@ struct CompetitionSheetView: View {
         Button("View Leaderboards", systemImage: "trophy") {
             store.showLeaderboard(.reactiveStrike)
         }
-        .frame(minHeight: 44)
+        .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
         .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
         Button("Recalibrate Reach", systemImage: "ruler") {
             if let selection = store.prepareCalibration() { onStart(selection) }
@@ -216,7 +216,7 @@ struct CompetitionSheetView: View {
         .frame(minHeight: 60)
         .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
         Button("Change Player", systemImage: "person.2") { store.showNameEntry() }
-            .frame(minHeight: 44)
+            .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
             .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
     }
 
@@ -254,7 +254,7 @@ struct CompetitionSheetView: View {
             .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
 
             Button("Back to Modes") { store.showModes() }
-                .frame(minHeight: 44)
+                .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
                 .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
         }
     }
@@ -292,7 +292,7 @@ struct CompetitionSheetView: View {
             }
 
             Button("Back to Modes") { store.showModes() }
-                .frame(minHeight: 44)
+                .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
         }
     }
 
@@ -330,11 +330,11 @@ struct CompetitionSheetView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
-                .frame(minHeight: 44)
+                .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
             }
 
             Button("Compete Again") { store.showModes() }
-                .frame(minHeight: 44)
+                .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
         }
     }
 

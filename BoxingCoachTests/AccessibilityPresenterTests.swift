@@ -1,3 +1,4 @@
+import CoreGraphics
 import Testing
 @testable import BoxingCoach
 
@@ -80,6 +81,7 @@ struct AccessibilityPresenterTests {
         #expect(TrainingAccessibility.motion(reduceMotion: true) == .crossfade)
         #expect(TrainingAccessibility.anchor(prefersHeadAnchoredGuidance: false) == .bodyRelative)
         #expect(TrainingAccessibility.anchor(prefersHeadAnchoredGuidance: true) == .headAnchored)
+        #expect(TrainingAccessibility.minimumControlHitRegion == 60)
     }
 
     @Test("Every audio preset has a visible and spoken state")

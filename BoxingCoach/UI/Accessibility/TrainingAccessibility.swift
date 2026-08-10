@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 nonisolated enum TrainingAccessibilityEvent: Equatable, Sendable {
@@ -86,6 +87,8 @@ nonisolated enum TrainingAccessibilityAnchor: Equatable, Sendable {
 }
 
 nonisolated enum TrainingAccessibility {
+    static let minimumControlHitRegion: CGFloat = 60
+
     static func focus(
         after transition: TrainingAccessibilityTransition
     ) -> TrainingAccessibilityFocusDestination {

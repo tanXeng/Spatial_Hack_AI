@@ -17,6 +17,10 @@ struct TrainingDetailScaffold<Content: View>: View {
                     Label(backLabel, systemImage: "chevron.left")
                 }
                 .buttonStyle(.bordered)
+                .frame(
+                    minWidth: TrainingAccessibility.minimumControlHitRegion,
+                    minHeight: TrainingAccessibility.minimumControlHitRegion
+                )
                 .disabled(controlsDisabled)
 
                 Spacer()

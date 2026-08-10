@@ -248,9 +248,16 @@ enum ReferencePunchLibrary {
             // this punch's own "elbow close to your ribs" cue. Pointing the pole down, slightly
             // outward and back keeps the elbow inside the body through the whole inward climb
             // (it finishes ~4 cm short of the midline, below the shoulder).
+            //   • The *finish* must reach out to where an opponent's chin would be, not stop at
+            //     the user's own. At a forward 0.42 the landing sat 18 cm from the user's eyes —
+            //     with a 7 cm target sphere that put the ball's near face ~11 cm out, close enough
+            //     that it read on device as the uppercut simply having no target at all. Every
+            //     other punch lands 34–55 cm out. 0.62 puts it just inside the hook, which is
+            //     right: the uppercut is the shortest of the three, but it is still a punch
+            //     thrown at someone. `PunchTargetGeometry` pins this so it cannot regress.
             let elbowTucked = SIMD3<Float>(lateral * 0.20, -1.0, -0.25)
             let loaded = SIMD3<Float>(inward * 0.04, -0.62, 0.20)
-            let peak = SIMD3<Float>(inward * 0.28, 0.36, 0.42)
+            let peak = SIMD3<Float>(inward * 0.28, 0.36, 0.62)
             return [
                 ReferenceKeyframe(time: 0.00, fist: guardFist, elbowPole: elbowTucked, guardHand: guardHand),
                 ReferenceKeyframe(time: 0.16, fist: loaded, elbowPole: elbowTucked, guardHand: guardHand),

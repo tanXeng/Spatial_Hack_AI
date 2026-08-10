@@ -20,16 +20,44 @@ final class CoachCharacterEntity {
         static let idle = "guard_idle"
     }
 
-    /// The four punch clips that exist, and which of the coach's arms actually throws each one.
+    /// One authored animation, and which of the coach's arms actually throws it.
+    struct ClipEntry: Sendable, Equatable {
+        let file: String
+        let clip: String
+        let side: BodySide
+    }
+
+    /// The punch clips that exist, per technique.
     ///
-    /// Tripo produced one side per technique. That is enough for every case because the coach
-    /// faces the user and mirrors — see `shouldReflect(clipSide:requestedSide:)`.
-    private static let punchClips: [String: (file: String, clip: String, side: BodySide)] = [
-        Technique.jab.id: ("coach_jab_left", "jab_left", .left),
-        Technique.cross.id: ("coach_cross_right", "cross_right", .right),
-        Technique.hook.id: ("coach_hook_right", "hook_right", .right),
-        Technique.uppercut.id: ("coach_uppercut_right", "uppercut_right", .right)
+    /// **Hook and uppercut are authored on both sides.** They are the `.either`-hand techniques, so
+    /// the guided follow-along alternates arms rep to rep and the coach alternates with it — with a
+    /// real left-hand animation rather than a mirrored right one. Jab and cross are thrown with a
+    /// stance-determined hand, so one authored side plus mirroring covers both stances.
+    ///
+    /// Having a genuine clip for a side is strictly better than mirroring it: no negative scale, so
+    /// no reversed winding or inverted normals for those reps.
+    private static let punchClips: [String: [ClipEntry]] = [
+        Technique.jab.id: [
+            ClipEntry(file: "coach_jab_left", clip: "jab_left", side: .left)
+        ],
+        Technique.cross.id: [
+            ClipEntry(file: "coach_cross_right", clip: "cross_right", side: .right)
+        ],
+        Technique.hook.id: [
+            ClipEntry(file: "coach_hook_left", clip: "hook_left", side: .left),
+            ClipEntry(file: "coach_hook_right", clip: "hook_right", side: .right)
+        ],
+        Technique.uppercut.id: [
+            ClipEntry(file: "coach_uppercut_left", clip: "uppercut_left", side: .left),
+            ClipEntry(file: "coach_uppercut_right", clip: "uppercut_right", side: .right)
+        ]
     ]
+
+    /// Every distinct clip file, for loading. Flattened from `punchClips`, so adding a clip there
+    /// is the only edit needed — this and `resolveClip` both follow.
+    static var allClipEntries: [ClipEntry] {
+        punchClips.values.flatMap { $0 }
+    }
 
     private static let baseAssetName = "coach"
 
@@ -38,14 +66,23 @@ final class CoachCharacterEntity {
     // These are the knobs most likely to need a pass on device. Nothing about them can be
     // verified in the simulator, which renders the scene but not the user's real body.
 
-    /// How far ahead of the user the coach stands, in meters. Small on purpose: he stands *beside*
-    /// the user, and this only nudges him forward enough to sit in peripheral vision rather than
-    /// squarely in the user's blind spot.
-    static var standoffDistance: Float = 0.45
+    /// How far away the coach stands, in meters. Far enough that his whole body fits in view at
+    /// once, and well clear of the user's punching space.
+    static var viewingDistance: Float = 1.9
 
-    /// How far to the side the coach stands, in meters. Comfortably clear of the user's punching
-    /// space — a straight punch travels forward, not 85 cm sideways.
-    static var lateralOffset: Float = 0.85
+    /// How far off the user's forward axis he stands, in radians.
+    ///
+    /// This is the constant that decides whether he is actually *visible*. An earlier version
+    /// specified forward and lateral offsets independently and put him at roughly 62° off axis —
+    /// beside the user in the literal sense, but only findable by turning your head all the way to
+    /// the side. Comfortable binocular attention is roughly ±30°, so 24° keeps him fully in view
+    /// while looking straight ahead, while still reading as "next to me" rather than "in my way".
+    static var viewingAngle: Float = 24 * .pi / 180
+
+    /// Per-frame fraction of the remaining gap closed when following the user, at the session's
+    /// ~90 Hz tick. 0.08 settles in about a sixth of a second: quick enough to feel attached to the
+    /// user's turn, slow enough that head jitter does not vibrate a whole human-sized model.
+    static var followSmoothing: Float = 0.08
 
     /// Yaw applied on top of the user's own facing.
     ///
@@ -71,6 +108,13 @@ final class CoachCharacterEntity {
     private var model: Entity?
     private var activeController: AnimationPlaybackController?
     private var loadingTask: Task<Bool, Never>?
+
+    /// Smoothed placement state. Kept here rather than read back off the container because the
+    /// container's scale carries the reflection flip, which would corrupt any value recovered from
+    /// its transform.
+    private var currentPosition: SIMD3<Float> = .zero
+    private var currentYaw: Float = 0
+    private var hasPlacement = false
 
     // MARK: Loading
 
@@ -119,16 +163,16 @@ final class CoachCharacterEntity {
 
         // Each punch lives in its own animation-only USDZ built on the same skeleton, so the
         // resources bind to this model's joints by name.
-        for (file, clip) in Self.punchClips.values.map({ ($0.file, $0.clip) }) {
+        for entry in Self.allClipEntries {
             do {
-                let holder = try await Entity(named: file, in: Bundle.main)
+                let holder = try await Entity(named: entry.file, in: Bundle.main)
                 if let animation = holder.availableAnimations.first {
-                    library.animations[clip] = animation
+                    library.animations[entry.clip] = animation
                 } else {
-                    print("[Coach] '\(file)' loaded but exposed no animation")
+                    print("[Coach] '\(entry.file)' loaded but exposed no animation")
                 }
             } catch {
-                print("[Coach] clip '\(file)' failed to load: \(error)")
+                print("[Coach] clip '\(entry.file)' failed to load: \(error)")
             }
         }
 
@@ -203,15 +247,38 @@ final class CoachCharacterEntity {
     /// device — the simulator renders the scene but has no real body to place him relative to.
     var worldPositionForTesting: SIMD3<Float> { container.transform.translation }
 
-    /// Stands the coach on the floor beside the user, facing the same way, scaled to their height.
+    /// Where the coach belongs right now, given where the user is and which way they face.
     ///
     /// `demoSide` decides which side of the user he takes: he stands on the **opposite** side so
     /// that the arm he is about to throw with is the one nearest the user. A right-hand cross
     /// demonstrated from the user's left puts the working arm between the two of them, in clear
     /// view; from the user's right it would be hidden behind his own torso.
-    ///
-    /// Everything is derived from the current `BodyFrame` and then written as a world transform, so
-    /// the coach stays put once placed instead of drifting with every head movement.
+    private static func targetPlacement(
+        frame: BodyFrame,
+        measurements: BodyMeasurements,
+        demoSide: BodySide
+    ) -> (position: SIMD3<Float>, yaw: Float, scale: Float) {
+        let height = max(measurements.height, 0.5)
+
+        // Negative lateral is the user's left. A right-arm demo stands on the left, and vice versa.
+        let lateralSign: Float = demoSide == .right ? -1 : 1
+        let ahead = cos(Self.viewingAngle) * Self.viewingDistance
+        let across = sin(Self.viewingAngle) * Self.viewingDistance * lateralSign
+
+        let spot = frame.origin + frame.forward * ahead + frame.right * across
+
+        // The body frame's origin is the shoulder line; the coach's feet belong on the floor.
+        let shoulderHeight = height * Self.shoulderHeightFraction
+        let position = SIMD3<Float>(spot.x, frame.origin.y - shoulderHeight, spot.z)
+
+        // Yaw about world up so he faces the same direction the user is facing.
+        let userYaw = atan2(frame.forward.x, frame.forward.z)
+
+        return (position, userYaw + Self.facingYaw, height / Self.authoredHeight)
+    }
+
+    /// Snaps the coach to his spot immediately. Used for the first placement, where easing in from
+    /// wherever the container happened to sit would read as him sliding across the room.
     func place(
         using frame: BodyFrame,
         measurements: BodyMeasurements,
@@ -219,35 +286,77 @@ final class CoachCharacterEntity {
         reflected: Bool
     ) {
         guard isLoaded else { return }
+        let target = Self.targetPlacement(
+            frame: frame,
+            measurements: measurements,
+            demoSide: demoSide
+        )
+        currentPosition = target.position
+        currentYaw = target.yaw
+        hasPlacement = true
+        apply(scale: target.scale, reflected: reflected)
+    }
 
-        let height = max(measurements.height, 0.5)
-        let scale = height / Self.authoredHeight
+    /// Eases the coach toward where he currently belongs. Call every frame while he is on screen.
+    ///
+    /// This is what makes him **turn with the user**: the target is recomputed from the live body
+    /// frame, so as the user turns their head he orbits to hold the same angle off their forward
+    /// axis and rotates to keep facing the same way they do. Holding the *angle* rather than a
+    /// fixed world spot is the whole point — it is what keeps him in view no matter which way the
+    /// user ends up facing.
+    ///
+    /// Smoothed rather than snapped, because `BodyFrame.forward` follows the head, and a model this
+    /// size tracking raw head yaw one-to-one is unpleasant to stand next to.
+    func follow(
+        using frame: BodyFrame,
+        measurements: BodyMeasurements,
+        demoSide: BodySide,
+        reflected: Bool
+    ) {
+        guard isLoaded else { return }
+        guard hasPlacement else {
+            place(
+                using: frame,
+                measurements: measurements,
+                demoSide: demoSide,
+                reflected: reflected
+            )
+            return
+        }
 
-        // The body frame's origin is the shoulder line; the coach's feet belong on the floor.
-        let shoulderHeight = height * Self.shoulderHeightFraction
+        let target = Self.targetPlacement(
+            frame: frame,
+            measurements: measurements,
+            demoSide: demoSide
+        )
+        let t = min(max(Self.followSmoothing, 0), 1)
 
-        // Negative lateral is the user's left. A right-arm demo stands on the left, and vice versa.
-        let lateralSign: Float = demoSide == .right ? -1 : 1
-        let beside = frame.origin
-            + frame.forward * Self.standoffDistance
-            + frame.right * (Self.lateralOffset * lateralSign)
-        let position = SIMD3<Float>(beside.x, frame.origin.y - shoulderHeight, beside.z)
+        currentPosition += (target.position - currentPosition) * t
+        // Interpolate the *shortest* way round. Lerping raw radians sends him the long way — a full
+        // spin in place — whenever the user's yaw crosses the ±π seam.
+        currentYaw += Self.shortestAngleDelta(from: currentYaw, to: target.yaw) * t
 
-        // Yaw the coach about world up to face the same direction the user is facing.
-        let userYaw = atan2(frame.forward.x, frame.forward.z)
-        let rotation = simd_quatf(angle: userYaw + Self.facingYaw, axis: SIMD3(0, 1, 0))
+        apply(scale: target.scale, reflected: reflected)
+    }
 
-        container.transform = Transform(
+    /// Signed smallest rotation from `from` to `to`, wrapped into -π...π.
+    static func shortestAngleDelta(from: Float, to: Float) -> Float {
+        atan2(sin(to - from), cos(to - from))
+    }
+
+    private func apply(scale: Float, reflected: Bool) {
+        var transform = Transform(
             scale: SIMD3(repeating: scale),
-            rotation: rotation,
-            translation: position
+            rotation: simd_quatf(angle: currentYaw, axis: SIMD3(0, 1, 0)),
+            translation: currentPosition
         )
 
         // Reflection is applied on the container's X axis, which is the coach's own left-right axis
         // after the yaw above — so it mirrors him rather than moving him sideways.
         if reflected {
-            container.transform.scale.x *= -1
+            transform.scale.x *= -1
         }
+        container.transform = transform
     }
 
     // MARK: Playback
@@ -267,13 +376,24 @@ final class CoachCharacterEntity {
     }
 
     /// Resolves the clip for a technique, and whether it must be reflected for `side`.
+    ///
+    /// **An authored clip for the requested side always wins**, and needs no reflection. Only when
+    /// the technique has nothing on that side does this fall back to mirroring the other one. That
+    /// ordering is what makes adding a second-side FBX an improvement rather than a no-op: hook and
+    /// uppercut now play real animation on both arms and never take the negative-scale path.
+    ///
     /// `nil` when no clip exists for the technique, which the caller treats as "skip the demo".
     static func resolveClip(
         technique: Technique,
         side: BodySide
     ) -> (clip: String, reflected: Bool)? {
-        guard let entry = punchClips[technique.id] else { return nil }
-        return (entry.clip, shouldReflect(clipSide: entry.side, requestedSide: side))
+        guard let entries = punchClips[technique.id], let fallback = entries.first else {
+            return nil
+        }
+        if let exact = entries.first(where: { $0.side == side }) {
+            return (exact.clip, false)
+        }
+        return (fallback.clip, shouldReflect(clipSide: fallback.side, requestedSide: side))
     }
 
     func playIdle() {
@@ -295,6 +415,21 @@ final class CoachCharacterEntity {
         let controller = model.playAnimation(animation, transitionDuration: 0.12)
         activeController = controller
         return controller.duration > 0 ? controller.duration : nil
+    }
+
+    /// Throws the same punch on a loop until something else is played or the coach is dismissed.
+    ///
+    /// The punch clips start and end at guard, so repeating one reads as a boxer working the same
+    /// shot over and over — which is what the user watches while the ghost leads them through the
+    /// guided reps. Returns `false` when the clip is unavailable, so the caller can fall back.
+    @discardableResult
+    func playLooping(clip: String) -> Bool {
+        guard let model, let animation = library(of: model)?.animations[clip] else {
+            print("[Coach] clip '\(clip)' not in library")
+            return false
+        }
+        activeController = model.playAnimation(animation.repeat(), transitionDuration: 0.12)
+        return true
     }
 
     func stop() {

@@ -7,7 +7,7 @@ enum AuraPunchPhase: String, Sendable {
     case idle
     /// Waiting for hands and head to be tracked well enough to place a shoulder.
     case acquiring
-    /// The coach character demonstrates the punch once before the ghost follow-along begins.
+    /// The coach character demonstrates the punch, then keeps throwing it beside the user.
     case coachDemo
     /// The ghost leads the punch and waits at each end for the user to match it.
     case guiding
@@ -125,6 +125,20 @@ final class AuraPunchSession {
 
     private var loopTask: Task<Void, Never>?
 
+    /// Ticks the coach's placement while he is on screen. Separate from `loopTask` because it has
+    /// to keep running across the demo and the guided follow-along, which are sequential stages of
+    /// that one task.
+    private var coachFollowTask: Task<Void, Never>?
+
+    /// Which clip the coach is currently looping, so `matchCoachToGhost` can skip a redundant
+    /// restart that would visibly reset the punch mid-swing.
+    private var activeCoachClip: String?
+
+    /// Where the coach stands, fixed for the session at his opening arm. Read live by the follow
+    /// task rather than captured, so a rep that swaps his arm cannot desynchronise his placement.
+    private var coachStandingSide: BodySide = .left
+    private var coachIsReflected = false
+
     /// Reused briefly when head tracking flickers mid-attempt so hand samples are not discarded.
     private var cachedBodyFrame: BodyFrame?
     private var cachedBodyFrameTime: TimeInterval = 0
@@ -170,6 +184,10 @@ final class AuraPunchSession {
     }
 
     func detach() {
+        // The follow task holds the coach; leaving it ticking against a detached scene root would
+        // keep a whole rigged model alive after the immersive space has gone.
+        coachFollowTask?.cancel()
+        coachFollowTask = nil
         targets.removeActiveTarget()
         demoArm?.removeFromScene()
         mirrorArm?.removeFromScene()
@@ -327,8 +345,15 @@ final class AuraPunchSession {
         return rep.isMultiple(of: 2) ? stance.rearSide : stance.leadSide
     }
 
-    /// Shows one full-speed, full-body example before the interactive ghost repetitions. Any
-    /// missing asset, animation, or body frame skips this stage without failing the training run.
+    /// Introduces the coach: one clean full-speed rep, then the same punch on a loop that runs
+    /// for the whole guided follow-along.
+    ///
+    /// The ghost's hold-until-matched loop is still what teaches the motion; the coach is the
+    /// full-body "here is what it looks like" alongside it, which is why the clips do not need
+    /// segmenting into out/hold/return the way the ghost's trajectory does.
+    ///
+    /// Every failure path here is a silent skip. No coach asset, no clip for this technique, or no
+    /// body frame all fall through to the ghost exactly as before.
     private func runCoachDemo(solver: ArmPoseSolver) async {
         guard await coach.load(), !Task.isCancelled else { return }
 
@@ -339,6 +364,10 @@ final class AuraPunchSession {
         phase = .coachDemo
         demoArm?.isVisible = false
         mirrorArm?.isVisible = false
+
+        coachStandingSide = side
+        coachIsReflected = resolved.reflected
+        activeCoachClip = nil
         coach.place(
             using: frame,
             measurements: measurements,
@@ -347,31 +376,91 @@ final class AuraPunchSession {
         )
         coach.isVisible = true
         coach.playIdle()
+        startCoachFollow(solver: solver)
 
         let handLabel = technique.hand == .either ? " \(side.rawValue)" : ""
         setCoaching(
             headline: "WATCH THE COACH",
-            detail: "He throws the\(handLabel) \(technique.name.lowercased()) once — watch the whole motion",
+            detail: "He works the\(handLabel) \(technique.name.lowercased()) on repeat — watch the whole motion",
             status: "Watch the coach throw the\(handLabel) \(technique.name.lowercased())"
         )
 
+        // A beat of idle first, so the punch reads as a deliberate action rather than starting
+        // mid-stride the instant the coach appears.
         try? await Task.sleep(for: .milliseconds(600))
         guard !Task.isCancelled else { return }
-        if let duration = coach.play(clip: resolved.clip) {
-            try? await Task.sleep(for: .seconds(duration))
+
+        // One clean single rep to establish the shape, then straight onto a loop. He keeps working
+        // that punch for as long as he is on screen — through the whole guided follow-along —
+        // rather than throwing once and freezing.
+        let clipDuration = coach.play(clip: resolved.clip)
+        if let clipDuration {
+            try? await Task.sleep(for: .seconds(clipDuration))
         }
         guard !Task.isCancelled else {
             dismissCoach()
             return
         }
 
-        // Keep the coach beside the user through the guided phase, then remove him before the
-        // unaided scored punches begin.
-        coach.playIdle()
-        try? await Task.sleep(for: .milliseconds(400))
+        // He *stays on screen* from here, still punching, for the whole guided follow-along;
+        // `dismissCoach()` takes him away only once the user is throwing unaided.
+        coach.playLooping(clip: resolved.clip)
+        activeCoachClip = resolved.clip
+
+        // Hold on the coach for one more cycle before the ghost takes over, so the user sees the
+        // punch at least twice and reads it as a repeating drill rather than a one-off.
+        try? await Task.sleep(for: .seconds(clipDuration ?? 1.0))
     }
 
+    /// Switches the coach onto `side` so he throws the same arm the ghost is about to.
+    ///
+    /// Only his *clip* changes, not where he stands. He is placed on the side opposite his opening
+    /// arm so that arm reads clearly, and having him orbit across the user's view every single rep
+    /// to preserve that would be far more distracting than the slightly less favourable angle on
+    /// alternate reps.
+    ///
+    /// A no-op when nothing changed, because restarting the animation every rep would restart the
+    /// punch mid-swing and make him stutter. Silent when the coach never loaded.
+    private func matchCoachToGhost(side: BodySide) {
+        guard coach.isLoaded, coach.isVisible else { return }
+        guard let resolved = CoachCharacterEntity.resolveClip(technique: technique, side: side),
+              resolved.clip != activeCoachClip else { return }
+
+        activeCoachClip = resolved.clip
+        coachIsReflected = resolved.reflected
+        coach.playLooping(clip: resolved.clip)
+    }
+
+    /// Keeps the coach oriented to the user for as long as he is on screen.
+    ///
+    /// Recomputed every frame rather than placed once: as the user turns, he orbits to hold the
+    /// same angle off their forward axis and rotates to face the same way they do, so he stays in
+    /// view instead of being left behind at a fixed spot in the room.
+    private func startCoachFollow(solver: ArmPoseSolver) {
+        coachFollowTask?.cancel()
+        coachFollowTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if let frame = self.currentBodyFrame(solver: solver) {
+                    self.coach.follow(
+                        using: frame,
+                        measurements: self.measurements,
+                        demoSide: self.coachStandingSide,
+                        reflected: self.coachIsReflected
+                    )
+                }
+                try? await Task.sleep(for: self.frameInterval)
+            }
+        }
+    }
+
+    /// Takes the coach away. Called when the guided phase ends and the user throws unaided —
+    /// keeping him around during the scored round would give them a second thing to watch at
+    /// exactly the moment they should be looking at their own target.
     private func dismissCoach() {
+        coachFollowTask?.cancel()
+        coachFollowTask = nil
+        activeCoachClip = nil
         coach.stop()
         coach.isVisible = false
     }
@@ -399,6 +488,10 @@ final class AuraPunchSession {
             // Resolved per rep, not once for the whole set, so an `.either`-hand technique can
             // alternate which arm the ghost demonstrates on.
             let side = demoSide(forRep: rep, technique: technique, stance: stance)
+            // Keep the coach on the same arm as the ghost. Without this he kept throwing whichever
+            // side he opened with, so on alternating reps he and the ghost demonstrated opposite
+            // arms — two different answers to "which hand?" on screen at once.
+            matchCoachToGhost(side: side)
             let reference = ReferencePunchLibrary.punch(
                 for: technique,
                 stance: stance,

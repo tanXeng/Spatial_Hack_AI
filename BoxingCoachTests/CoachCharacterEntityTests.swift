@@ -24,10 +24,9 @@ final class CoachCharacterEntityTests: XCTestCase {
         }
     }
 
-    /// The coach stands beside the user facing the same way, so a clip already authored on the
-    /// requested side needs no mirroring at all. Reflecting only on a side mismatch is what lets
-    /// four one-sided clips cover all eight technique/side combinations.
-    func testMirroringPutsTheMotionOnTheUsersSide() throws {
+    /// Single-sided techniques mirror to reach the other stance. The coach stands beside the user
+    /// facing the same way, so a clip already authored on the requested side needs no mirroring.
+    func testSingleSidedTechniquesMirrorToReachTheOtherStance() throws {
         // Jab is authored on the coach's left. An orthodox jab is the user's left, and side by side
         // his left is already the user's left — so the most common case does not mirror at all.
         let leftJab = try XCTUnwrap(
@@ -56,6 +55,32 @@ final class CoachCharacterEntityTests: XCTestCase {
         XCTAssertTrue(leftCross.reflected)
     }
 
+    /// Hook and uppercut are the `.either`-hand techniques the guided loop alternates, and both now
+    /// ship a real clip per arm. An authored clip must always beat mirroring the other side —
+    /// otherwise adding the second FBX changed nothing.
+    func testAlternatingTechniquesUseRealClipsOnBothArmsAndNeverMirror() throws {
+        for technique in [Technique.hook, .uppercut] {
+            for side in [BodySide.left, .right] {
+                let resolved = try XCTUnwrap(
+                    CoachCharacterEntity.resolveClip(technique: technique, side: side)
+                )
+                XCTAssertTrue(
+                    resolved.clip.hasSuffix(side.rawValue),
+                    "\(technique.id) on the \(side.rawValue) resolved to '\(resolved.clip)'"
+                )
+                XCTAssertFalse(
+                    resolved.reflected,
+                    "\(technique.id) has an authored \(side.rawValue) clip and must not be mirrored"
+                )
+            }
+        }
+
+        // The two arms must be genuinely different clips, not the same one twice.
+        let left = try XCTUnwrap(CoachCharacterEntity.resolveClip(technique: .hook, side: .left))
+        let right = try XCTUnwrap(CoachCharacterEntity.resolveClip(technique: .hook, side: .right))
+        XCTAssertNotEqual(left.clip, right.clip)
+    }
+
     /// Regression guard for the facing change: when the coach turned from facing the user to
     /// standing beside them, this rule had to invert. A stale `==` here puts every demo on the
     /// wrong arm while still looking perfectly plausible in the simulator.
@@ -76,9 +101,9 @@ final class CoachCharacterEntityTests: XCTestCase {
 
     // MARK: Placement
 
-    /// He must stand beside the user rather than in front of them, on the side that keeps the
-    /// demonstrating arm between the two bodies, with his feet on the floor.
-    func testCoachStandsBesideTheUserOnTheSideOppositeTheDemoArm() async throws {
+    /// He must stand off to one side — the side that keeps the demonstrating arm between the two
+    /// bodies — but still **inside the user's forward field of view**, with his feet on the floor.
+    func testCoachStandsOffAxisButInsideTheForwardFieldOfView() async throws {
         let coach = CoachCharacterEntity()
         let loaded = await coach.load()
         XCTAssertTrue(loaded, "coach failed to load from the app bundle")
@@ -100,18 +125,90 @@ final class CoachCharacterEntityTests: XCTestCase {
         let leftArmDemo = coach.worldPositionForTesting
 
         // Right-arm demo stands on the user's left, and vice versa.
-        XCTAssertLessThan(rightArmDemo.x, -0.5, "a right-arm demo belongs on the user's left")
-        XCTAssertGreaterThan(leftArmDemo.x, 0.5, "a left-arm demo belongs on the user's right")
+        XCTAssertLessThan(rightArmDemo.x, 0, "a right-arm demo belongs on the user's left")
+        XCTAssertGreaterThan(leftArmDemo.x, 0, "a left-arm demo belongs on the user's right")
 
-        // Beside, not in front: the lateral offset dominates the forward standoff.
-        XCTAssertGreaterThan(
-            abs(rightArmDemo.x),
-            rightArmDemo.z,
-            "the coach must be further to the side than he is ahead"
-        )
+        // The one that actually matters: he has to be findable without turning your head. An
+        // earlier version sat at ~62° off axis, which is only visible over your own shoulder.
+        for spot in [rightArmDemo, leftArmDemo] {
+            let offAxisAngle = atan2(abs(spot.x), spot.z) * 180 / .pi
+            XCTAssertLessThan(
+                offAxisAngle,
+                30,
+                "the coach must sit inside the forward field of view, not over the user's shoulder"
+            )
+            XCTAssertGreaterThan(
+                offAxisAngle,
+                10,
+                "…but far enough off axis to be beside the user rather than in their punching lane"
+            )
+            // Mostly ahead, and far enough away that a whole body fits in view.
+            XCTAssertGreaterThan(spot.z, 1.0)
+        }
 
         // Feet on the floor, derived from the shoulder-line origin rather than assumed at y = 0.
         XCTAssertEqual(rightArmDemo.y, 1.4 - measurements.height * 0.83, accuracy: 0.05)
+    }
+
+    /// Turning the user must carry the coach round with them, not leave him at a fixed world spot.
+    func testCoachFollowsTheUserAroundAndKeepsHisRelativeAngle() async throws {
+        let coach = CoachCharacterEntity()
+        let loaded = await coach.load()
+        XCTAssertTrue(loaded, "coach failed to load from the app bundle")
+
+        let measurements = BodyMeasurements.averageAdult
+        let facingForward = BodyFrame(
+            origin: SIMD3(0, 1.4, 0),
+            right: SIMD3(1, 0, 0),
+            up: SIMD3(0, 1, 0),
+            forward: SIMD3(0, 0, 1),
+            headPosition: SIMD3(0, 1.6, 0)
+        )
+        // Same user, now turned 90° to their right: forward is +X, right is -Z.
+        let turnedRight = BodyFrame(
+            origin: SIMD3(0, 1.4, 0),
+            right: SIMD3(0, 0, -1),
+            up: SIMD3(0, 1, 0),
+            forward: SIMD3(1, 0, 0),
+            headPosition: SIMD3(0, 1.6, 0)
+        )
+
+        coach.place(using: facingForward, measurements: measurements, demoSide: .right, reflected: false)
+        let before = coach.worldPositionForTesting
+
+        // Follow is smoothed, so drive it the way the session does rather than expecting one step
+        // to arrive. 200 ticks is a little over two seconds at the session's frame interval.
+        for _ in 0..<200 {
+            coach.follow(using: turnedRight, measurements: measurements, demoSide: .right, reflected: false)
+        }
+        let after = coach.worldPositionForTesting
+
+        XCTAssertGreaterThan(
+            simd_distance(before, after),
+            0.5,
+            "the coach stayed put when the user turned — he must orbit to stay in view"
+        )
+
+        // He should hold the same angle off the user's *new* forward axis, which is +X.
+        let offset = after - SIMD3(0, after.y, 0)
+        let offAxisAngle = atan2(abs(simd_dot(offset, SIMD3(0, 0, -1))), simd_dot(offset, SIMD3(1, 0, 0)))
+        XCTAssertEqual(offAxisAngle * 180 / .pi, 24, accuracy: 3)
+    }
+
+    /// Yaw interpolation has to take the short way round. Lerping raw radians across the ±π seam
+    /// spins the coach a full turn in place.
+    func testShortestAngleDeltaWrapsAcrossThePiSeam() {
+        let almostPi: Float = .pi - 0.1
+        let justPastPi: Float = -.pi + 0.1
+
+        let delta = CoachCharacterEntity.shortestAngleDelta(from: almostPi, to: justPastPi)
+        XCTAssertEqual(delta, 0.2, accuracy: 1e-4, "should step 0.2 rad forward, not ~6.1 back")
+
+        XCTAssertEqual(
+            CoachCharacterEntity.shortestAngleDelta(from: 0.3, to: 0.9),
+            0.6,
+            accuracy: 1e-5
+        )
     }
 
     // MARK: Asset binding
@@ -130,17 +227,14 @@ final class CoachCharacterEntityTests: XCTestCase {
     }
 
     func testEveryPunchClipAssetExposesAnAnimation() async throws {
-        for file in [
-            "coach_jab_left",
-            "coach_cross_right",
-            "coach_hook_right",
-            "coach_uppercut_right"
-        ] {
-            let holder = try await Entity(named: file, in: Bundle.main)
-            let animations = holder.availableAnimations
+        let entries = CoachCharacterEntity.allClipEntries
+        XCTAssertEqual(entries.count, 6, "expected four one-sided clips plus both alternating pairs")
+
+        for entry in entries {
+            let holder = try await Entity(named: entry.file, in: Bundle.main)
             XCTAssertFalse(
-                animations.isEmpty,
-                "\(file).usdz exposed no animation — RealityKit will have nothing to play"
+                holder.availableAnimations.isEmpty,
+                "\(entry.file).usdz exposed no animation — RealityKit will have nothing to play"
             )
         }
     }
@@ -152,19 +246,42 @@ final class CoachCharacterEntityTests: XCTestCase {
         XCTAssertTrue(loaded, "coach failed to load from the app bundle")
         XCTAssertTrue(coach.isLoaded)
 
-        // Playback returns a duration only when the clip resolved out of the library.
+        // Playback returns a duration only when the clip resolved out of the library. Both sides,
+        // so the alternating techniques' second-arm clips are covered too.
         for technique in Technique.all {
-            let resolved = try XCTUnwrap(
-                CoachCharacterEntity.resolveClip(technique: technique, side: .left)
-            )
-            let duration = coach.play(clip: resolved.clip)
-            XCTAssertNotNil(
-                duration,
-                "clip '\(resolved.clip)' for \(technique.id) is missing from the animation library"
-            )
-            if let duration {
-                XCTAssertGreaterThan(duration, 0.2, "'\(resolved.clip)' is suspiciously short")
-                XCTAssertLessThan(duration, 10, "'\(resolved.clip)' is suspiciously long")
+            for side in [BodySide.left, .right] {
+                let resolved = try XCTUnwrap(
+                    CoachCharacterEntity.resolveClip(technique: technique, side: side)
+                )
+                let duration = coach.play(clip: resolved.clip)
+                XCTAssertNotNil(
+                    duration,
+                    "clip '\(resolved.clip)' for \(technique.id) is missing from the animation library"
+                )
+                if let duration {
+                    XCTAssertGreaterThan(duration, 0.2, "'\(resolved.clip)' is suspiciously short")
+                    XCTAssertLessThan(duration, 10, "'\(resolved.clip)' is suspiciously long")
+                }
+            }
+        }
+    }
+
+    /// The alternating clips must also survive `playLooping`, which is how the coach actually
+    /// plays them once the demo hands over to the guided reps.
+    func testAlternatingClipsLoopFromTheAssembledLibrary() async throws {
+        let coach = CoachCharacterEntity()
+        let loaded = await coach.load()
+        XCTAssertTrue(loaded, "coach failed to load from the app bundle")
+
+        for technique in [Technique.hook, .uppercut] {
+            for side in [BodySide.left, .right] {
+                let resolved = try XCTUnwrap(
+                    CoachCharacterEntity.resolveClip(technique: technique, side: side)
+                )
+                XCTAssertTrue(
+                    coach.playLooping(clip: resolved.clip),
+                    "'\(resolved.clip)' did not loop — the coach would freeze on this rep"
+                )
             }
         }
     }

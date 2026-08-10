@@ -6,6 +6,53 @@ import Testing
 @Suite("Spatial training audio integration")
 @MainActor
 struct TrainingAudioIntegrationTests {
+    @Test(
+        "Every learning stage selects its semantic training audio stage",
+        arguments: [
+            (LearningStage.fit, TrainingAudioStage.fit),
+            (.learnWatch, .learn),
+            (.learnOutbound, .learn),
+            (.learnLanding, .learn),
+            (.learnReturn, .learn),
+            (.guidedRehearsal, .learn),
+            (.baseline, .baseline),
+            (.correction, .correct),
+            (.correctiveDrill, .correct),
+            (.retest, .prove),
+            (.proof, .prove),
+            (.transfer, .transfer),
+            (.complete, .celebrate),
+        ]
+    )
+    func learningStageOwnsSemanticAudioStage(
+        stage: LearningStage,
+        expected: TrainingAudioStage
+    ) {
+        #expect(stage.trainingAudioStage == expected)
+    }
+
+    @Test("A restarted Aura cycle publishes Fit before waiting for tracking")
+    func restartedAuraCycleClearsThePriorResultMixImmediately() async {
+        let backend = IntegrationRecordingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: IntegrationAudioResources(available: [])
+        )
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
+        await coordinator.handle(.experienceDidEnter(.celebrate))
+
+        let session = AuraPunchSession(
+            hands: IntegrationUnavailableAuraTracking(),
+            feedbackGenerator: MockFeedbackGenerator(),
+            audienceTrack: .beginner,
+            audioCoordinator: coordinator
+        )
+        session.start()
+
+        #expect(coordinator.presentation.stage == .fit)
+        #expect(coordinator.presentation.mix == .stage(.fit))
+    }
+
     @Test("Only admitted evidence gets a clean hit and one rejected chain gets one dull cue")
     func semanticEvidenceCannotDoubleFireImpactFeedback() async {
         let backend = IntegrationRecordingAudioBackend()
@@ -339,7 +386,23 @@ struct TrainingAudioIntegrationTests {
 }
 
 @MainActor
-private final class IntegrationRecordingAudioBackend: TrainingAudioBackend {
+private final class IntegrationUnavailableAuraTracking: AuraHandTracking {
+    let providerGeneration: UInt64 = 1
+    let continuityEpoch: UInt64 = 1
+    let statusMessage = "Tracking unavailable"
+    let deviceTransform: simd_float4x4? = nil
+    let isRunning = false
+    let hasFullUpperBodyTracking = false
+
+    func start() async {}
+    func beginAttemptCapture() {}
+    func endAttemptCapture() {}
+    func observation(for side: BodySide) -> HandObservation? { nil }
+    func freshObservation(for side: BodySide, maxAge: TimeInterval) -> HandObservation? { nil }
+}
+
+@MainActor
+final class IntegrationRecordingAudioBackend: TrainingAudioBackend {
     enum Rendering: Equatable {
         case fallback
         case spatial
@@ -409,7 +472,7 @@ private final class IntegrationRecordingAudioBackend: TrainingAudioBackend {
 }
 
 @MainActor
-private final class IntegrationAudioResources: TrainingAudioResourceResolving {
+final class IntegrationAudioResources: TrainingAudioResourceResolving {
     private let available: Set<TrainingAudioResourceID>
 
     init(available: Set<TrainingAudioResourceID>) {
@@ -424,6 +487,6 @@ private final class IntegrationAudioResources: TrainingAudioResourceResolving {
 }
 
 @MainActor
-private struct IntegrationImmediateAudioWaiter: TrainingAudioDecayWaiting {
+struct IntegrationImmediateAudioWaiter: TrainingAudioDecayWaiting {
     func wait(for duration: Duration) async throws {}
 }

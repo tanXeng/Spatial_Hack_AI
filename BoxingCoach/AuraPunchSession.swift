@@ -325,8 +325,6 @@ final class AuraPunchSession {
     func start() {
         guard phase == .idle || phase == .results else { return }
 
-        audioCoordinator.handleImmediately(.experienceDidEnter(.learn))
-
         cancelPendingPhrasing()
         score = nil
         feedback = nil
@@ -344,6 +342,9 @@ final class AuraPunchSession {
             track: track,
             technique: technique,
             stance: stance
+        )
+        audioCoordinator.handleImmediately(
+            .experienceDidEnter(coachingCycle.stage.trainingAudioStage)
         )
         guardPositionsBody.removeAll(keepingCapacity: false)
         pathOverlay.clear()
@@ -1532,7 +1533,7 @@ final class AuraPunchSession {
 
     private func runEvidenceRound(solver: ArmPoseSolver) async -> Bool {
         phase = .attempting
-        audioCoordinator.handleImmediately(.experienceDidEnter(.baseline))
+        applyCyclePresentation()
         audioCoordinator.handleImmediately(.roundDidStart)
         currentScoredPunch = 0
         playCoachCue(.hitTarget, caption: "Hit each target.")
@@ -1718,6 +1719,7 @@ final class AuraPunchSession {
     private func runCorrectiveDrill(solver: ArmPoseSolver) async {
         phase = .guiding
         pathOverlay.hide()
+        applyCyclePresentation()
         guard let drill = coachingCycle.correction?.drill else { return }
         let plan = CorrectiveDrillPlan(drill: drill)
         setCoaching(
@@ -2424,6 +2426,11 @@ final class AuraPunchSession {
 
     private func applyCyclePresentation() {
         let presentation = coachingCycle.presentation
+        if coachingCycle.stage != .complete {
+            audioCoordinator.handleImmediately(
+                .experienceDidEnter(coachingCycle.stage.trainingAudioStage)
+            )
+        }
         setCoaching(
             headline: presentation.stage,
             detail: presentation.instruction,

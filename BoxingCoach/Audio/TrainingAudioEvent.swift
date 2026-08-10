@@ -32,6 +32,27 @@ nonisolated enum TrainingAudioStage: String, CaseIterable, Sendable {
     }
 }
 
+extension LearningStage {
+    var trainingAudioStage: TrainingAudioStage {
+        switch self {
+        case .fit:
+            .fit
+        case .learnWatch, .learnOutbound, .learnLanding, .learnReturn, .guidedRehearsal:
+            .learn
+        case .baseline:
+            .baseline
+        case .correction, .correctiveDrill:
+            .correct
+        case .retest, .proof:
+            .prove
+        case .transfer:
+            .transfer
+        case .complete:
+            .celebrate
+        }
+    }
+}
+
 nonisolated enum TrainingAudioPreset: String, CaseIterable, Identifiable, Sendable {
     case full
     case coachOnly

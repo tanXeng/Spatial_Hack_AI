@@ -496,6 +496,11 @@ struct CoachingCycleReviewRound2Tests {
         let tracking = LiveAuraTrackingHarness()
         let clock = LiveAuraClockHarness(tracking: tracking)
         let audio = LiveAuraAudioHarness()
+        let trainingAudio = TrainingAudioCoordinator(
+            backend: IntegrationRecordingAudioBackend(),
+            resources: IntegrationAudioResources(available: []),
+            decayWaiter: IntegrationImmediateAudioWaiter()
+        )
         let captures = LiveAuraCaptureHarness(
             cycleTechnique: technique,
             baselineNeedsCorrection: scenario.baselineNeedsCorrection
@@ -504,6 +509,7 @@ struct CoachingCycleReviewRound2Tests {
             hands: tracking,
             feedbackGenerator: MockFeedbackGenerator(),
             audienceTrack: .beginner,
+            audioCoordinator: trainingAudio,
             coachAudio: audio,
             clock: clock,
             captureOverride: { request in
@@ -521,8 +527,16 @@ struct CoachingCycleReviewRound2Tests {
             tracking: tracking
         )
         var visibleProofDetails: [String] = []
+        var semanticAudioStages: [TrainingAudioStage] = []
+        func recordSemanticAudioStage() {
+            let stage = trainingAudio.presentation.stage
+            if semanticAudioStages.last != stage {
+                semanticAudioStages.append(stage)
+            }
+        }
         clock.onSleep = {
             interruptions.clockDidSleep()
+            recordSemanticAudioStage()
             if aura.learningStage == .proof {
                 visibleProofDetails.append(aura.coachingDetail)
             }
@@ -538,9 +552,11 @@ struct CoachingCycleReviewRound2Tests {
         }
 
         aura.start()
+        recordSemanticAudioStage()
         for _ in 0..<20_000 where aura.phase != .results && aura.errorMessage == nil {
             await Task.yield()
         }
+        recordSemanticAudioStage()
 
         #expect(aura.errorMessage == nil)
         #expect(aura.phase == .results)
@@ -603,6 +619,15 @@ struct CoachingCycleReviewRound2Tests {
         }
         #expect(captures.scoredCaptureCount == 6)
         #expect(captures.transferCaptureCount == 2)
+        #expect(semanticAudioStages == [
+            .fit,
+            .learn,
+            .baseline,
+            .correct,
+            .prove,
+            .transfer,
+            .celebrate,
+        ])
 
         aura.reset()
         #expect(aura.phase == .idle)
@@ -625,10 +650,16 @@ struct CoachingCycleReviewRound2Tests {
             cycleTechnique: .jab,
             baselineNeedsCorrection: false
         )
+        let trainingAudio = TrainingAudioCoordinator(
+            backend: IntegrationRecordingAudioBackend(),
+            resources: IntegrationAudioResources(available: []),
+            decayWaiter: IntegrationImmediateAudioWaiter()
+        )
         let aura = AuraPunchSession(
             hands: tracking,
             feedbackGenerator: MockFeedbackGenerator(),
             audienceTrack: .beginner,
+            audioCoordinator: trainingAudio,
             coachAudio: LiveAuraAudioHarness(),
             clock: clock,
             captureOverride: { request in captures.capture(request) }
@@ -648,6 +679,7 @@ struct CoachingCycleReviewRound2Tests {
         #expect(aura.phase != .results)
         #expect(aura.errorMessage == "Athlete memory is unavailable, so this proof was not saved.")
         #expect(!aura.coachingDetail.localizedCaseInsensitiveContains("saved locally"))
+        #expect(trainingAudio.presentation.stage != .celebrate)
     }
 
     private func advanceToBaseline(_ cycle: inout CoachingCycleSession) throws {

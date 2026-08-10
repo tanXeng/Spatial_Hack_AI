@@ -11,7 +11,12 @@ struct TrainingExperienceView: View {
     var body: some View {
         switch selection {
         case .reactive(let mode, let combination, let stance):
-            reactiveExperience(mode: mode, combination: combination, stance: stance)
+            reactiveExperience(
+                mode: mode,
+                combination: combination,
+                stance: stance,
+                competitionMode: nil
+            )
         case .aura(let technique, let stance):
             auraExperience(technique: technique, stance: stance)
         case .reachCalibration:
@@ -22,7 +27,8 @@ struct TrainingExperienceView: View {
             reactiveExperience(
                 mode: mode == .combination ? .combination : .air,
                 combination: mode == .combination ? .jabCrossHookCross : nil,
-                stance: stance
+                stance: stance,
+                competitionMode: mode
             )
         }
     }
@@ -36,7 +42,7 @@ struct TrainingExperienceView: View {
             onBack: onChangeSelection
         ) {
             VStack(spacing: 16) {
-                TrainingStatusCard(message: reactiveStatusLine)
+                TrainingStatusCard(message: reactiveStatusLine())
                 errorCards(engineError: session.errorMessage)
                 Button(session.phase == .finished ? "Calibrate Again" : "Start Calibration") {
                     onStart()
@@ -50,24 +56,32 @@ struct TrainingExperienceView: View {
     private func reactiveExperience(
         mode: ReactiveStrikeMode,
         combination: Combination?,
-        stance: Stance
+        stance: Stance,
+        competitionMode: CompetitionMode?
     ) -> some View {
         let subtitle: String
         if let combination {
             subtitle = "\(stance.title) · \(combination.numberNotation) · \(combination.name)"
+        } else if let competitionMode {
+            subtitle = competitionMode.subtitle
         } else {
             subtitle = mode.title
         }
 
+        let backLabel = competitionMode == nil
+            ? (combination == nil ? "Change Mode" : "Change Combination")
+            : (competitionMode == .combination ? "Change Stance" : "Competition")
+        let title = competitionMode.map { "\($0.title) Competition" } ?? "Reactive Strike"
+
         return TrainingDetailScaffold(
-            backLabel: combination == nil ? "Change Mode" : "Change Combination",
-            title: "Reactive Strike",
+            backLabel: backLabel,
+            title: title,
             subtitle: subtitle,
             controlsDisabled: controlsDisabled,
             onBack: onChangeSelection
         ) {
             VStack(spacing: 16) {
-                TrainingStatusCard(message: reactiveStatusLine)
+                TrainingStatusCard(message: reactiveStatusLine(competitionMode: competitionMode))
 
                 if session.phase == .finished {
                     reactiveResultsCard
@@ -75,7 +89,9 @@ struct TrainingExperienceView: View {
 
                 errorCards(engineError: session.errorMessage)
 
-                Button(session.phase == .finished ? "Try Again" : "Start Drill") {
+                Button(session.phase == .finished
+                       ? "Try Again"
+                       : (competitionMode == nil ? "Start Drill" : "Start Ranked Round")) {
                     onStart()
                 }
                 .disabled(
@@ -140,7 +156,7 @@ struct TrainingExperienceView: View {
         }
     }
 
-    private var reactiveStatusLine: String {
+    private func reactiveStatusLine(competitionMode: CompetitionMode? = nil) -> String {
         if session.phase == .calibrating {
             return session.lastFeedback
         }
@@ -155,7 +171,9 @@ struct TrainingExperienceView: View {
         if session.lastFeedback == "Drill stopped" {
             return "Training stopped · Start again when you're ready"
         }
-        return "Tap Start Drill to begin"
+        return competitionMode == nil
+            ? "Tap Start Drill to begin"
+            : "Tap Start Ranked Round when you're ready"
     }
 
     private var auraStatusLine: String {

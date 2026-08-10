@@ -68,7 +68,10 @@ that it has appeared, avoiding timing-dependent loss of the last result.
 
 ## Training and tracking behavior
 
-Aura Punch exposes one Uppercut drill that alternates hands each repetition. Its mirrored
+Aura Punch begins with a full-body coach demonstration, then hands off to the interactive ghost
+follow-along. The coach stands beside the boxer, demonstrates on the requested arm, and fails soft
+to the existing ghost workflow if an animation asset cannot load. Aura Punch exposes one Uppercut
+drill that alternates hands each repetition. Its mirrored
 reference paths load beside the hip, drive diagonally inward, and peak at the body centreline.
 Legacy `left-uppercut` and `right-uppercut` identifiers resolve to this unified technique.
 

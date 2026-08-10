@@ -52,6 +52,54 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
         XCTAssertEqual(flow.draftStance, .southpaw)
     }
 
+    func testCompetitionSetupUsesTheSameFullWindowProgressionAsTraining() {
+        let flow = TrainingFlowCoordinator()
+
+        flow.enterCompetitionSetup(stance: .southpaw)
+        XCTAssertEqual(flow.route, .competitionSetup)
+        XCTAssertEqual(flow.draftStance, .southpaw)
+
+        flow.enterCompetitionCombinationSetup()
+        XCTAssertEqual(flow.route, .competitionCombinationSetup)
+
+        flow.backFromSetup()
+        XCTAssertEqual(flow.route, .competitionSetup)
+        XCTAssertEqual(flow.draftStance, .southpaw)
+    }
+
+    func testReturningFromPreparedCompetitionComboRestoresCompetitionSetup() async {
+        let flow = TrainingFlowCoordinator()
+        let session = ReactiveStrikeSession()
+        let reach = try! XCTUnwrap(BilateralReach(left: 0.62, right: 0.60))
+        let selection = TrainingSelection.competition(
+            playerID: UUID(),
+            mode: .combination,
+            stance: .southpaw,
+            reach: reach
+        )
+
+        flow.enterCompetitionSetup(stance: .southpaw)
+        flow.enterCompetitionCombinationSetup()
+        flow.navigate(to: .experience(selection))
+
+        await flow.returnToSetup(
+            from: selection,
+            session: session,
+            dismissImmersive: {}
+        )
+
+        XCTAssertEqual(flow.route, .competitionCombinationSetup)
+        XCTAssertEqual(flow.draftStance, .southpaw)
+    }
+
+    func testCompletedCompetitionUsesAFullWindowResultRoute() {
+        let flow = TrainingFlowCoordinator()
+
+        flow.enterCompetitionResult()
+
+        XCTAssertEqual(flow.route, .competitionResult)
+    }
+
     func testReturningFromCombinationExperienceRestoresStanceWithoutDismissingImmersion() async {
         let flow = TrainingFlowCoordinator()
         let session = ReactiveStrikeSession()

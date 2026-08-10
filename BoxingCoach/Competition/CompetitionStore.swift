@@ -3,10 +3,8 @@ import Foundation
 nonisolated enum CompetitionSheetRoute: Hashable, Identifiable, Sendable {
     case nameEntry
     case calibrationRequired
-    case modes
-    case stance
+    case enterSetup
     case leaderboard(CompetitionMode)
-    case result(UUID)
     case error
 
     var id: String { "competition-sheet" }
@@ -115,7 +113,7 @@ final class CompetitionStore {
         errorMessage = nil
         if let currentPlayer {
             selectedStance = currentPlayer.rememberedStance
-            sheetRoute = currentPlayer.hasCurrentCalibration ? .modes : .calibrationRequired
+            sheetRoute = currentPlayer.hasCurrentCalibration ? .enterSetup : .calibrationRequired
         } else {
             sheetRoute = .nameEntry
         }
@@ -125,6 +123,12 @@ final class CompetitionStore {
         guard activeRun == nil, !isSaving else { return }
         sheetRoute = nil
         errorMessage = nil
+    }
+
+    /// Closes the modal while retaining status/error state for the full-window competition flow.
+    func closeSheetForNavigation() {
+        guard activeRun == nil, !isSaving else { return }
+        sheetRoute = nil
     }
 
     func join(name rawName: String) async {
@@ -161,7 +165,7 @@ final class CompetitionStore {
             selectedStance = player.rememberedStance
             nameDraft = player.name
             errorMessage = nil
-            sheetRoute = player.hasCurrentCalibration ? .modes : .calibrationRequired
+            sheetRoute = player.hasCurrentCalibration ? .enterSetup : .calibrationRequired
         } catch {
             present(error)
         }
@@ -195,7 +199,7 @@ final class CompetitionStore {
         return .competitionCalibration(playerID: player.id)
     }
 
-    func chooseMode(_ mode: CompetitionMode) async -> TrainingSelection? {
+    func startReactiveStrike() async -> TrainingSelection? {
         guard !isLoading, !isSaving, activeRun == nil else {
             present(CompetitionStoreError.runAlreadyActive)
             return nil
@@ -209,22 +213,11 @@ final class CompetitionStore {
             sheetRoute = .calibrationRequired
             return nil
         }
-        if mode == .combination {
-            selectedStance = player.rememberedStance
-            sheetRoute = .stance
-            return nil
-        }
-        return await prepareRankedRun(mode: mode, stance: player.rememberedStance)
+        return await prepareRankedRun(mode: .reactiveStrike, stance: player.rememberedStance)
     }
 
     func startCombination(stance: Stance) async -> TrainingSelection? {
         await prepareRankedRun(mode: .combination, stance: stance)
-    }
-
-    func showModes() {
-        guard currentPlayer != nil, activeRun == nil else { return }
-        errorMessage = nil
-        sheetRoute = currentPlayer?.hasCurrentCalibration == true ? .modes : .calibrationRequired
     }
 
     func showLeaderboard(_ mode: CompetitionMode) {
@@ -235,7 +228,12 @@ final class CompetitionStore {
     func cancelActiveRun(message: String) {
         activeRun = nil
         errorMessage = message
-        sheetRoute = currentPlayer?.hasCurrentCalibration == true ? .modes : .calibrationRequired
+        sheetRoute = currentPlayer?.hasCurrentCalibration == true ? nil : .calibrationRequired
+    }
+
+    func discardPreparedRun() {
+        guard !isSaving else { return }
+        activeRun = nil
     }
 
     func reconcileCompletedRun(session: ReactiveStrikeSession) async {
@@ -269,7 +267,7 @@ final class CompetitionStore {
                 currentPlayer = player
                 activeRun = nil
                 errorMessage = nil
-                sheetRoute = .modes
+                sheetRoute = nil
 
             case .ranked(let mode):
                 guard !session.wasStoppedBeforeCompletion else {
@@ -299,7 +297,7 @@ final class CompetitionStore {
                 activeRun = nil
                 errorMessage = nil
                 await reloadBoards()
-                sheetRoute = .result(submission.id)
+                sheetRoute = nil
             }
         } catch {
             activeRun = nil
@@ -307,7 +305,7 @@ final class CompetitionStore {
             if case CompetitionStoreError.unsafeGuardClearance = error {
                 sheetRoute = .calibrationRequired
             } else if currentPlayer?.hasCurrentCalibration == true {
-                sheetRoute = .modes
+                sheetRoute = nil
             } else {
                 sheetRoute = .calibrationRequired
             }

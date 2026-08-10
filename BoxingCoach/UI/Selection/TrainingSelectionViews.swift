@@ -145,6 +145,104 @@ struct CombinationSetupView: View {
     }
 }
 
+struct CompetitionSetupView: View {
+    let playerName: String
+    let errorMessage: String?
+    let controlsDisabled: Bool
+    let onSelect: (CompetitionMode) -> Void
+    let onLeaderboard: () -> Void
+    let onRecalibrate: () -> Void
+    let onChangePlayer: () -> Void
+    let onBack: () -> Void
+
+    var body: some View {
+        TrainingDetailScaffold(
+            backLabel: "Home",
+            title: "Competition",
+            subtitle: "\(playerName) · Choose a ranked challenge",
+            controlsDisabled: controlsDisabled,
+            onBack: onBack
+        ) {
+            VStack(spacing: 12) {
+                if let errorMessage {
+                    TrainingErrorCard(message: errorMessage)
+                }
+
+                ForEach(CompetitionMode.allCases) { mode in
+                    Button {
+                        onSelect(mode)
+                    } label: {
+                        selectionRow(title: mode.title, subtitle: mode.subtitle)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(controlsDisabled)
+                    .accessibilityElement(children: .ignore)
+                    .accessibilityLabel("\(mode.title), \(mode.subtitle)")
+                    .accessibilityHint("Opens the ranked challenge setup")
+                }
+
+                ViewThatFits(in: .horizontal) {
+                    HStack { utilityButtons }
+                    VStack { utilityButtons }
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var utilityButtons: some View {
+        Button("View Leaderboards", systemImage: "trophy") { onLeaderboard() }
+            .frame(minHeight: 44)
+            .disabled(controlsDisabled)
+        Button("Recalibrate Reach", systemImage: "ruler") { onRecalibrate() }
+            .frame(minHeight: 44)
+            .disabled(controlsDisabled)
+        Button("Change Player", systemImage: "person.2") { onChangePlayer() }
+            .frame(minHeight: 44)
+            .disabled(controlsDisabled)
+    }
+}
+
+struct CompetitionCombinationSetupView: View {
+    let stance: Stance
+    let controlsDisabled: Bool
+    let onStanceChange: (Stance) -> Void
+    let onStartSetup: () -> Void
+    let onBack: () -> Void
+
+    var body: some View {
+        TrainingDetailScaffold(
+            backLabel: "Competition",
+            title: "Combo",
+            subtitle: "Choose your stance for the ranked challenge",
+            controlsDisabled: controlsDisabled,
+            onBack: onBack
+        ) {
+            VStack(spacing: 20) {
+                StancePickerCard(
+                    stance: stance,
+                    controlsDisabled: controlsDisabled,
+                    onStanceChange: onStanceChange
+                )
+
+                Button(action: onStartSetup) {
+                    selectionRow(
+                        title: "1–2–3–2 · Jab-Cross-Hook-Cross",
+                        subtitle: "Five repetitions · Required hand, contact, and retraction"
+                    )
+                }
+                .buttonStyle(.plain)
+                .disabled(controlsDisabled)
+                .accessibilityElement(children: .ignore)
+                .accessibilityLabel(
+                    "1 2 3 2, Jab Cross Hook Cross, five ranked repetitions"
+                )
+                .accessibilityHint("Opens the competition ready screen")
+            }
+        }
+    }
+}
+
 struct AuraSetupView: View {
     let stance: Stance
     let controlsDisabled: Bool
@@ -236,4 +334,43 @@ private func selectionRow(title: String, subtitle: String) -> some View {
     }
     .padding(18)
     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
+}
+
+#Preview("Competition Setup") {
+    CompetitionSetupView(
+        playerName: "Alex",
+        errorMessage: nil,
+        controlsDisabled: false,
+        onSelect: { _ in },
+        onLeaderboard: {},
+        onRecalibrate: {},
+        onChangePlayer: {},
+        onBack: {}
+    )
+    .padding(32)
+}
+
+#Preview("Competition Setup Error") {
+    CompetitionSetupView(
+        playerName: "Alex",
+        errorMessage: "That run was not complete, so no leaderboard result was saved.",
+        controlsDisabled: false,
+        onSelect: { _ in },
+        onLeaderboard: {},
+        onRecalibrate: {},
+        onChangePlayer: {},
+        onBack: {}
+    )
+    .padding(32)
+}
+
+#Preview("Competition Combo Setup") {
+    CompetitionCombinationSetupView(
+        stance: .southpaw,
+        controlsDisabled: false,
+        onStanceChange: { _ in },
+        onStartSetup: {},
+        onBack: {}
+    )
+    .padding(32)
 }

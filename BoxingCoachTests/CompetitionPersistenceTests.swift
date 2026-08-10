@@ -11,11 +11,8 @@ final class CompetitionPersistenceTests: XCTestCase {
         store.open()
         XCTAssertEqual(store.sheetRoute, .nameEntry)
         await store.join(name: "Alex")
-        XCTAssertEqual(store.sheetRoute, .modes)
+        XCTAssertEqual(store.sheetRoute, .enterSetup)
 
-        let deferredSelection = await store.chooseMode(.combination)
-        XCTAssertNil(deferredSelection)
-        XCTAssertEqual(store.sheetRoute, .stance)
         let selection = await store.startCombination(stance: .orthodox)
         guard case .competition(_, .combination, .orthodox, _)? = selection else {
             return XCTFail("Expected a fixed Combo competition selection")
@@ -49,8 +46,8 @@ final class CompetitionPersistenceTests: XCTestCase {
 
         let store = CompetitionStore(repository: repository)
         await store.join(name: "Alex")
-        XCTAssertEqual(store.sheetRoute, .modes)
-        let selection = await store.chooseMode(.reactiveStrike)
+        XCTAssertEqual(store.sheetRoute, .enterSetup)
+        let selection = await store.startReactiveStrike()
         XCTAssertNotNil(selection)
     }
 
@@ -66,6 +63,36 @@ final class CompetitionPersistenceTests: XCTestCase {
         }
         XCTAssertEqual(playerID, store.currentPlayer?.id)
         XCTAssertEqual(store.activeRun?.kind, .calibration)
+    }
+
+    func testDiscardingPreparedRunAllowsAReplacementSelection() async throws {
+        let repository = InMemoryCompetitionRepository()
+        try await repository.save(player: makePlayer())
+        let store = CompetitionStore(repository: repository)
+        await store.join(name: "Alex")
+
+        let firstSelection = await store.startReactiveStrike()
+        XCTAssertNotNil(firstSelection)
+        store.discardPreparedRun()
+
+        XCTAssertNil(store.activeRun)
+        let replacementSelection = await store.startCombination(stance: .southpaw)
+        XCTAssertNotNil(replacementSelection)
+    }
+
+    func testClosingSheetForNavigationPreservesAnActionableError() async throws {
+        let repository = InMemoryCompetitionRepository()
+        try await repository.save(player: makePlayer())
+        let store = CompetitionStore(repository: repository)
+        await store.join(name: "Alex")
+        _ = await store.startReactiveStrike()
+        _ = await store.startReactiveStrike()
+        store.discardPreparedRun()
+
+        store.closeSheetForNavigation()
+
+        XCTAssertNil(store.sheetRoute)
+        XCTAssertEqual(store.errorMessage, CompetitionStoreError.runAlreadyActive.errorDescription)
     }
 
     func testRepositorySubmissionIsExactOnceAndResetClearsEverything() async throws {
@@ -122,9 +149,9 @@ final class CompetitionPersistenceTests: XCTestCase {
         repository.delay = .milliseconds(80)
         repository.saveCount = 0
 
-        let first = Task { await store.chooseMode(.reactiveStrike) }
+        let first = Task { await store.startReactiveStrike() }
         try? await Task.sleep(for: .milliseconds(10))
-        let second = await store.chooseMode(.reactiveStrike)
+        let second = await store.startReactiveStrike()
         let firstSelection = await first.value
 
         XCTAssertNotNil(firstSelection)

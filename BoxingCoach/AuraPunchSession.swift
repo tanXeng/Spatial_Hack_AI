@@ -7,6 +7,8 @@ enum AuraPunchPhase: String, Sendable {
     case idle
     /// Waiting for hands and head to be tracked well enough to place a shoulder.
     case acquiring
+    /// The coach character demonstrates the punch once before the ghost follow-along begins.
+    case coachDemo
     /// The ghost leads the punch and waits at each end for the user to match it.
     case guiding
     /// Counting the user in before their attempt.
@@ -118,6 +120,7 @@ final class AuraPunchSession {
 
     private var demoArm: ArmSilhouetteEntity?
     private var mirrorArm: ArmSilhouetteEntity?
+    private let coach = CoachCharacterEntity()
     private weak var sceneRoot: Entity?
 
     private var loopTask: Task<Void, Never>?
@@ -160,6 +163,9 @@ final class AuraPunchSession {
         mirror.attach(to: root)
         mirrorArm = mirror
 
+        coach.attach(to: root)
+        coach.isVisible = false
+
         targets.attach(to: root)
     }
 
@@ -167,9 +173,16 @@ final class AuraPunchSession {
         targets.removeActiveTarget()
         demoArm?.removeFromScene()
         mirrorArm?.removeFromScene()
+        coach.removeFromScene()
         demoArm = nil
         mirrorArm = nil
         sceneRoot = nil
+    }
+
+    /// Loads the coach model ahead of the first Aura session. Loading fails soft so the existing
+    /// ghost tutorial remains available if an asset cannot be decoded.
+    func preloadCoach() async {
+        await coach.load()
     }
 
     // MARK: Control
@@ -206,6 +219,7 @@ final class AuraPunchSession {
         loopTask = nil
         for recorder in recorders.values { recorder.cancel() }
         targets.removeActiveTarget()
+        dismissCoach()
         demoArm?.isVisible = false
         mirrorArm?.isVisible = false
         currentScoredPunch = 0
@@ -234,6 +248,9 @@ final class AuraPunchSession {
         let solver = ArmPoseSolver(measurements: measurements)
 
         guard await acquireTracking() else { return }
+        guard !Task.isCancelled else { return }
+
+        await runCoachDemo(solver: solver)
         guard !Task.isCancelled else { return }
 
         // Reference/side are resolved per rep inside the guided loop rather than once here, so
@@ -308,6 +325,55 @@ final class AuraPunchSession {
             return technique.hand.side(for: stance)
         }
         return rep.isMultiple(of: 2) ? stance.rearSide : stance.leadSide
+    }
+
+    /// Shows one full-speed, full-body example before the interactive ghost repetitions. Any
+    /// missing asset, animation, or body frame skips this stage without failing the training run.
+    private func runCoachDemo(solver: ArmPoseSolver) async {
+        guard await coach.load(), !Task.isCancelled else { return }
+
+        let side = technique.hand.side(for: stance)
+        guard let resolved = CoachCharacterEntity.resolveClip(technique: technique, side: side),
+              let frame = currentBodyFrame(solver: solver) else { return }
+
+        phase = .coachDemo
+        demoArm?.isVisible = false
+        mirrorArm?.isVisible = false
+        coach.place(
+            using: frame,
+            measurements: measurements,
+            demoSide: side,
+            reflected: resolved.reflected
+        )
+        coach.isVisible = true
+        coach.playIdle()
+
+        let handLabel = technique.hand == .either ? " \(side.rawValue)" : ""
+        setCoaching(
+            headline: "WATCH THE COACH",
+            detail: "He throws the\(handLabel) \(technique.name.lowercased()) once — watch the whole motion",
+            status: "Watch the coach throw the\(handLabel) \(technique.name.lowercased())"
+        )
+
+        try? await Task.sleep(for: .milliseconds(600))
+        guard !Task.isCancelled else { return }
+        if let duration = coach.play(clip: resolved.clip) {
+            try? await Task.sleep(for: .seconds(duration))
+        }
+        guard !Task.isCancelled else {
+            dismissCoach()
+            return
+        }
+
+        // Keep the coach beside the user through the guided phase, then remove him before the
+        // unaided scored punches begin.
+        coach.playIdle()
+        try? await Task.sleep(for: .milliseconds(400))
+    }
+
+    private func dismissCoach() {
+        coach.stop()
+        coach.isVisible = false
     }
 
     /// Leads the user through the punch call-and-response, one waypoint at a time.
@@ -593,6 +659,7 @@ final class AuraPunchSession {
 
     private func runCountdown() async {
         phase = .countdown
+        dismissCoach()
         coachAudio.play(id: .countdown)
         for count in [3, 2, 1] {
             if Task.isCancelled { return }

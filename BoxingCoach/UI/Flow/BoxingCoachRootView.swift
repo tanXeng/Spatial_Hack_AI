@@ -41,6 +41,44 @@ struct BoxingCoachRootView: View {
                         onBack: flow.backFromSetup
                     )
 
+                case .competitionSetup:
+                    CompetitionSetupView(
+                        playerName: competitionStore.currentPlayer?.name ?? "Boxer",
+                        errorMessage: competitionStore.errorMessage,
+                        controlsDisabled: competitionControlsDisabled,
+                        onSelect: chooseCompetitionMode,
+                        onLeaderboard: { competitionStore.showLeaderboard(.reactiveStrike) },
+                        onRecalibrate: prepareCompetitionCalibration,
+                        onChangePlayer: competitionStore.showNameEntry,
+                        onBack: { flow.navigate(to: .features) }
+                    )
+
+                case .competitionCombinationSetup:
+                    CompetitionCombinationSetupView(
+                        stance: flow.draftStance,
+                        controlsDisabled: competitionControlsDisabled,
+                        onStanceChange: flow.setDraftStance,
+                        onStartSetup: prepareCompetitionCombination,
+                        onBack: flow.backFromSetup
+                    )
+
+                case .competitionResult:
+                    if let submission = competitionStore.latestSubmission {
+                        CompetitionResultView(
+                            submission: submission,
+                            controlsDisabled: competitionControlsDisabled,
+                            onLeaderboard: { competitionStore.showLeaderboard(submission.mode) },
+                            onCompeteAgain: enterCompetitionSetup,
+                            onHome: { flow.navigate(to: .features) }
+                        )
+                    } else {
+                        ContentUnavailableView(
+                            "Result Unavailable",
+                            systemImage: "exclamationmark.triangle",
+                            description: Text("Return to Competition and try another complete run.")
+                        )
+                    }
+
                 case .auraSetup:
                     AuraSetupView(
                         stance: flow.draftStance,
@@ -92,6 +130,7 @@ struct BoxingCoachRootView: View {
             refreshWindowVoiceContext()
         }
         .task {
+            async let coachPreload: Void = session.auraPunch.preloadCoach()
             await competitionStore.bootstrap()
             await completeCompetitionRunIfNeeded()
             // A standalone calibration belongs to the training session. Reopening the control
@@ -100,6 +139,7 @@ struct BoxingCoachRootView: View {
             if !session.hasCalibratedReach, let player = competitionStore.currentPlayer {
                 syncPlayerCalibration(player)
             }
+            _ = await coachPreload
         }
         .onDisappear {
             flow.controlWindowDidDisappear()
@@ -112,11 +152,14 @@ struct BoxingCoachRootView: View {
         ), onDismiss: {
             // Starting a run dismisses this window immediately. Moving VoiceOver to a control
             // that is about to disappear creates a misleading focus jump into hidden UI.
-            if competitionStore.activeRun == nil {
+            if competitionStore.activeRun == nil, flow.route == .features {
                 landingActionFocused = .competition
             }
         }) { _ in
-            CompetitionSheetView(onStart: startCompetition)
+            CompetitionSheetView(
+                onPrepare: prepareCompetitionSelection,
+                onEnterSetup: enterCompetitionSetup
+            )
                 .environment(competitionStore)
         }
     }
@@ -201,6 +244,10 @@ struct BoxingCoachRootView: View {
         }
     }
 
+    private var competitionControlsDisabled: Bool {
+        flow.controlsDisabled || competitionStore.isLoading || competitionStore.isSaving
+    }
+
     private func changeSelection(_ selection: TrainingSelection) {
         Task {
             await flow.returnToSetup(
@@ -208,31 +255,58 @@ struct BoxingCoachRootView: View {
                 session: session,
                 dismissImmersive: dismissImmersive
             )
-        }
-    }
-
-    private func startCompetition(_ selection: TrainingSelection) {
-        flow.navigate(to: .experience(selection))
-        Task {
-            await flow.startExperience(
-                selection,
-                session: session,
-                supportsMultipleScenes: supportsMultipleWindows,
-                openImmersive: openImmersive,
-                dismissImmersive: dismissImmersive,
-                hideControlWindow: {
-                    dismissWindow(id: BoxingCoachSceneID.controlWindow)
-                }
-            )
-            if let message = flow.presentationError {
-                competitionStore.cancelActiveRun(message: message)
-                flow.navigate(to: .features)
+            switch selection {
+            case .competition:
+                competitionStore.discardPreparedRun()
+            case .competitionCalibration:
+                competitionStore.discardPreparedRun()
+                competitionStore.open()
+            default:
+                break
             }
         }
     }
 
+    private func prepareCompetitionSelection(_ selection: TrainingSelection) {
+        flow.navigate(to: .experience(selection))
+    }
+
+    private func enterCompetitionSetup() {
+        competitionStore.closeSheetForNavigation()
+        flow.enterCompetitionSetup(
+            stance: competitionStore.currentPlayer?.rememberedStance ?? .orthodox
+        )
+    }
+
+    private func chooseCompetitionMode(_ mode: CompetitionMode) {
+        if mode == .combination {
+            flow.enterCompetitionCombinationSetup()
+            return
+        }
+
+        Task {
+            if let selection = await competitionStore.startReactiveStrike() {
+                prepareCompetitionSelection(selection)
+            }
+        }
+    }
+
+    private func prepareCompetitionCombination() {
+        Task {
+            if let selection = await competitionStore.startCombination(stance: flow.draftStance) {
+                prepareCompetitionSelection(selection)
+            }
+        }
+    }
+
+    private func prepareCompetitionCalibration() {
+        if let selection = competitionStore.prepareCalibration() {
+            prepareCompetitionSelection(selection)
+        }
+    }
+
     private func completeCompetitionRunIfNeeded() async {
-        guard competitionStore.activeRun != nil else { return }
+        guard let completedRun = competitionStore.activeRun else { return }
         await competitionStore.reconcileCompletedRun(session: session)
         if competitionStore.activeRun == nil {
             let clock = ContinuousClock()
@@ -240,7 +314,23 @@ struct BoxingCoachRootView: View {
             while flow.controlsDisabled, clock.now < deadline {
                 try? await Task.sleep(for: .milliseconds(25))
             }
-            flow.navigate(to: .features)
+            switch completedRun.kind {
+            case .calibration:
+                if competitionStore.currentPlayer?.hasCurrentCalibration == true {
+                    enterCompetitionSetup()
+                } else {
+                    flow.navigate(to: .features)
+                }
+            case .ranked:
+                if competitionStore.latestSubmission?.id == completedRun.id {
+                    competitionStore.closeSheetForNavigation()
+                    flow.enterCompetitionResult()
+                } else if competitionStore.currentPlayer?.hasCurrentCalibration == true {
+                    enterCompetitionSetup()
+                } else {
+                    flow.navigate(to: .features)
+                }
+            }
         }
     }
 
@@ -274,13 +364,15 @@ struct BoxingCoachRootView: View {
         switch flow.route {
         case .features:
             session.voiceCoach.updateContext(.idle)
-        case .reactiveSetup, .combinationSetup:
+        case .reactiveSetup, .combinationSetup, .competitionSetup, .competitionCombinationSetup:
             session.voiceCoach.updateContext(CoachVoiceContext(
                 feature: .reactiveStrike,
                 auraPhase: nil,
                 drillPhase: .idle,
                 techniqueName: nil
             ))
+        case .competitionResult:
+            session.voiceCoach.updateContext(.idle)
         case .auraSetup:
             session.voiceCoach.updateContext(CoachVoiceContext(
                 feature: .auraPunch,
@@ -297,7 +389,7 @@ struct BoxingCoachRootView: View {
                     drillPhase: nil,
                     techniqueName: technique.name
                 ))
-            case .reactive, .competitionCalibration, .competition:
+            case .reactive, .reachCalibration, .competitionCalibration, .competition:
                 session.voiceCoach.updateContext(CoachVoiceContext(
                     feature: .reactiveStrike,
                     auraPhase: nil,

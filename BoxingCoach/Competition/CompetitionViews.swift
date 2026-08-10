@@ -5,7 +5,8 @@ struct CompetitionSheetView: View {
     @Environment(CompetitionStore.self) private var store
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
-    let onStart: (TrainingSelection) -> Void
+    let onPrepare: (TrainingSelection) -> Void
+    let onEnterSetup: () -> Void
 
     @State private var confirmsReset = false
     @AccessibilityFocusState private var focus: FocusTarget?
@@ -51,6 +52,10 @@ struct CompetitionSheetView: View {
             switch store.sheetRoute {
             case .nameEntry: focus = .name
             case .leaderboard: focus = .leaderboard
+            case .enterSetup:
+                store.dismiss()
+                dismiss()
+                onEnterSetup()
             default: focus = .heading
             }
         }
@@ -77,10 +82,8 @@ struct CompetitionSheetView: View {
         switch store.sheetRoute {
         case .nameEntry: return "Join Competition"
         case .calibrationRequired: return "Reach Calibration"
-        case .modes: return "Choose a Board"
-        case .stance: return "Combo Stance"
+        case .enterSetup: return "Competition"
         case .leaderboard: return "Leaderboard"
-        case .result: return "Result Saved"
         case .error: return "Competition"
         case nil: return "Competition"
         }
@@ -93,14 +96,10 @@ struct CompetitionSheetView: View {
             nameEntry
         case .calibrationRequired:
             calibrationRequired
-        case .modes:
-            modeSelection
-        case .stance:
-            stanceSelection
+        case .enterSetup:
+            ProgressView("Opening competition…")
         case .leaderboard(let mode):
             leaderboard(mode)
-        case .result:
-            result
         case .error, nil:
             ContentUnavailableView(
                 "Competition Unavailable",
@@ -152,7 +151,7 @@ struct CompetitionSheetView: View {
                 .foregroundStyle(.secondary)
 
             Button("Start Reach Calibration", systemImage: "ruler") {
-                if let selection = store.prepareCalibration() { onStart(selection) }
+                if let selection = store.prepareCalibration() { onPrepare(selection) }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
@@ -161,93 +160,6 @@ struct CompetitionSheetView: View {
 
             Button("Use a Different Player") { store.showNameEntry() }
                 .frame(minHeight: 44)
-        }
-    }
-
-    private var modeSelection: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            sheetHeading(
-                "Welcome, \(store.currentPlayer?.name ?? "boxer")",
-                detail: "Choose either board. You can submit as many complete runs as you like; only your best result ranks."
-            )
-
-            ForEach(CompetitionMode.allCases) { mode in
-                Button {
-                    Task {
-                        if let selection = await store.chooseMode(mode) { onStart(selection) }
-                    }
-                } label: {
-                    CompetitionModeRow(mode: mode)
-                }
-                .buttonStyle(.plain)
-                .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel("Compete in \(mode.title), \(mode.subtitle)")
-                .accessibilityHint("Starts setup for this leaderboard")
-            }
-
-            ViewThatFits(in: .horizontal) {
-                HStack { modeUtilities }
-                VStack(alignment: .leading) { modeUtilities }
-            }
-
-            if store.isSaving {
-                ProgressView("Preparing competition…")
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var modeUtilities: some View {
-        Button("View Leaderboards", systemImage: "trophy") {
-            store.showLeaderboard(.reactiveStrike)
-        }
-        .frame(minHeight: 44)
-        .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
-        Button("Recalibrate Reach", systemImage: "ruler") {
-            if let selection = store.prepareCalibration() { onStart(selection) }
-        }
-        .frame(minHeight: 44)
-        .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
-        Button("Change Player", systemImage: "person.2") { store.showNameEntry() }
-            .frame(minHeight: 44)
-            .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
-    }
-
-    private var stanceSelection: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            sheetHeading(
-                "Choose your Combo stance",
-                detail: "Every run uses five repetitions of 1–2–3–2. Your choice is remembered for next time."
-            )
-
-            Picker("Stance", selection: Binding(
-                get: { store.selectedStance },
-                set: { store.selectedStance = $0 }
-            )) {
-                ForEach(Stance.allCases) { stance in Text(stance.title).tag(stance) }
-            }
-            .pickerStyle(.segmented)
-
-            Text(store.selectedStance.footDescription)
-                .font(.callout)
-                .foregroundStyle(.secondary)
-
-            Button("Start 1–2–3–2 Combo", systemImage: "figure.boxing") {
-                Task {
-                    if let selection = await store.startCombination(stance: store.selectedStance) {
-                        onStart(selection)
-                    }
-                }
-            }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .frame(minHeight: 44)
-            .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
-
-            Button("Back to Modes") { store.showModes() }
-                .frame(minHeight: 44)
-                .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
         }
     }
 
@@ -283,46 +195,11 @@ struct CompetitionSheetView: View {
                 }
             }
 
-            Button("Back to Modes") { store.showModes() }
-                .frame(minHeight: 44)
-        }
-    }
-
-    private var result: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            if let submission = store.latestSubmission {
-                sheetHeading(
-                    "\(submission.score) points",
-                    detail: "Saved to the \(submission.mode.title) leaderboard for \(submission.playerName)."
-                )
-
-                LabeledMetricRow(
-                    title: submission.mode == .reactiveStrike ? "Valid hits" : "Valid steps",
-                    value: "\(submission.validSteps) / \(submission.totalSteps)"
-                )
-                if submission.mode == .combination {
-                    LabeledMetricRow(
-                        title: "Completed repetitions",
-                        value: "\(submission.completedRepetitions) / 5"
-                    )
-                }
-                if let speed = submission.speedTieBreakSeconds {
-                    LabeledMetricRow(
-                        title: submission.mode == .reactiveStrike ? "Average reaction" : "Active time",
-                        value: String(format: "%.2f s", speed),
-                        spokenValue: String(format: "%.2f seconds", speed)
-                    )
-                }
-
-                Button("View \(submission.mode.title) Leaderboard", systemImage: "trophy") {
-                    store.showLeaderboard(submission.mode)
-                }
-                .buttonStyle(.borderedProminent)
-                .controlSize(.large)
-                .frame(minHeight: 44)
+            Button("Back to Competition") {
+                store.dismiss()
+                dismiss()
+                onEnterSetup()
             }
-
-            Button("Compete Again") { store.showModes() }
                 .frame(minHeight: 44)
         }
     }
@@ -354,24 +231,58 @@ struct CompetitionSheetView: View {
     }
 }
 
-private struct CompetitionModeRow: View {
-    let mode: CompetitionMode
+struct CompetitionResultView: View {
+    let submission: CompetitionSubmission
+    let controlsDisabled: Bool
+    let onLeaderboard: () -> Void
+    let onCompeteAgain: () -> Void
+    let onHome: () -> Void
 
     var body: some View {
-        HStack(spacing: 16) {
-            Image(systemName: mode == .reactiveStrike ? "scope" : "list.number")
-                .font(.title2)
-                .frame(width: 44, height: 44)
-                .accessibilityHidden(true)
-            VStack(alignment: .leading, spacing: 4) {
-                Text(mode.title).font(.headline)
-                Text(mode.subtitle).font(.subheadline).foregroundStyle(.secondary)
+        TrainingDetailScaffold(
+            backLabel: "Home",
+            title: "\(submission.score) points",
+            subtitle: "Saved to the \(submission.mode.title) leaderboard for \(submission.playerName)",
+            controlsDisabled: controlsDisabled,
+            onBack: onHome
+        ) {
+            VStack(spacing: 16) {
+                VStack(alignment: .leading, spacing: 8) {
+                    LabeledMetricRow(
+                        title: submission.mode == .reactiveStrike ? "Valid hits" : "Valid steps",
+                        value: "\(submission.validSteps) / \(submission.totalSteps)"
+                    )
+                    if submission.mode == .combination {
+                        LabeledMetricRow(
+                            title: "Completed repetitions",
+                            value: "\(submission.completedRepetitions) / 5"
+                        )
+                    }
+                    if let speed = submission.speedTieBreakSeconds {
+                        LabeledMetricRow(
+                            title: submission.mode == .reactiveStrike ? "Average reaction" : "Active time",
+                            value: String(format: "%.2f s", speed),
+                            spokenValue: String(format: "%.2f seconds", speed)
+                        )
+                    }
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .padding()
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+
+                Button("View \(submission.mode.title) Leaderboard", systemImage: "trophy") {
+                    onLeaderboard()
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .frame(minHeight: 44)
+                .disabled(controlsDisabled)
+
+                Button("Compete Again", action: onCompeteAgain)
+                    .frame(minHeight: 44)
+                    .disabled(controlsDisabled)
             }
-            Spacer()
-            Image(systemName: "chevron.right").foregroundStyle(.secondary).accessibilityHidden(true)
         }
-        .padding(18)
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 18))
     }
 }
 
@@ -434,27 +345,22 @@ private struct CompetitionStandingRow: View {
 }
 
 #Preview("Name Entry") {
-    CompetitionSheetView(onStart: { _ in })
+    CompetitionSheetView(onPrepare: { _ in }, onEnterSetup: {})
         .environment(CompetitionStore.preview(route: .nameEntry))
 }
 
 #Preview("Calibration Required") {
-    CompetitionSheetView(onStart: { _ in })
+    CompetitionSheetView(onPrepare: { _ in }, onEnterSetup: {})
         .environment(CompetitionStore.preview(route: .calibrationRequired, player: .previewUncalibrated))
 }
 
-#Preview("Mode Selection") {
-    CompetitionSheetView(onStart: { _ in })
-        .environment(CompetitionStore.preview(route: .modes, player: .previewCalibrated))
-}
-
 #Preview("Empty Leaderboard") {
-    CompetitionSheetView(onStart: { _ in })
+    CompetitionSheetView(onPrepare: { _ in }, onEnterSetup: {})
         .environment(CompetitionStore.preview(route: .leaderboard(.reactiveStrike), player: .previewCalibrated))
 }
 
 #Preview("Populated Leaderboard") {
-    CompetitionSheetView(onStart: { _ in })
+    CompetitionSheetView(onPrepare: { _ in }, onEnterSetup: {})
         .environment(CompetitionStore.preview(
             route: .leaderboard(.reactiveStrike),
             player: .previewCalibrated,
@@ -463,16 +369,17 @@ private struct CompetitionStandingRow: View {
 }
 
 #Preview("Saved Result") {
-    CompetitionSheetView(onStart: { _ in })
-        .environment(CompetitionStore.preview(
-            route: .result(CompetitionSubmission.previewResult.id),
-            player: .previewCalibrated,
-            latestSubmission: .previewResult
-        ))
+    CompetitionResultView(
+        submission: .previewResult,
+        controlsDisabled: false,
+        onLeaderboard: {},
+        onCompeteAgain: {},
+        onHome: {}
+    )
 }
 
 #Preview("Error") {
-    CompetitionSheetView(onStart: { _ in })
+    CompetitionSheetView(onPrepare: { _ in }, onEnterSetup: {})
         .environment(CompetitionStore.preview(
             route: .calibrationRequired,
             player: .previewUncalibrated,

@@ -1,37 +1,39 @@
 import Foundation
+import os
 
-/// Push-to-talk voice coach: STT on device → ChatGPT clip routing → pre-recorded audio playback.
+/// Push-to-talk voice coach: on-device STT → OpenAI chat answer → OpenAI TTS playback.
 @Observable
 @MainActor
 final class CoachVoiceCoach {
+    private static let logger = Logger(subsystem: "com.josephkwokpersonalteam.BoxingCoach", category: "CoachVoice")
+
     private(set) var isListening = false
     private(set) var isCaptureReady = false
     private(set) var isRouting = false
     private(set) var isGeneratingResponse = false
     private(set) var lastTranscript: String?
-    private(set) var lastRoutedClip: CoachClipID?
+    private(set) var lastSpokenText: String?
     private(set) var lastError: String?
 
-    private let audioPlayer: CoachAudioPlayer
+    var hasLiveVoice: Bool { CoachSecrets.hasOpenAIKey }
+
+    private let liveVoice: CoachLiveVoiceService
     private let speechClient = SpeechRecognitionClient()
-    private var router = CoachClipRouter()
+    private var chatClient = OpenAICoachChatClient()
     private var context = CoachVoiceContext.idle
-    private var lastRoutedAt: Date?
     private var setupTask: Task<Void, Never>?
     private var processingTask: Task<Void, Never>?
     private var prepareTask: Task<Void, Never>?
     private var permissionsGranted = false
-    private var isSessionWarm = false
 
-    init(audioPlayer: CoachAudioPlayer) {
-        self.audioPlayer = audioPlayer
+    init(liveVoice: CoachLiveVoiceService) {
+        self.liveVoice = liveVoice
     }
 
     func updateContext(_ context: CoachVoiceContext) {
         self.context = context
     }
 
-    /// Request mic and speech permissions. Does not switch the audio session away from playback.
     func prepare() {
         prepareTask?.cancel()
         prepareTask = Task { [weak self] in
@@ -58,17 +60,21 @@ final class CoachVoiceCoach {
                 self.lastError = "Microphone or speech recognition permission denied."
                 return
             }
+            guard CoachSecrets.hasOpenAIKey else {
+                self.isListening = false
+                self.lastError = "OpenAI API key is missing. Add it to Secrets.xcconfig and rebuild."
+                return
+            }
 
             do {
-                if !isSessionWarm {
-                    try audioPlayer.prepareForVoiceCapture()
-                    isSessionWarm = true
-                }
+                liveVoice.stop()
+                try speechClient.prepareForCapture()
                 try speechClient.start()
                 self.isCaptureReady = true
             } catch {
                 self.isListening = false
-                self.lastError = error.localizedDescription
+                speechClient.cancel()
+                self.lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
         }
     }
@@ -84,22 +90,22 @@ final class CoachVoiceCoach {
             if !isCaptureReady, let setupTask {
                 await withTaskGroup(of: Void.self) { group in
                     group.addTask { await setupTask.value }
-                    group.addTask {
-                        try? await Task.sleep(for: .seconds(2))
-                    }
+                    group.addTask { try? await Task.sleep(for: .seconds(2)) }
                     _ = await group.next()
                     group.cancelAll()
                 }
             }
 
+            isGeneratingResponse = true
+            defer { isGeneratingResponse = false }
+
             guard isCaptureReady else {
                 lastTranscript = nil
-                lastRoutedClip = .didntCatch
-                lastError = "Hold the button a moment longer before speaking."
-                isGeneratingResponse = true
-                audioPlayer.restorePlaybackAfterCapture()
-                await audioPlayer.playAndWait(for: .didntCatch)
-                isGeneratingResponse = false
+                lastSpokenText = nil
+                lastError = "Hold the button until you see Listening…, then speak."
+                _ = await liveVoice.speakText(
+                    CoachMilestoneScripts.text(for: .didntCatch) ?? "Sorry, I didn't catch that."
+                )
                 return
             }
 
@@ -111,27 +117,34 @@ final class CoachVoiceCoach {
                 isRouting = false
                 return
             }
-
             isRouting = false
-            isGeneratingResponse = true
-            defer { isGeneratingResponse = false }
 
             let transcript = result.transcript
-            audioPlayer.restorePlaybackAfterCapture()
+            lastTranscript = transcript
 
             if transcript.isEmpty {
-                lastTranscript = transcript
-                lastRoutedClip = .didntCatch
-                await audioPlayer.playAndWait(for: .didntCatch)
+                lastSpokenText = nil
+                lastError = "No speech detected."
+                _ = await liveVoice.speakText(
+                    CoachMilestoneScripts.text(for: .didntCatch) ?? "Sorry, I didn't catch that."
+                )
                 return
             }
 
-            lastTranscript = transcript
-
-            let clipID = await router.resolve(transcript: transcript, context: context)
-            lastRoutedClip = clipID
-            lastRoutedAt = Date()
-            await audioPlayer.playAndWait(for: clipID)
+            do {
+                let answer = try await chatClient.answer(transcript: transcript, context: context)
+                lastSpokenText = answer
+                lastError = await liveVoice.speakText(answer)
+                if let lastError {
+                    Self.logger.error("PTT playback failed: \(lastError, privacy: .public)")
+                }
+            } catch {
+                lastSpokenText = nil
+                lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                _ = await liveVoice.speakText(
+                    CoachMilestoneScripts.text(for: .didntCatch) ?? "Sorry, I didn't catch that."
+                )
+            }
         }
     }
 
@@ -147,7 +160,6 @@ final class CoachVoiceCoach {
         isRouting = false
         isGeneratingResponse = false
         isCaptureReady = false
-        isSessionWarm = false
-        audioPlayer.restorePlaybackMode()
+        liveVoice.shutdown()
     }
 }

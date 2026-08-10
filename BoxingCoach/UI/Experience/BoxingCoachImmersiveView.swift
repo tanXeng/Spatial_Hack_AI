@@ -131,6 +131,7 @@ struct BoxingCoachImmersiveView: View {
             session.auraPunch.prepareCoachAudio()
             session.voiceCoach.prepare()
             refreshVoiceCoachContext()
+            await session.liveVoicePrefetchIfNeeded()
         }
         .onChange(of: flow.route) { _, _ in refreshVoiceCoachContext() }
         .onChange(of: session.phase) { _, _ in refreshVoiceCoachContext() }

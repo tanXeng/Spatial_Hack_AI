@@ -35,11 +35,31 @@ final class SpeechRecognitionClient {
         return micStatus
     }
 
+    func prepareForCapture() throws {
+        let session = AVAudioSession.sharedInstance()
+        try session.setActive(false, options: .notifyOthersOnDeactivation)
+        try session.setCategory(.record, mode: .measurement, options: [.duckOthers])
+        try session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
+    func restorePlaybackSession() {
+        let session = AVAudioSession.sharedInstance()
+        try? session.setActive(false, options: .notifyOthersOnDeactivation)
+        try? session.setCategory(.playback, mode: .spokenAudio, options: [.mixWithOthers, .duckOthers])
+        try? session.setActive(true, options: .notifyOthersOnDeactivation)
+    }
+
     func start() throws {
         guard speechRecognizer?.isAvailable == true else {
             throw SpeechError.recognizerUnavailable
         }
         guard !isRecording else { return }
+
+        if audioEngine.isRunning {
+            audioEngine.stop()
+            audioEngine.inputNode.removeTap(onBus: 0)
+        }
+        audioEngine.reset()
 
         latestTranscript = ""
         receivedFinal = false
@@ -50,17 +70,15 @@ final class SpeechRecognitionClient {
         self.request = request
 
         let inputNode = audioEngine.inputNode
-        let recordingFormat = Self.recordingFormat(for: inputNode)
+        let recordingFormat = inputNode.outputFormat(forBus: 0)
+        guard recordingFormat.sampleRate > 0 else {
+            throw SpeechError.invalidInputFormat
+        }
+
         inputNode.removeTap(onBus: 0)
-        try inputNode.installAudioTap(
-            onBus: 0,
-            bufferSize: 1024,
-            format: recordingFormat,
-            tapProvider: { buffer, _ in
-                guard let writable = Self.writableCopy(of: buffer) else { return }
-                request.append(writable)
-            }
-        )
+        inputNode.installTap(onBus: 0, bufferSize: 1024, format: recordingFormat) { buffer, _ in
+            request.append(buffer)
+        }
 
         audioEngine.prepare()
         try audioEngine.start()
@@ -81,36 +99,6 @@ final class SpeechRecognitionClient {
         }
     }
 
-    nonisolated private static func writableCopy(
-        of source: AVReadOnlyAudioPCMBuffer
-    ) -> AVAudioPCMBuffer? {
-        guard let copy = AVAudioPCMBuffer(
-            pcmFormat: source.format,
-            frameCapacity: AVAudioFrameCount(source.frameLength)
-        ) else { return nil }
-        copy.frameLength = AVAudioFrameCount(source.frameLength)
-
-        source.withUnsafeAudioBufferList { sourceList in
-            let sourceBuffers = UnsafeMutableAudioBufferListPointer(
-                UnsafeMutablePointer(mutating: sourceList)
-            )
-            let destinationBuffers = UnsafeMutableAudioBufferListPointer(
-                copy.mutableAudioBufferList
-            )
-            for index in 0..<min(sourceBuffers.count, destinationBuffers.count) {
-                guard let sourceData = sourceBuffers[index].mData,
-                      let destinationData = destinationBuffers[index].mData else { continue }
-                let byteCount = min(
-                    Int(sourceBuffers[index].mDataByteSize),
-                    Int(destinationBuffers[index].mDataByteSize)
-                )
-                destinationData.copyMemory(from: sourceData, byteCount: byteCount)
-                destinationBuffers[index].mDataByteSize = UInt32(byteCount)
-            }
-        }
-        return copy
-    }
-
     func stop() async -> SpeechRecognitionResult {
         let duration = startedAt.map { Date().timeIntervalSince($0) } ?? 0
         guard isRecording else {
@@ -123,6 +111,8 @@ final class SpeechRecognitionClient {
             audioEngine.stop()
             audioEngine.inputNode.removeTap(onBus: 0)
         }
+        audioEngine.reset()
+        restorePlaybackSession()
 
         let deadline = ContinuousClock.now + .milliseconds(1_000)
         while !receivedFinal, ContinuousClock.now < deadline {
@@ -143,6 +133,8 @@ final class SpeechRecognitionClient {
             audioEngine.stop()
             audioEngine.inputNode.removeTap(onBus: 0)
         }
+        audioEngine.reset()
+        restorePlaybackSession()
         latestTranscript = ""
         receivedFinal = false
         startedAt = nil
@@ -154,25 +146,16 @@ final class SpeechRecognitionClient {
         request = nil
     }
 
-    private static func recordingFormat(for inputNode: AVAudioInputNode) -> AVAudioFormat {
-        let outputFormat = inputNode.outputFormat(forBus: 0)
-        if outputFormat.sampleRate > 0 {
-            return outputFormat
-        }
-        let inputFormat = inputNode.inputFormat(forBus: 0)
-        if inputFormat.sampleRate > 0 {
-            return inputFormat
-        }
-        return AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
-    }
-
     enum SpeechError: LocalizedError {
         case recognizerUnavailable
+        case invalidInputFormat
 
         var errorDescription: String? {
             switch self {
             case .recognizerUnavailable:
                 return "Speech recognition is unavailable on this device."
+            case .invalidInputFormat:
+                return "Microphone input is not ready. Wait for Listening… and try again."
             }
         }
     }

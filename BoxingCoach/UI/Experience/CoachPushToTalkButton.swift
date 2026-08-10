@@ -19,10 +19,11 @@ struct CoachPushToTalkButton: View {
     @State private var isPressed = false
 
     private var isBusy: Bool { isRouting || isGeneratingResponse }
+    private var isEngaged: Bool { isListening || isPressed }
 
     private var label: String {
         if isGeneratingResponse || isRouting { return "Generating response…" }
-        if isListening || isPressed {
+        if isEngaged {
             return isCaptureReady ? "Listening…" : "Getting ready…"
         }
         return "Hold to Ask Coach"
@@ -38,69 +39,93 @@ struct CoachPushToTalkButton: View {
             }
         }
         .disabled(isDisabled || isBusy)
-        .simultaneousGesture(pressGesture)
         .accessibilityLabel("Ask Coach")
         .accessibilityHint("Hold while speaking, then release to hear a coaching response")
         .accessibilityInputLabels(["Ask Coach", "Hold to Ask Coach", "Voice command"])
     }
 
     private var standardButton: some View {
-        Button(action: {}) {
-            Label(label, systemImage: micSymbol)
-                .font(.body.weight(.semibold))
-        }
-        .buttonStyle(.borderedProminent)
-        .tint(buttonTint)
+        Label(label, systemImage: micSymbol)
+            .font(.body.weight(.semibold))
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 16)
+            .padding(.vertical, 10)
+            .background(buttonTint.opacity(0.2), in: Capsule())
+            .overlay(Capsule().stroke(buttonTint, lineWidth: 1.5))
+            .foregroundStyle(buttonTint)
+            .contentShape(Capsule())
+            .modifier(PressAndHoldModifier(isDisabled: isDisabled || isBusy, onPress: handlePress, onRelease: handleRelease))
     }
 
     private var compactButton: some View {
-        Button(action: {}) {
-            VStack(spacing: 6) {
-                Image(systemName: micSymbol)
-                    .font(.title2.weight(.semibold))
-                    .frame(width: 52, height: 52)
-                Text(shortLabel)
-                    .font(.caption2.weight(.semibold))
-                    .multilineTextAlignment(.center)
-                    .frame(maxWidth: 88)
-            }
+        VStack(spacing: 6) {
+            Image(systemName: micSymbol)
+                .font(.title2.weight(.semibold))
+                .frame(width: 52, height: 52)
+            Text(shortLabel)
+                .font(.caption2.weight(.semibold))
+                .multilineTextAlignment(.center)
+                .frame(maxWidth: 88)
         }
-        .buttonStyle(.borderedProminent)
-        .tint(buttonTint)
-        .controlSize(.large)
+        .padding(8)
+        .background(buttonTint.opacity(0.2), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).stroke(buttonTint, lineWidth: 1.5))
+        .foregroundStyle(buttonTint)
+        .contentShape(RoundedRectangle(cornerRadius: 14))
+        .modifier(PressAndHoldModifier(isDisabled: isDisabled || isBusy, onPress: handlePress, onRelease: handleRelease))
     }
 
     private var shortLabel: String {
         if isGeneratingResponse || isRouting { return "Thinking…" }
-        if isListening || isPressed {
+        if isEngaged {
             return isCaptureReady ? "Listening" : "Ready…"
         }
         return "Ask Coach"
     }
 
     private var micSymbol: String {
-        isListening || isPressed || isBusy ? "mic.fill" : "mic"
+        isEngaged || isBusy ? "mic.fill" : "mic"
     }
 
     private var buttonTint: Color {
         if isGeneratingResponse || isRouting { return .purple }
-        if isListening || isPressed { return .orange }
+        if isEngaged { return .orange }
         return .blue
     }
 
-    private var pressGesture: some Gesture {
-        DragGesture(minimumDistance: 0)
-            .onChanged { _ in
-                guard !isDisabled, !isBusy else { return }
-                if !isPressed {
-                    isPressed = true
-                    onPress()
-                }
-            }
-            .onEnded { _ in
-                guard isPressed else { return }
-                isPressed = false
-                onRelease()
-            }
+    private func handlePress() {
+        guard !isPressed else { return }
+        isPressed = true
+        onPress()
+    }
+
+    private func handleRelease() {
+        guard isPressed else { return }
+        isPressed = false
+        onRelease()
+    }
+}
+
+/// Reliable press-and-hold for visionOS window and spatial attachments.
+private struct PressAndHoldModifier: ViewModifier {
+    let isDisabled: Bool
+    let onPress: () -> Void
+    let onRelease: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onLongPressGesture(
+                minimumDuration: 0,
+                maximumDistance: 80,
+                pressing: { pressing in
+                    guard !isDisabled else { return }
+                    if pressing {
+                        onPress()
+                    } else {
+                        onRelease()
+                    }
+                },
+                perform: {}
+            )
     }
 }

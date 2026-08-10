@@ -113,7 +113,7 @@ final class AuraPunchSession {
     ]
     private let scorer = TechniqueScorer()
     private let feedbackGenerator: FeedbackGenerating
-    private let coachAudio: CoachAudioPlayer
+    private let liveVoice: CoachLiveVoiceService
     private let targets = TargetController()
 
     private var demoArm: ArmSilhouetteEntity?
@@ -134,11 +134,11 @@ final class AuraPunchSession {
     init(
         hands: HandTrackingService,
         feedbackGenerator: FeedbackGenerating = MockFeedbackGenerator(),
-        coachAudio: CoachAudioPlayer? = nil
+        liveVoice: CoachLiveVoiceService
     ) {
         self.hands = hands
         self.feedbackGenerator = feedbackGenerator
-        self.coachAudio = coachAudio ?? CoachAudioPlayer()
+        self.liveVoice = liveVoice
     }
 
     // MARK: Scene
@@ -211,7 +211,7 @@ final class AuraPunchSession {
         currentScoredPunch = 0
         phase = .idle
         statusMessage = "Stopped"
-        coachAudio.stop()
+        liveVoice.stop()
     }
 
     func reset() {
@@ -225,7 +225,7 @@ final class AuraPunchSession {
 
     /// Prepares audio output. Call when the immersive space opens, before `start()`.
     func prepareCoachAudio() {
-        coachAudio.prepare()
+        liveVoice.prepare()
     }
 
     // MARK: Session loop
@@ -258,7 +258,7 @@ final class AuraPunchSession {
             detail: "Raise your guard — the hologram will show you the punch",
             status: "Hold your guard up so we can see your hands…"
         )
-        coachAudio.play(id: .welcome)
+        liveVoice.speakMilestone(.welcome)
 
         await hands.start()
         guard hands.isRunning else {
@@ -450,7 +450,7 @@ final class AuraPunchSession {
 
             if guardUp == false {
                 if statusMessage != GuardCoach.waitMessage {
-                    coachAudio.play(id: .guardUp)
+                    liveVoice.speakMilestone(.guardUp)
                 }
                 statusMessage = GuardCoach.waitMessage
                 let progress = wallDuration > 0 ? min(1, activeElapsed / wallDuration) : 1
@@ -516,7 +516,7 @@ final class AuraPunchSession {
 
             if nonPunchingGuardStatus(punchingSide: side, solver: solver) == false {
                 if statusMessage != GuardCoach.waitMessage {
-                    coachAudio.play(id: .guardUp)
+                    liveVoice.speakMilestone(.guardUp)
                 }
                 statusMessage = GuardCoach.waitMessage
                 poseGhost(reference: reference, side: side, solver: solver, at: referenceTime)
@@ -593,7 +593,7 @@ final class AuraPunchSession {
 
     private func runCountdown() async {
         phase = .countdown
-        coachAudio.play(id: .countdown)
+        liveVoice.speakMilestone(.countdown)
         for count in [3, 2, 1] {
             if Task.isCancelled { return }
             setCoaching(
@@ -608,7 +608,7 @@ final class AuraPunchSession {
     private func runScoredTargetRound(solver: ArmPoseSolver) async {
         phase = .attempting
         currentScoredPunch = 0
-        coachAudio.play(id: .hitTarget)
+        liveVoice.speakMilestone(.hitTarget)
 
         let expectedSide = technique.hand.side(for: stance)
         let reference = ReferencePunchLibrary.punch(
@@ -857,7 +857,7 @@ final class AuraPunchSession {
         score = aggregated
         feedback = await feedbackGenerator.feedback(for: aggregated, technique: technique)
 
-        coachAudio.play(id: aggregated.overall >= 74 ? .resultsGood : .resultsNeedsWork)
+        liveVoice.speakMilestone(aggregated.overall >= 74 ? .resultsGood : .resultsNeedsWork)
         phase = .results
         statusMessage = aggregated.wrongHand
             ? "Round complete — that was your \(aggregated.thrownHandName) hand"

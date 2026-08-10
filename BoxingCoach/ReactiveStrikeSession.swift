@@ -75,14 +75,14 @@ final class ReactiveStrikeSession {
     private var competitionStartedAt: TimeInterval?
     private var competitionPausedDuration: TimeInterval = 0
     private var trackingResumeRequested = false
-    private let coachAudio: CoachAudioPlayer
+    private let liveVoice: CoachLiveVoiceService
     let voiceCoach: CoachVoiceCoach
 
     init() {
-        let coachAudio = CoachAudioPlayer()
-        self.coachAudio = coachAudio
-        voiceCoach = CoachVoiceCoach(audioPlayer: coachAudio)
-        auraPunch = AuraPunchSession(hands: hands, coachAudio: coachAudio)
+        let liveVoice = CoachLiveVoiceService()
+        self.liveVoice = liveVoice
+        voiceCoach = CoachVoiceCoach(liveVoice: liveVoice)
+        auraPunch = AuraPunchSession(hands: hands, liveVoice: liveVoice)
     }
 
     var progressLabel: String {
@@ -111,11 +111,18 @@ final class ReactiveStrikeSession {
     func immersiveSpaceDidOpen() {
         isImmersiveSpaceOpen = true
         auraPunch.prepareCoachAudio()
+        Task {
+            await liveVoice.prefetchMilestones([.welcome, .guardUp, .countdown, .hitTarget])
+        }
     }
 
     func immersiveSpaceDidClose() {
         isImmersiveSpaceOpen = false
         voiceCoach.shutdown()
+    }
+
+    func liveVoicePrefetchIfNeeded() async {
+        await liveVoice.prefetchMilestones([.welcome, .guardUp, .countdown, .hitTarget, .calibrateReach])
     }
 
     func configure(
@@ -230,7 +237,7 @@ final class ReactiveStrikeSession {
         phase = .calibrating
         lastFeedback = "Raise both hands into guard"
         errorMessage = nil
-        coachAudio.play(id: .guardUp)
+        liveVoice.speakMilestone(.guardUp)
         isTrackingPaused = false
         trackingReadyToResume = false
         trackingResumeRequested = false
@@ -245,7 +252,7 @@ final class ReactiveStrikeSession {
         // Also covers a system-driven immersive dismissal. Aura Punch must stop here too or its
         // pose loop would keep running against tracking providers that no longer have a scene.
         auraPunch.stop()
-        coachAudio.stop()
+        liveVoice.stop()
 
         drillTask?.cancel()
         drillTask = nil
@@ -375,7 +382,7 @@ final class ReactiveStrikeSession {
             competitionTrackingStatus = .complete
             phase = .finished
             lastFeedback = "Reach calibrated"
-            coachAudio.play(id: .reachCalibrated)
+            liveVoice.speakMilestone( .reachCalibrated)
             return
         }
 
@@ -395,7 +402,7 @@ final class ReactiveStrikeSession {
         guard !Task.isCancelled, phase == .running else { return }
         if capturesCompetitionEvidence {
             competitionStartedAt = ProcessInfo.processInfo.systemUptime
-            coachAudio.play(id: .countdown)
+            liveVoice.speakMilestone( .countdown)
         }
 
         if mode == .combination {
@@ -481,7 +488,7 @@ final class ReactiveStrikeSession {
 
         phase = .calibrating
         lastFeedback = "Keep a relaxed closed fist, punch out, and hold — left arm first"
-        coachAudio.play(id: .calibrateReach)
+        liveVoice.speakMilestone( .calibrateReach)
 
         // Keep the cue at a neutral reference distance. Placing it at an authored profile edge can
         // encourage a shorter user to lean, moving the body frame while reach is being measured.
@@ -533,10 +540,10 @@ final class ReactiveStrikeSession {
                     measuredReaches[side] = settled
                     if measuredReaches.count == 1 {
                         lastFeedback = "Keep your fist closed, then punch out and hold with your \(side.opposite.rawValue) arm"
-                        coachAudio.play(id: .extendOtherArm)
+                        liveVoice.speakMilestone( .extendOtherArm)
                     } else {
                         lastFeedback = "Reach calibrated"
-                        coachAudio.play(id: .reachCalibrated)
+                        liveVoice.speakMilestone( .reachCalibrated)
                     }
                 }
             }
@@ -647,7 +654,7 @@ final class ReactiveStrikeSession {
         beginAttempt(fistAtSpawn: fistPositionForCurrentRun(nearestTo: worldPosition))
         lastFeedback = "Punch!"
         if capturesCompetitionEvidence {
-            coachAudio.play(id: .hitTarget)
+            liveVoice.speakMilestone( .hitTarget)
         }
 
         var activeElapsed: TimeInterval = 0

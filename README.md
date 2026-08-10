@@ -27,14 +27,20 @@ Useful targets:
 Open `BoxingCoach.xcodeproj` and select the `BoxingCoach` scheme to run on Apple Vision Pro.
 ARKit hand tracking is unavailable in the simulator, so live punch validation requires hardware.
 
-## OpenAI voice routing
+## OpenAI live voice coach
 
-The AI voice coach routes speech to pre-recorded clips. Common phrases work offline via keyword
-matching; an OpenAI API key enables smarter routing for varied phrasing.
+All coach speech is generated at runtime via OpenAI:
+
+- **Drill milestones** (welcome, guard, countdown, hit feedback) use fixed scripts → OpenAI TTS
+- **Push-to-talk Q&A** uses on-device speech-to-text → OpenAI Chat (answer text) → OpenAI TTS
+
+Setup:
 
 1. Copy `Secrets.xcconfig.example` to `Secrets.xcconfig`
 2. Set `OPENAI_API_KEY = sk-...` in that file
-3. Rebuild the app
+3. Clean build and run on Vision Pro (network required for voice)
+
+Milestone audio is cached on disk after the first fetch. On-screen hologram text remains if voice fails.
 
 `Secrets.xcconfig` is gitignored — never commit your real key.
 

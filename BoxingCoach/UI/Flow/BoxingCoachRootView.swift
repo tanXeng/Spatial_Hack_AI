@@ -88,8 +88,12 @@ struct BoxingCoachRootView: View {
         }
         .onAppear {
             flow.controlWindowDidAppear()
+            session.auraPunch.prepareCoachAudio()
             session.voiceCoach.prepare()
             refreshWindowVoiceContext()
+            Task {
+                await session.liveVoicePrefetchIfNeeded()
+            }
         }
         .task {
             await competitionStore.bootstrap()

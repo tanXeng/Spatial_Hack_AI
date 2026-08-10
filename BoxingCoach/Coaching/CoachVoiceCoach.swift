@@ -294,9 +294,14 @@ final class CoachVoiceCoach {
     private var processingTask: Task<Void, Never>?
     private var lifecycle = CoachVoiceLifecycle()
     private var trainingPauseEventIDs: [CoachVoiceCaptureID: UUID] = [:]
-    private var commandContextProvider: (@MainActor () -> VoiceCommandContext)?
-    private var commandContextAtCapture: VoiceCommandContext?
-    private var commandHandler: (@MainActor (String, VoiceCommandContext?) async -> CoachVoiceCommandResponse?)?
+    struct CommandIssuance: Sendable {
+        let context: VoiceCommandContext
+        let generation: UInt64
+    }
+
+    private var commandIssuanceProvider: (@MainActor () -> CommandIssuance)?
+    private var commandIssuanceAtCapture: CommandIssuance?
+    private var commandHandler: (@MainActor (String, CommandIssuance?) async -> CoachVoiceCommandResponse?)?
     private(set) var activeCommandHandlerRegistrationID: UUID?
     private var responseAwaitingPlayback: CoachVoiceCaptureID?
     var onCaptureCycleEvent: ((CoachVoiceCyclePauseOwner.Event) -> Void)?
@@ -327,23 +332,23 @@ final class CoachVoiceCoach {
     }
 
     func setCommandHandler(
-        contextProvider: (@MainActor () -> VoiceCommandContext)? = nil,
-        _ handler: (@MainActor (String, VoiceCommandContext?) async -> CoachVoiceCommandResponse?)?
+        issuanceProvider: (@MainActor () -> CommandIssuance)? = nil,
+        _ handler: (@MainActor (String, CommandIssuance?) async -> CoachVoiceCommandResponse?)?
     ) {
         activeCommandHandlerRegistrationID = handler == nil ? nil : UUID()
-        commandContextProvider = contextProvider
+        commandIssuanceProvider = issuanceProvider
         commandHandler = handler
     }
 
     @discardableResult
     func registerCommandHandler(
-        contextProvider: (@MainActor () -> VoiceCommandContext)? = nil,
-        _ handler: @escaping @MainActor (String, VoiceCommandContext?) async
+        issuanceProvider: (@MainActor () -> CommandIssuance)? = nil,
+        _ handler: @escaping @MainActor (String, CommandIssuance?) async
             -> CoachVoiceCommandResponse?
     ) -> UUID {
         let registrationID = UUID()
         activeCommandHandlerRegistrationID = registrationID
-        commandContextProvider = contextProvider
+        commandIssuanceProvider = issuanceProvider
         commandHandler = handler
         return registrationID
     }
@@ -351,7 +356,7 @@ final class CoachVoiceCoach {
     func unregisterCommandHandler(_ registrationID: UUID) {
         guard activeCommandHandlerRegistrationID == registrationID else { return }
         activeCommandHandlerRegistrationID = nil
-        commandContextProvider = nil
+        commandIssuanceProvider = nil
         commandHandler = nil
     }
 
@@ -463,7 +468,7 @@ final class CoachVoiceCoach {
 
             let commandResponse: CoachVoiceCommandResponse?
             if let commandHandler {
-                commandResponse = await commandHandler(transcript, commandContextAtCapture)
+                commandResponse = await commandHandler(transcript, commandIssuanceAtCapture)
             } else {
                 commandResponse = nil
             }
@@ -520,7 +525,7 @@ final class CoachVoiceCoach {
 
     private func revokeCaptureLocally(interrupted: Bool) {
         responseAwaitingPlayback = nil
-        commandContextAtCapture = nil
+        commandIssuanceAtCapture = nil
         if let captureID = lifecycle.activeCaptureID {
             _ = reduce(interrupted ? .interrupted(id: captureID) : .cancel(id: captureID))
             finishTrainingPause(for: captureID, completed: false)
@@ -538,7 +543,7 @@ final class CoachVoiceCoach {
         origin: TrainingAudioSceneOwner
     ) {
         lastTranscript = nil
-        commandContextAtCapture = commandContextProvider?()
+        commandIssuanceAtCapture = commandIssuanceProvider?()
         beginTrainingPause(for: id)
         setupTask?.cancel()
         setupTask = Task { [weak self] in
@@ -580,7 +585,7 @@ final class CoachVoiceCoach {
 
     private func completeResponse(id: CoachVoiceCaptureID) {
         _ = reduce(.responseFinished(id: id))
-        commandContextAtCapture = nil
+        commandIssuanceAtCapture = nil
         clearPrivateState()
         finishTrainingPause(for: id, completed: true)
     }

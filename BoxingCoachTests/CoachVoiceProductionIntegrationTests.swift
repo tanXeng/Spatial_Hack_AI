@@ -49,11 +49,11 @@ struct CoachVoiceProductionIntegrationTests {
         let speech = ProductionVoiceSpeechClient(transcript: "pause training")
         let target = ProductionVoiceTarget(state: .learn, capabilities: [.pause])
         let coach = CoachVoiceCoach(audioCoordinator: coordinator, speechClient: speech)
-        coach.setCommandHandler { transcript, issuedContext in
+        coach.setCommandHandler { transcript, issuance in
             await CoachVoiceCommandRouter().resolve(
                 transcript: transcript,
                 issuedFor: target.commandGeneration,
-                issuedContext: issuedContext,
+                issuedContext: issuance?.context,
                 on: target
             )
         }

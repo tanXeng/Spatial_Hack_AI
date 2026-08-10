@@ -609,7 +609,10 @@ final class ReactiveStrikeSession {
     func stopDrill(preservingVoiceCapture: Bool = false) {
         // Also covers a system-driven immersive dismissal. Aura Punch must stop here too or its
         // pose loop would keep running against tracking providers that no longer have a scene.
-        auraPunch.stop(preservingVoiceCapture: preservingVoiceCapture)
+        auraPunch.stop(
+            preservingVoiceCapture: preservingVoiceCapture,
+            emitsTrainingStop: false
+        )
         audioCoordinator.handleImmediately(.trainingDidStop(
             preservingVoiceCapture: preservingVoiceCapture
         ))

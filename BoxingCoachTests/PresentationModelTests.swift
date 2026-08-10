@@ -5,25 +5,34 @@ import Testing
 @Suite("Judge and audience presentation model")
 struct PresentationModelTests {
     @Test(
-        "Every judge state keeps one stage, one instruction, and optional compact evidence",
+        "Every judge stage keeps authored public copy and one optional compact metric",
         arguments: [
-            TrainingPresentationState(stage: "WELCOME", instruction: "Choose First Round or Technical Camp."),
-            TrainingPresentationState(stage: "SAFETY", instruction: "Clear enough room to extend both arms."),
-            TrainingPresentationState(stage: "FIT", instruction: "Measure both arms inside comfortable reach."),
-            TrainingPresentationState(stage: "LEARN", instruction: "Follow the cyan guide from guard to guard.", progress: "2 of 4"),
-            TrainingPresentationState(stage: "BASELINE", instruction: "Throw one controlled punch.", progress: "1 of 3"),
-            TrainingPresentationState(stage: "CORRECT", instruction: "Keep the elbow under the fist.", proofMetric: "Path 62"),
-            TrainingPresentationState(stage: "PROVE", instruction: "Repeat the same punch.", proofMetric: "Path 62 to 74"),
-            TrainingPresentationState(stage: "TRANSFER", instruction: "Throw a stance-correct 1–2."),
-            TrainingPresentationState(stage: "COMPETE", instruction: "Hit the target and return to guard.", progress: "4 of 10"),
-            TrainingPresentationState(stage: "CELEBRATE", instruction: "Round complete.", proofMetric: "Path plus 12"),
-            TrainingPresentationState(stage: "TRACKING PAUSED", instruction: "Return both fists to guard."),
-            TrainingPresentationState(stage: "COACH OFFLINE", instruction: "Measured local coaching remains available."),
+            (TrainingPresentationStage.welcome, TrainingPublicInstruction.chooseTrack),
+            (.safety, .clearSafeSpace),
+            (.fit, .fitReach),
+            (.learn, .followGuide),
+            (.baseline, .controlledPunch),
+            (.correct, .focus(.path)),
+            (.prove, .repeatPunch),
+            (.transfer, .transferOneTwo),
+            (.compete, .competeTarget),
+            (.celebrate, .roundComplete),
+            (.trackingPaused, .recoverTracking),
+            (.coachOffline, .localCoachAvailable),
         ]
     )
-    func judgeStateRemainsCompact(state: TrainingPresentationState) {
-        #expect(!state.stage.isEmpty)
-        #expect(!state.instruction.isEmpty)
+    func judgeStateRemainsCompact(
+        stage: TrainingPresentationStage,
+        instruction: TrainingPublicInstruction
+    ) throws {
+        let state = try #require(TrainingPresentationState(
+            stage: stage,
+            instruction: instruction
+        ))
+        let mirror = AudienceMirrorPresenter.presentation(for: state)
+
+        #expect(!mirror.stage.isEmpty)
+        #expect(!mirror.instruction.isEmpty)
         #expect(state.secondaryMetricCount <= 1)
     }
 
@@ -36,22 +45,43 @@ struct PresentationModelTests {
             displayCode: "0427",
             against: []
         ))
-        let state = TrainingPresentationState(
-            stage: "COMPETE",
-            instruction: "Final target.",
-            progress: "9 of 10",
-            competitionScore: 820,
+        let state = try #require(TrainingPresentationState(
+            stage: .compete,
+            instruction: .competeTarget,
+            progress: TrainingProgressPresentation(current: 9, total: 10),
+            competitionScore: 82,
             competitionRank: 2,
             publicHandle: handle
-        )
+        ))
 
         let mirror = AudienceMirrorPresenter.presentation(for: state)
 
         #expect(mirror.publicIdentity == "Blue Corner #0427")
         #expect(mirror.stage == "COMPETE")
-        #expect(mirror.instruction == "Final target.")
-        #expect(mirror.score == "820 points")
+        #expect(mirror.instruction == "Hit the target and return to guard.")
+        #expect(mirror.score == "82 points")
         #expect(mirror.rank == "Rank 2")
+    }
+
+    @Test("Invalid score, rank, proof, and progress cannot enter the public boundary")
+    func invalidPublicEvidenceFailsClosed() {
+        #expect(TrainingPresentationState(
+            stage: .compete,
+            instruction: .competeTarget,
+            competitionScore: -1
+        ) == nil)
+        #expect(TrainingPresentationState(
+            stage: .compete,
+            instruction: .competeTarget,
+            competitionScore: 101
+        ) == nil)
+        #expect(TrainingPresentationState(
+            stage: .compete,
+            instruction: .competeTarget,
+            competitionRank: 0
+        ) == nil)
+        #expect(TrainingProgressPresentation(current: 11, total: 10) == nil)
+        #expect(TrainingProofPresentation(metric: .path, baseline: -1, retest: 80) == nil)
     }
 
     @Test("Idle handoff clears all participant and result evidence")
@@ -60,6 +90,7 @@ struct PresentationModelTests {
 
         #expect(mirror.publicIdentity == nil)
         #expect(mirror.proofMetric == nil)
+        #expect(mirror.progress == nil)
         #expect(mirror.score == nil)
         #expect(mirror.rank == nil)
         #expect(mirror.stage == "NEXT BOXER")

@@ -1,42 +1,122 @@
 import Foundation
 
+nonisolated enum TrainingPresentationStage: String, CaseIterable, Equatable, Sendable {
+    case welcome = "WELCOME"
+    case safety = "SAFETY"
+    case fit = "FIT"
+    case learn = "LEARN"
+    case baseline = "BASELINE"
+    case correct = "CORRECT"
+    case prove = "PROVE"
+    case transfer = "TRANSFER"
+    case compete = "COMPETE"
+    case celebrate = "CELEBRATE"
+    case trackingPaused = "TRACKING PAUSED"
+    case coachOffline = "COACH OFFLINE"
+    case nextBoxer = "NEXT BOXER"
+}
+
+/// Authored public copy only. There is deliberately no raw-string case, so profile data,
+/// transcripts, participant names, or motion samples cannot be forwarded to the mirror.
+nonisolated enum TrainingPublicInstruction: Equatable, Sendable {
+    case chooseTrack
+    case clearSafeSpace
+    case fitReach
+    case followGuide
+    case controlledPunch
+    case focus(SubMetricKind)
+    case repeatPunch
+    case transferOneTwo
+    case competeTarget
+    case roundComplete
+    case recoverTracking
+    case localCoachAvailable
+    case nextParticipant
+
+    var text: String {
+        switch self {
+        case .chooseTrack: "Choose First Round or Technical Camp."
+        case .clearSafeSpace: "Clear enough room to extend both arms."
+        case .fitReach: "Measure both arms inside comfortable reach."
+        case .followGuide: "Follow the cyan guide from guard to guard."
+        case .controlledPunch: "Throw one controlled punch."
+        case .focus(let metric): "Focus on \(metric.title.lowercased())."
+        case .repeatPunch: "Repeat the same punch."
+        case .transferOneTwo: "Throw a stance-correct 1–2."
+        case .competeTarget: "Hit the target and return to guard."
+        case .roundComplete: "Round complete."
+        case .recoverTracking: "Return both fists to guard."
+        case .localCoachAvailable: "Measured local coaching remains available."
+        case .nextParticipant: "The headset is ready for the next participant."
+        }
+    }
+}
+
+nonisolated struct TrainingProgressPresentation: Equatable, Sendable {
+    let current: Int
+    let total: Int
+
+    init?(current: Int, total: Int) {
+        guard total > 0, (0...total).contains(current) else { return nil }
+        self.current = current
+        self.total = total
+    }
+
+    var text: String { "\(current) of \(total)" }
+}
+
+nonisolated struct TrainingProofPresentation: Equatable, Sendable {
+    let metric: SubMetricKind
+    let baseline: Int
+    let retest: Int
+
+    init?(metric: SubMetricKind, baseline: Int, retest: Int) {
+        guard (0...100).contains(baseline), (0...100).contains(retest) else { return nil }
+        self.metric = metric
+        self.baseline = baseline
+        self.retest = retest
+    }
+
+    var text: String { "\(metric.title) \(baseline) to \(retest)" }
+}
+
 /// Immutable, privacy-bounded state shared by headset and audience presentation.
-///
-/// It intentionally accepts only the event-local public handle. Private participant names,
-/// calibration details, raw motion, transcripts, and profile memory cannot enter this boundary.
 nonisolated struct TrainingPresentationState: Equatable, Sendable {
-    let stage: String
-    let instruction: String
-    let proofMetric: String?
-    let progress: String?
+    let stage: TrainingPresentationStage
+    let instruction: TrainingPublicInstruction
+    let proof: TrainingProofPresentation?
+    let progress: TrainingProgressPresentation?
     let competitionScore: Int?
     let competitionRank: Int?
     let publicHandle: ParticipantPublicHandle?
 
-    init(
-        stage: String,
-        instruction: String,
-        proofMetric: String? = nil,
-        progress: String? = nil,
+    init?(
+        stage: TrainingPresentationStage,
+        instruction: TrainingPublicInstruction,
+        proof: TrainingProofPresentation? = nil,
+        progress: TrainingProgressPresentation? = nil,
         competitionScore: Int? = nil,
         competitionRank: Int? = nil,
         publicHandle: ParticipantPublicHandle? = nil
     ) {
+        guard competitionScore.map({ (0...100).contains($0) }) ?? true,
+              competitionRank.map({ $0 > 0 }) ?? true
+        else { return nil }
         self.stage = stage
         self.instruction = instruction
-        self.proofMetric = proofMetric
+        self.proof = proof
         self.progress = progress
         self.competitionScore = competitionScore
         self.competitionRank = competitionRank
         self.publicHandle = publicHandle
     }
 
-    var secondaryMetricCount: Int { proofMetric == nil ? 0 : 1 }
+    var secondaryMetricCount: Int { proof == nil ? 0 : 1 }
 
     static let nextBoxer = Self(
-        stage: "NEXT BOXER",
-        instruction: "The headset is ready for the next participant."
-    )
+        stage: .nextBoxer,
+        instruction: .nextParticipant
+    )!
 }
 
 nonisolated struct AudienceMirrorPresentation: Equatable, Sendable {
@@ -47,18 +127,20 @@ nonisolated struct AudienceMirrorPresentation: Equatable, Sendable {
     let score: String?
     let rank: String?
     let publicIdentity: String?
+
+    fileprivate init(state: TrainingPresentationState) {
+        stage = state.stage.rawValue
+        instruction = state.instruction.text
+        proofMetric = state.proof?.text
+        progress = state.progress?.text
+        score = state.competitionScore.map { "\($0) points" }
+        rank = state.competitionRank.map { "Rank \($0)" }
+        publicIdentity = state.publicHandle?.displayValue
+    }
 }
 
 nonisolated enum AudienceMirrorPresenter {
     static func presentation(for state: TrainingPresentationState) -> AudienceMirrorPresentation {
-        AudienceMirrorPresentation(
-            stage: state.stage,
-            instruction: state.instruction,
-            proofMetric: state.proofMetric,
-            progress: state.progress,
-            score: state.competitionScore.map { "\($0) points" },
-            rank: state.competitionRank.map { "Rank \($0)" },
-            publicIdentity: state.publicHandle?.displayValue
-        )
+        AudienceMirrorPresentation(state: state)
     }
 }

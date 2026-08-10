@@ -231,11 +231,13 @@ struct BoxingCoachImmersiveView: View {
 
     private func bindVoiceCommands() {
         voiceCommandRegistrationID = session.voiceCoach.registerCommandHandler(
-            contextProvider: { [session, flow] in
-                flow.voiceCommandContext(session: session)
+            issuanceProvider: { [session, flow] in
+                CoachVoiceCoach.CommandIssuance(
+                    context: flow.voiceCommandContext(session: session),
+                    generation: flow.commandGeneration
+                )
             }
-        ) { [session, flow] transcript, issuedContext in
-            let generation = flow.commandGeneration
+        ) { [session, flow] transcript, issuance in
             let target = TrainingSessionCommandTarget(
                 flow: flow,
                 session: session,
@@ -244,8 +246,8 @@ struct BoxingCoachImmersiveView: View {
             )
             return await CoachVoiceCommandRouter().resolve(
                 transcript: transcript,
-                issuedFor: generation,
-                issuedContext: issuedContext,
+                issuedFor: issuance?.generation ?? flow.commandGeneration,
+                issuedContext: issuance?.context,
                 on: target
             )
         }

@@ -365,7 +365,10 @@ final class AuraPunchSession {
         }
     }
 
-    func stop(preservingVoiceCapture: Bool = false) {
+    func stop(
+        preservingVoiceCapture: Bool = false,
+        emitsTrainingStop: Bool = true
+    ) {
         // Results are not "running", but their optional phrasing request still is.
         cancelPendingPhrasing()
 
@@ -391,9 +394,11 @@ final class AuraPunchSession {
         invalidateDemoContinuation()
         phase = .idle
         statusMessage = "Stopped"
-        audioCoordinator.handleImmediately(.trainingDidStop(
-            preservingVoiceCapture: preservingVoiceCapture
-        ))
+        if emitsTrainingStop {
+            audioCoordinator.handleImmediately(.trainingDidStop(
+                preservingVoiceCapture: preservingVoiceCapture
+            ))
+        }
     }
 
     func reset() {

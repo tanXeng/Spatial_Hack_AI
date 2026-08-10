@@ -33,6 +33,32 @@ All three features in `TrainingFeature` are now built.
 
 Both resolve to `ReachProfile.air`.
 
+### Voice coach and Competition (merged from `merge-voice-ui`)
+
+Two subsystems arrived from `merge-voice-ui` and sit alongside the three features above.
+
+- **Voice coach** (`Coaching/`) — push-to-talk in the immersive scene. `SpeechRecognitionClient`
+  transcribes, `CoachClipRouter` asks an OpenAI model to pick **one** clip ID from a fixed
+  catalogue, and `CoachAudioPlayer` plays the matching pre-recorded MP3 from
+  `BoxingCoach/CoachAudio/`. The model **only routes to an existing clip** — it never generates
+  speech — so the coach can never say something unvetted on stage. `CoachSecrets` reads the key
+  from `Secrets.xcconfig`, which is gitignored; copy `Secrets.xcconfig.example` to
+  `Secrets.xcconfig` or **the project will not build at all** (it is a base configuration
+  reference, so the failure is a project-load error, not a Swift error).
+- **Competition** (`Competition/`) — persisted players, ranked runs, and a leaderboard.
+
+Merge decisions worth knowing, because both undid a duplicate that branch had introduced:
+
+- **There is still exactly one reach measurement.** `merge-voice-ui` had its own
+  `calibratedReaches: [ReactiveStrikeMode: [BodySide: Float]]` cache inside
+  `ReactiveStrikeSession`, plus inline re-calibration in `runDrill`. Both were folded into the
+  shared `BodyCalibration`; `latestCalibratedReaches` is now a computed mirror of
+  `calibration.reaches` so Competition cannot drift from the gate's measurement.
+- **`TrainingSelection.calibration` is the single calibration case.** That branch called it
+  `.reachCalibration`; the name here is `.calibration` and it still maps to
+  `TrainingFeature.anthropometry`. `.competitionCalibration(playerID:)` and `.competition(...)`
+  are separate because they measure on behalf of a stored player record, not the launch gate.
+
 ### The coach character
 
 A rigged humanoid demonstrates the selected punch **once, at full speed, before** the ghost overlay
@@ -221,7 +247,7 @@ Both targets use `PBXFileSystemSynchronizedRootGroup`, so **new files under `Box
 - `@Observable` throughout, not legacy `ObservableObject`.
 - The project sets `SWIFT_DEFAULT_ACTOR_ISOLATION = MainActor`. Pure data/math types that must be readable from off-main code need an explicit `nonisolated` — see `PunchType`, `Stance`, `BodySide`, `Technique`, `CombinationPunchValidator`.
 - **Features and techniques are data, not screens.** Adding a technique or a combination should be a data change, not a new view. There is no `Feature.swift` — the feature list is the `TrainingFeature` enum in `TrainingFlowCoordinator.swift`.
-- **Anthropometry is a stub.** `BodyMeasurements` has default values and the flow routes through `UnavailableFeatureView` — no measurement capture logic.
+- **Anthropometry is fully built and gates the app** — see the Feature Set table. (`UnavailableFeatureView` no longer exists.)
 - Anything network/LLM-backed sits behind `FeedbackGenerating` with a mock implementation, so UI work isn't blocked and the demo has a fallback if conference wifi fails.
 - Comment the IK and coordinate-space math heavily. Coordinate frames (world vs. head-relative vs. body-relative) are where this project is most likely to break, and teammates read this code cold.
 
@@ -245,7 +271,9 @@ Both targets use `PBXFileSystemSynchronizedRootGroup`, so **new files under `Box
 
 ## Open Questions / TODO
 
-- [ ] **Feedback is offline-only today.** `ClaudeFeedbackGenerator` is written and current, but nothing constructs it — `AuraPunchSession.init` defaults to `MockFeedbackGenerator` and `ReactiveStrikeSession` never overrides it. Wiring it up needs an API key, and a key compiled into the binary is extractable by anyone with the `.app`.
+- [ ] **Scored feedback is still offline-only.** `ClaudeFeedbackGenerator` is written and current, but nothing constructs it — `AuraPunchSession.init` defaults to `MockFeedbackGenerator` and `ReactiveStrikeSession` never overrides it. Note this is *separate* from the voice coach, which does call a live model but only to pick a pre-recorded clip.
+- [ ] **The voice coach's key ships in the built app.** `Secrets.xcconfig` keeps it out of Git, but an `xcconfig` value is baked into the binary and is extractable from the `.app`. Fine for a hackathon demo; not shippable.
+- [ ] **`CoachAudio/` is duplicated at the repo root.** The bundled copy is `BoxingCoach/CoachAudio/` (picked up by the synchronized group). The root `CoachAudio/` has no `project.pbxproj` reference and is dead weight — safe to delete once someone confirms nothing external reads it.
 - [ ] **Scoring thresholds are hand-tuned from geometry, not calibrated** against real attempts (`ScoringThresholds`). Same for the reference trajectories, `GuardCoach.dropThreshold` (0.46), and `ReachCalibration`'s plateau constants.
 - [ ] **Calibration measures the arm chain only.** `shoulderWidth`, `eyeToShoulderDrop`, and `eyeToShoulderSetback` are still `averageAdult`, and the measured value is fist-forward-of-shoulder-line rather than true shoulder-to-fist. Good enough to place targets and normalize scoring; not a real anthropometric capture.
 - [ ] **Calibration has only been verified in the simulator and by unit test.** The plateau detector's tolerance and duration need a real device pass — a user who never quite holds still falls through to the old percentile rule and gets an under-measured volume.

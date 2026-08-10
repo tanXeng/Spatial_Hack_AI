@@ -130,13 +130,13 @@ struct ReachProfile: Sendable, Equatable {
 }
 
 /// One accepted extension sample, tagged with the tracking timestamp it was observed at.
-struct ReachSample: Sendable, Equatable {
+nonisolated struct ReachSample: Sendable, Equatable {
     var forward: Float
     var time: TimeInterval
 }
 
 /// Pure calibration rules shared by the live session and its unit tests.
-enum ReachCalibration {
+nonisolated enum ReachCalibration {
     static let minimumExtensionFromGuard: Float = 0.18
     static let plausibleForwardRange: ClosedRange<Float> = 0.35...1.10
     static let minimumStableSampleCount = 8

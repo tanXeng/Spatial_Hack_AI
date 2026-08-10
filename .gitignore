@@ -58,6 +58,9 @@ Carthage/Build/
 # Local-only workspace/legacy/reference artifacts (kept out of Git)
 local/
 
+# API keys
+Secrets.xcconfig
+
 # Keep local docs/notes/scratch files local only (track only root README, CLAUDE.md, and the
 # shared Claude Code skills — those three are project documentation, not scratch).
 *.md

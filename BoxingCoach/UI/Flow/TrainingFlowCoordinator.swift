@@ -31,11 +31,16 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 enum TrainingSelection: Hashable, Sendable {
     case reactive(mode: ReactiveStrikeMode, combination: Combination?, stance: Stance)
     case aura(technique: Technique, stance: Stance)
+    /// The Anthropometry gate's own measurement run. Competition keeps separate cases because it
+    /// measures on behalf of a specific player record rather than the launch-wide calibration.
     case calibration
+    case competitionCalibration(playerID: UUID)
+    case competition(playerID: UUID, mode: CompetitionMode, stance: Stance, reach: BilateralReach)
 
     var feature: TrainingFeature {
         switch self {
-        case .reactive: return .reactiveStrike
+        case .reactive, .competitionCalibration, .competition:
+            return .reactiveStrike
         case .aura: return .auraPunch
         case .calibration: return .anthropometry
         }
@@ -101,6 +106,12 @@ final class TrainingFlowCoordinator {
 
     var controlsDisabled: Bool {
         transition != .idle
+    }
+
+    func navigate(to route: TrainingFlowRoute) {
+        guard transition == .idle else { return }
+        presentationError = nil
+        self.route = route
     }
 
     func chooseFeature(_ feature: TrainingFeature) {
@@ -239,7 +250,19 @@ final class TrainingFlowCoordinator {
             session.auraPunch.start()
 
         case .calibration:
+            // The gate's own dedicated loop, not a zero-target drill: it measures and stores into
+            // the shared `BodyCalibration` without any competition evidence bookkeeping.
             session.startCalibration()
+
+        case .competitionCalibration:
+            session.configureCompetitionCalibration()
+            session.resetForNewRound(keepingCompetitionConfiguration: true)
+            session.startDrill()
+
+        case .competition(_, let mode, let stance, let reach):
+            session.configureCompetition(mode: mode, stance: stance, reach: reach)
+            session.resetForNewRound(keepingCompetitionConfiguration: true)
+            session.startDrill()
         }
 
         transition = .idle
@@ -332,6 +355,10 @@ final class TrainingFlowCoordinator {
             // Backing out of a *mandatory* calibration would strand the user on a menu they cannot
             // use, so an unmeasured body stays on the calibration screen.
             route = calibration.isCalibrated ? .features : .experience(.calibration)
+
+        case .competitionCalibration, .competition:
+            session.resetForNewRound()
+            route = .features
         }
 
         presentationError = nil

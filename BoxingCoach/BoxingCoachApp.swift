@@ -14,6 +14,7 @@ struct BoxingCoachApp: App {
     @State private var calibration: BodyCalibration
     @State private var session: ReactiveStrikeSession
     @State private var flow: TrainingFlowCoordinator
+    @State private var competitionStore = CompetitionStore.live()
 
     init() {
         let calibration = BodyCalibration()
@@ -30,12 +31,14 @@ struct BoxingCoachApp: App {
             BoxingCoachRootView()
                 .environment(session)
                 .environment(flow)
+                .environment(competitionStore)
         }
 
         ImmersiveSpace(id: BoxingCoachSceneID.immersiveSpace) {
             BoxingCoachImmersiveView()
                 .environment(session)
                 .environment(flow)
+                .environment(competitionStore)
         }
         .immersionStyle(selection: .constant(.mixed), in: .mixed)
     }

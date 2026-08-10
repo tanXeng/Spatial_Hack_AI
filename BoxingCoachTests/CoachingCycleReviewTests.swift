@@ -331,6 +331,17 @@ struct CoachingCycleReviewTests {
         #expect(session.auraPunch.persistedReach == nil)
         #expect(session.auraPunch.learningStage == .fit)
         #expect(session.auraPunch.correctionOverlay == nil)
+        #expect(session.auraPunch.coachingHeadline == "GET READY")
+        #expect(session.auraPunch.coachingDetail == "Raise your guard to begin")
+        #expect(session.auraPunch.currentDemoRep == 0)
+        #expect(session.auraPunch.currentScoredPunch == 0)
+        #expect(session.auraPunch.liveReach == 0)
+        #expect(session.voiceCoach.lastTranscript == nil)
+        #expect(session.voiceCoach.lastRoutedClip == nil)
+        #expect(session.voiceCoach.lastError == nil)
+        #expect(!session.voiceCoach.isListening)
+        #expect(!session.voiceCoach.isRouting)
+        #expect(!session.voiceCoach.isGeneratingResponse)
     }
 
     @Test("Uppercut completes the same six-attempt proof engine")

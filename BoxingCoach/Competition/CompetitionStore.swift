@@ -348,7 +348,56 @@ final class CompetitionStore {
         _ result: CoachingCycleResult,
         fittedReach: BilateralReach
     ) async throws {
-        guard var player = currentPlayer else { throw CompetitionStoreError.noPlayer }
+        guard let player = currentPlayer else { throw CompetitionStoreError.noPlayer }
+        currentPlayer = try await persistCoachingCycle(
+            result,
+            fittedReach: fittedReach,
+            for: player
+        )
+    }
+
+    /// Gives standalone Aura a durable, non-identifying participant instead of silently dropping
+    /// its proof on a fresh launch. The participant is published only after the cycle transaction
+    /// succeeds, so visible "saved" state always has a matching durable record.
+    func persistStandaloneCoachingCycle(
+        _ result: CoachingCycleResult,
+        fittedReach: BilateralReach
+    ) async throws {
+        let localName = "Local Athlete"
+        let normalizedName = CompetitionName.normalized(localName)
+        let timestamp = now()
+        let player: CompetitionPlayer
+        if let currentPlayer {
+            player = currentPlayer
+        } else {
+            player = try await repository.player(normalizedName: normalizedName) ?? CompetitionPlayer(
+                id: UUID(),
+                name: localName,
+                normalizedName: normalizedName,
+                rememberedStance: result.stance,
+                reach: nil,
+                calibrationVersion: nil,
+                calibratedAt: nil,
+                createdAt: timestamp,
+                lastSeenAt: timestamp
+            )
+        }
+        let persisted = try await persistCoachingCycle(
+            result,
+            fittedReach: fittedReach,
+            for: player
+        )
+        currentPlayer = persisted
+        selectedStance = persisted.rememberedStance
+    }
+
+    private func persistCoachingCycle(
+        _ result: CoachingCycleResult,
+        fittedReach: BilateralReach,
+        for participant: CompetitionPlayer
+    ) async throws -> CompetitionPlayer {
+        var player = participant
+        player.rememberedStance = result.stance
         let roundProof = result.proof
 
         let admitted = roundProof.baseline.attempts + roundProof.retest.attempts
@@ -414,7 +463,7 @@ final class CompetitionStore {
             cycle: cycleSnapshot
         )
         try await repository.save(coachingCycle: transaction)
-        currentPlayer = player
+        return player
     }
 
     private func prepareRankedRun(

@@ -473,8 +473,9 @@ struct CoachingCycleReviewRound2Tests {
         let container = try CompetitionModelContainer.make(inMemory: true)
         let repository = SwiftDataCompetitionRepository(container: container)
         let store = CompetitionStore(repository: repository)
-        await store.join(name: "Live Aura")
-        let player = try #require(store.currentPlayer)
+        if scenario.baselineNeedsCorrection {
+            await store.join(name: "Live Aura")
+        }
 
         let tracking = LiveAuraTrackingHarness()
         let clock = LiveAuraClockHarness(tracking: tracking)
@@ -503,12 +504,18 @@ struct CoachingCycleReviewRound2Tests {
             session: aura,
             tracking: tracking
         )
-        clock.onSleep = { interruptions.clockDidSleep() }
+        var visibleProofDetails: [String] = []
+        clock.onSleep = {
+            interruptions.clockDidSleep()
+            if aura.learningStage == .proof {
+                visibleProofDetails.append(aura.coachingDetail)
+            }
+        }
 
         var completionCount = 0
         aura.cycleDidComplete = { result, reach in
             completionCount += 1
-            try await store.persistCoachingCycle(result, fittedReach: reach)
+            try await store.persistStandaloneCoachingCycle(result, fittedReach: reach)
         }
 
         aura.start()
@@ -524,9 +531,11 @@ struct CoachingCycleReviewRound2Tests {
         #expect(interruptions.transferVoicePauseCompleted)
         #expect(interruptions.learningTrackingRecoveryCompleted)
         #expect(interruptions.drillTrackingRecoveryCompleted)
-        #expect(audio.played.contains(.calibrateReach) == false)
+        #expect(!audio.played.contains(.calibrateReach))
+        #expect(aura.coachingDetail == "Your proof is saved locally")
 
         let result = try #require(aura.cycleResult)
+        let player = try #require(store.currentPlayer)
         let saved = try #require(try await repository.coachingCycle(id: result.id))
         #expect(saved.athleteID == player.id)
         #expect(saved.techniqueID == technique.id)
@@ -537,6 +546,20 @@ struct CoachingCycleReviewRound2Tests {
         } else {
             #expect(saved.selectedDelta == 0)
             #expect(saved.proofDisposition == .reinforced)
+            let proofDetail = try #require(visibleProofDetails.last)
+            #expect(proofDetail.localizedCaseInsensitiveContains("held"))
+            #expect(!proofDetail.localizedCaseInsensitiveContains("improved"))
+            let instruction = AuraImmersiveInstructionPolicy.instruction(
+                phase: .scoring,
+                coachingHeadline: "PROOF",
+                coachingDetail: proofDetail,
+                cyclePresentation: aura.cyclePresentation,
+                trackingPaused: false,
+                trainingPaused: false,
+                statusMessage: proofDetail
+            )
+            #expect(instruction.accessibilityValue.localizedCaseInsensitiveContains("held"))
+            #expect(!instruction.accessibilityValue.localizedCaseInsensitiveContains("improved"))
         }
         #expect(captures.scoredCaptureCount == 6)
         #expect(captures.transferCaptureCount == 2)
@@ -545,6 +568,46 @@ struct CoachingCycleReviewRound2Tests {
         #expect(aura.phase == .idle)
         #expect(aura.cycleResult == nil)
         #expect(aura.correctionOverlay == nil)
+        #expect(aura.coachingHeadline == "GET READY")
+        #expect(aura.coachingDetail == "Raise your guard to begin")
+        #expect(aura.currentDemoRep == 0)
+        #expect(aura.currentScoredPunch == 0)
+        #expect(aura.liveReach == 0)
+        #expect(aura.statusMessage == "Ready")
+    }
+
+    @Test("Aura cannot publish Results when no persistence transaction is installed")
+    @MainActor
+    func liveAuraRequiresPersistenceBeforeResults() async {
+        let tracking = LiveAuraTrackingHarness()
+        let clock = LiveAuraClockHarness(tracking: tracking)
+        let captures = LiveAuraCaptureHarness(
+            cycleTechnique: .jab,
+            baselineNeedsCorrection: false
+        )
+        let aura = AuraPunchSession(
+            hands: tracking,
+            feedbackGenerator: MockFeedbackGenerator(),
+            audienceTrack: .beginner,
+            coachAudio: LiveAuraAudioHarness(),
+            clock: clock,
+            captureOverride: { request in captures.capture(request) }
+        )
+        aura.technique = .jab
+        aura.stance = .orthodox
+        aura.track = .firstRound
+        aura.persistedReach = BilateralReach(left: 0.56, right: 0.68)!
+        aura.followHoldTimeout = 0
+        aura.cycleDidComplete = nil
+
+        aura.start()
+        for _ in 0..<20_000 where aura.phase != .results && aura.errorMessage == nil {
+            await Task.yield()
+        }
+
+        #expect(aura.phase != .results)
+        #expect(aura.errorMessage == "Athlete memory is unavailable, so this proof was not saved.")
+        #expect(!aura.coachingDetail.localizedCaseInsensitiveContains("saved locally"))
     }
 
     private func advanceToBaseline(_ cycle: inout CoachingCycleSession) throws {

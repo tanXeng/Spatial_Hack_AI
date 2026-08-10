@@ -428,7 +428,7 @@ nonisolated struct CoachingCycleSession: Sendable {
         case .transfer:
             return .init(stage: "TRANSFER · 1–2", instruction: plain ? "Use the correct lead hand for the jab, then the rear hand for the cross." : "Transfer into a stance-correct 1–2.", action: "Throw 1–2", progress: nil, metric: metric, timer: nil)
         case .complete:
-            return .init(stage: "COMPLETE", instruction: "Your proof is saved for this cycle.", action: "Finish", progress: nil, metric: metric, timer: nil)
+            return .init(stage: "COMPLETE", instruction: "Your cycle is complete.", action: "Finish", progress: nil, metric: metric, timer: nil)
         }
     }
 

@@ -407,6 +407,11 @@ final class AuraPunchSession {
         coachVoiceCyclePauseOwner.reset()
         persistedReach = nil
         guardPositionsBody.removeAll(keepingCapacity: false)
+        coachingHeadline = "GET READY"
+        coachingDetail = "Raise your guard to begin"
+        currentDemoRep = 0
+        currentScoredPunch = 0
+        liveReach = 0
         coachingCycle = CoachingCycleSession(
             track: track,
             technique: technique,
@@ -703,6 +708,7 @@ final class AuraPunchSession {
         guard phase != .idle, phase != .results else { return }
         voiceRecoveryTask?.cancel()
         voiceRecoveryTask = nil
+        recoveringVoiceCaptureID = nil
         AuraVoiceCaptureTrainingPolicy.captureDidBegin(cycle: &coachingCycle)
         for recorder in recorders.values { recorder.cancel() }
         targets.removeActiveTarget()
@@ -812,8 +818,12 @@ final class AuraPunchSession {
         guard await waitForTrainingResume() else { return }
         if let result = coachingCycle.result,
            let reach = coachingCycle.fittedReach {
+            guard let cycleDidComplete else {
+                fail("Athlete memory is unavailable, so this proof was not saved.")
+                return
+            }
             do {
-                try await cycleDidComplete?(result, reach)
+                try await cycleDidComplete(result, reach)
             } catch {
                 fail("Your proof is complete, but athlete memory could not be saved.")
                 return
@@ -827,7 +837,7 @@ final class AuraPunchSession {
         targets.removeActiveTarget()
         setCoaching(
             headline: "COMPLETE",
-            detail: "Your proof is ready",
+            detail: "Your proof is saved locally",
             status: "Coaching cycle complete"
         )
         audioCoordinator.handleImmediately(.experienceDidEnter(.celebrate))
@@ -1841,9 +1851,15 @@ final class AuraPunchSession {
         }
         applyCyclePresentation()
         if let proof = coachingCycle.proofMetric {
-            let direction = coachingCycle.proofMeetsTarget
-                ? "improved"
-                : "did not improve enough yet"
+            let direction: String
+            switch coachingCycle.proofDisposition {
+            case .improved:
+                direction = "improved"
+            case .reinforced:
+                direction = "held at its strong baseline"
+            case .retry, nil:
+                direction = "did not improve enough yet"
+            }
             coachingDetail = "\(proof.kind.title) \(Int(proof.baseline.rounded())) to \(Int(proof.retest.rounded())) · \(direction) · \(proof.sourceBadge)"
             statusMessage = coachingDetail
         }

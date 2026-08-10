@@ -205,7 +205,10 @@ nonisolated struct CoachVoiceCyclePauseOwner: Sendable {
 
     mutating func observe(_ event: Event) -> Action {
         switch (state, event) {
-        case (.idle, .captureBegan(let id)):
+        // A new explicit capture always supersedes recognition, playback, or guard recovery from
+        // an older capture. Returning `pauseTraining` again lets the live session cancel that old
+        // recovery and clear any partial attempt without ever opening a scoring window.
+        case (_, .captureBegan(let id)):
             state = .capturing(id)
             return .pauseTraining
         case (.capturing(let current), .captureReleased(let id)) where current == id:

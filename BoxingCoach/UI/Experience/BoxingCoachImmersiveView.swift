@@ -181,8 +181,7 @@ struct BoxingCoachImmersiveView: View {
         }
         .task {
             session.auraPunch.cycleDidComplete = { result, reach in
-                guard competitionStore.currentPlayer != nil else { return }
-                try await competitionStore.persistCoachingCycle(
+                try await competitionStore.persistStandaloneCoachingCycle(
                     result,
                     fittedReach: reach
                 )

@@ -53,7 +53,7 @@ final class CoachVoiceCoach {
     }
 
     @discardableResult
-    func beginPushToTalk(origin: TrainingAudioSceneOwner) -> Bool {
+    func beginPushToTalk(origin: TrainingAudioSceneOwner = .controlWindow) -> Bool {
         guard !isListening, !isRouting, !isGeneratingResponse,
               activeCaptureCycleID == nil else { return false }
         let captureID = UUID()
@@ -177,6 +177,17 @@ final class CoachVoiceCoach {
         prepareTask = nil
         revokeCaptureLocally()
         endCoordinatorCaptureIfNeeded()
+    }
+
+    /// Clears participant-specific interaction data after a handoff or terminal scene teardown.
+    func clearPrivateSessionState() {
+        shutdown()
+        lastTranscript = nil
+        lastRoutedClip = nil
+        lastError = nil
+        lastRoutedAt = nil
+        context = .idle
+        router = CoachClipRouter()
     }
 
     private func revokeCaptureLocally() {

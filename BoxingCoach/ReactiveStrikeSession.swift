@@ -343,6 +343,11 @@ final class ReactiveStrikeSession {
     func immersiveSpaceDidClose() {
         isImmersiveSpaceOpen = false
         audioCoordinator.handleImmediately(.sceneDidDetach(.immersiveSpace))
+        if !voiceCoach.isListening,
+           !voiceCoach.isRouting,
+           !voiceCoach.isGeneratingResponse {
+            voiceCoach.clearPrivateSessionState()
+        }
     }
 
     func controlWindowDidOpen() {
@@ -603,7 +608,7 @@ final class ReactiveStrikeSession {
     func resetForParticipantHandoff() {
         resetForNewRound()
         auraPunch.reset()
-        voiceCoach.shutdown()
+        voiceCoach.clearPrivateSessionState()
         hands.stop()
         targets.removeActiveTarget()
         calibratedReaches.removeAll()

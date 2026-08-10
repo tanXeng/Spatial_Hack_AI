@@ -435,9 +435,7 @@ final class AuraPunchSession {
         isVoicePaused = true
         voicePauseInvalidationCount &+= 1
         invalidateVoiceResume()
-        invalidateDemoContinuation()
-        loopTask?.cancel()
-        loopTask = nil
+        AuraVoiceCaptureTrainingPolicy.captureDidBegin(cycle: &coachingCycle)
         for recorder in recorders.values { recorder.cancel() }
         targets.removeActiveTarget()
         mirrorArm?.isVisible = false
@@ -485,8 +483,6 @@ final class AuraPunchSession {
         voiceResumeGeneration &+= 1
         let requestGeneration = voiceResumeGeneration
         let trackingGeneration = initialEvidence.generation
-        let pausedPhase = phaseBeforeVoicePause
-
         func requestIsCurrent() -> Bool {
             guard !Task.isCancelled,
                   requestGeneration == voiceResumeGeneration,
@@ -512,58 +508,32 @@ final class AuraPunchSession {
             guard requestIsCurrent() else { return nil }
         }
 
-        guard requestIsCurrent(),
-              let pausedPhase,
-              [.acquiring, .guiding, .countdown, .attempting].contains(pausedPhase) else {
+        guard requestIsCurrent(), phaseBeforeVoicePause != nil else {
             return nil
         }
         isVoicePaused = false
         phaseBeforeVoicePause = nil
         activeVoiceResumeGeneration = requestGeneration
-        let solver = ArmPoseSolver(measurements: measurements)
-        loopTask = Task { [weak self] in
-            guard let self else { return }
-            switch pausedPhase {
-            case .acquiring, .guiding:
-                await self.runGuidedFollowAlong(
-                    solver: solver,
-                    startingAt: max(1, self.currentDemoRep)
-                )
-                guard !Task.isCancelled else { return }
-                await self.runCountdown()
-                guard !Task.isCancelled else { return }
-                await self.runScoredTargetRound(solver: solver)
-            case .countdown, .attempting:
-                await self.runCountdown()
-                guard !Task.isCancelled else { return }
-                await self.runScoredTargetRound(solver: solver)
-            case .idle, .scoring, .results:
-                return
-            }
-        }
+        AuraVoiceCaptureTrainingPolicy.guardRecoveryDidComplete(cycle: &coachingCycle)
+        applyCyclePresentation()
         return "Tracking is fresh. Resuming training."
     }
 
     func repeatDemo() -> String? {
-        guard phase == .guiding, !isVoicePaused else { return nil }
+        guard phase == .guiding,
+              coachingCycle.stage == .guidedRehearsal,
+              !isVoicePaused else { return nil }
         let repeatedRep = max(1, currentDemoRep)
-        invalidateDemoContinuation()
-        loopTask?.cancel()
+        demoContinuationGeneration &+= 1
+        requestedDemoRep = repeatedRep
         targets.removeActiveTarget()
-        let solver = ArmPoseSolver(measurements: measurements)
-        loopTask = Task { [weak self] in
-            guard let self else { return }
-            await self.runGuidedFollowAlong(solver: solver, startingAt: repeatedRep)
-            guard !Task.isCancelled else { return }
-            await self.runCountdown()
-            guard !Task.isCancelled else { return }
-            await self.runScoredTargetRound(solver: solver)
-        }
         return "Repeating demo \(repeatedRep)."
     }
 
     func setDemoRate(_ rate: TrainingDemoRate) -> String? {
-        guard phase == .guiding, !isVoicePaused else { return nil }
+        guard phase == .guiding,
+              coachingCycle.stage == .guidedRehearsal,
+              !isVoicePaused else { return nil }
         demonstrationRate = rate
         switch rate {
         case .slower: return "Showing the demo slower."
@@ -573,7 +543,9 @@ final class AuraPunchSession {
     }
 
     func advanceDemo() -> String? {
-        guard phase == .guiding, !isVoicePaused else { return nil }
+        guard phase == .guiding,
+              coachingCycle.stage == .guidedRehearsal,
+              !isVoicePaused else { return nil }
         let nextRep = min(max(1, currentDemoRep + 1), max(1, guidedRepetitions))
         guard nextRep > currentDemoRep else { return nil }
         demoContinuationGeneration &+= 1

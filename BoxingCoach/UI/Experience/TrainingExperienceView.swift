@@ -64,13 +64,16 @@ struct TrainingExperienceView: View {
         ) {
             VStack(spacing: 16) {
                 TrainingStatusCard(message: reactiveStatusLine)
+                recoveryCard
                 errorCards(engineError: session.errorMessage)
-                Button(session.phase == .finished ? "Calibrate Again" : "Start Calibration") {
-                    onStart()
+                if !recoveryReplacesStartAction {
+                    Button(session.phase == .finished ? "Calibrate Again" : "Start Calibration") {
+                        onStart()
+                    }
+                    .disabled(session.phase == .running || session.phase == .calibrating || controlsDisabled)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityFocused($resultPrimaryActionFocused)
                 }
-                .disabled(session.phase == .running || session.phase == .calibrating || controlsDisabled)
-                .buttonStyle(.borderedProminent)
-                .accessibilityFocused($resultPrimaryActionFocused)
             }
         }
     }
@@ -96,6 +99,7 @@ struct TrainingExperienceView: View {
         ) {
             VStack(spacing: 16) {
                 TrainingStatusCard(message: reactiveStatusLine)
+                recoveryCard
 
                 if session.phase == .finished {
                     reactiveResultsCard
@@ -103,14 +107,16 @@ struct TrainingExperienceView: View {
 
                 errorCards(engineError: session.errorMessage)
 
-                Button(session.phase == .finished ? "Try Again" : "Start Drill") {
-                    onStart()
+                if !recoveryReplacesStartAction {
+                    Button(session.phase == .finished ? "Try Again" : "Start Drill") {
+                        onStart()
+                    }
+                    .disabled(
+                        session.phase == .running || session.phase == .calibrating || controlsDisabled
+                    )
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityFocused($resultPrimaryActionFocused)
                 }
-                .disabled(
-                    session.phase == .running || session.phase == .calibrating || controlsDisabled
-                )
-                .buttonStyle(.borderedProminent)
-                .accessibilityFocused($resultPrimaryActionFocused)
             }
         }
     }
@@ -131,6 +137,7 @@ struct TrainingExperienceView: View {
         ) {
             VStack(spacing: 16) {
                 TrainingStatusCard(message: auraStatusLine)
+                recoveryCard
 
                 if aura.phase == .attempting || aura.phase == .guiding {
                     PunchExtensionMeter(value: aura.liveReach)
@@ -167,13 +174,54 @@ struct TrainingExperienceView: View {
 
                 errorCards(engineError: aura.errorMessage)
 
-                Button(aura.phase == .results ? "Try Again" : "Start Rep") {
-                    onStart()
+                if !recoveryReplacesStartAction {
+                    Button(aura.phase == .results ? "Try Again" : "Start Rep") {
+                        onStart()
+                    }
+                    .disabled(aura.isRunning || controlsDisabled)
+                    .buttonStyle(.borderedProminent)
+                    .accessibilityFocused($resultPrimaryActionFocused)
                 }
-                .disabled(aura.isRunning || controlsDisabled)
-                .buttonStyle(.borderedProminent)
-                .accessibilityFocused($resultPrimaryActionFocused)
             }
+        }
+    }
+
+    @ViewBuilder
+    private var recoveryCard: some View {
+        if let recoveryPresentation {
+            RuntimeRecoveryCard(
+                presentation: recoveryPresentation,
+                controlsDisabled: controlsDisabled,
+                action: recoveryAction(for: recoveryPresentation.action)
+            )
+        }
+    }
+
+    private var recoveryPresentation: RuntimeRecoveryPresentation? {
+        RuntimeRecoveryPolicy.presentation(
+            trackingState: session.hands.runtimeState,
+            trackingReason: session.hands.rejectionReason,
+            trackingInstruction: session.hands.recoveryInstruction,
+            audioRequiresExplicitRecovery: session.audioCoordinator.presentation.requiresExplicitRecovery,
+            voiceState: session.voiceCoach.state
+        )
+    }
+
+    private var recoveryReplacesStartAction: Bool {
+        recoveryPresentation?.replacesTrainingStartAction == true
+    }
+
+    private func recoveryAction(for action: RuntimeRecoveryAction) -> (() -> Void)? {
+        switch action {
+        case .resumeAudio:
+            // The global Ask Coach panel already owns the single window-level Resume Audio button.
+            nil
+        case .reviewTrackingPermission, .retryTracking:
+            onStart
+        case .returnToSetup:
+            onChangeSelection
+        case .waitForTracking, .useVisibleControls:
+            nil
         }
     }
 

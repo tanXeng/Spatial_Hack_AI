@@ -75,6 +75,36 @@ struct TrainingErrorCard: View {
     }
 }
 
+struct RuntimeRecoveryCard: View {
+    let presentation: RuntimeRecoveryPresentation
+    let controlsDisabled: Bool
+    let action: (() -> Void)?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            VStack(alignment: .leading, spacing: 8) {
+                Label(presentation.title, systemImage: "arrow.clockwise.circle.fill")
+                    .font(.headline)
+
+                Text(presentation.message)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+            .accessibilityElement(children: .combine)
+
+            if let label = presentation.primaryActionLabel, let action {
+                Button(label, action: action)
+                    .buttonStyle(.borderedProminent)
+                    .frame(minWidth: 60, minHeight: 60)
+                    .disabled(controlsDisabled)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
 struct PunchExtensionMeter: View {
     let value: Float
 

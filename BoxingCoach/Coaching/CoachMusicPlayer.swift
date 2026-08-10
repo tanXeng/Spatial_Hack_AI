@@ -10,15 +10,16 @@ final class CoachMusicPlayer {
 
     private var player: AVAudioPlayer?
     private var queuePlayer: AVQueuePlayer?
-    private var queueLooper: AVPlayerLooper?
+    private var allTrackURLs: [URL] = []
+    private var currentTrackIndex = 0
     private var interruptionObserver: NSObjectProtocol?
-
+    private var playbackObserver: Any?
     private var usingBundledTracks = false
-    private var bundledTrackURLs: [URL] = []
 
-    private(set) var isActive = false {
-        didSet { Self.logger.debug("Music active: \(self.isActive)") }
-    }
+    private(set) var isPlaying = false
+    private(set) var currentTrackName: String?
+
+    var hasMultipleTracks: Bool { usingBundledTracks && allTrackURLs.count > 1 }
 
     var volume: Float {
         get { player?.volume ?? queuePlayer?.volume ?? 0 }
@@ -30,7 +31,7 @@ final class CoachMusicPlayer {
     }
 
     init() {
-        bundledTrackURLs = discoverBundledTracks()
+        allTrackURLs = discoverBundledTracks()
     }
 
     func prepare() {
@@ -42,35 +43,68 @@ final class CoachMusicPlayer {
             self?.handleInterruption(notification)
         }
 
-        if !bundledTrackURLs.isEmpty {
-            prepareBundledTracks()
+        if !allTrackURLs.isEmpty {
+            usingBundledTracks = true
+            currentTrackIndex = 0
+            playTrack(at: 0, autoplay: false)
         } else {
             prepareSynthesizedBeat()
         }
     }
 
-    func start() {
-        guard !isActive else { return }
-
+    func play() {
         if player == nil, queuePlayer == nil {
             prepare()
         }
-
         if usingBundledTracks {
             queuePlayer?.play()
         } else {
             player?.play()
         }
+        isPlaying = true
+        Self.logger.debug("Music playing")
+    }
 
-        isActive = true
-        Self.logger.debug("Music started")
+    func pause() {
+        isPlaying = false
+        if usingBundledTracks {
+            queuePlayer?.pause()
+        } else {
+            player?.pause()
+        }
+        Self.logger.debug("Music paused")
+    }
+
+    func togglePlayPause() {
+        if isPlaying {
+            pause()
+        } else {
+            play()
+        }
+    }
+
+    func skip() {
+        guard usingBundledTracks, !allTrackURLs.isEmpty else { return }
+        currentTrackIndex = (currentTrackIndex + 1) % allTrackURLs.count
+        playTrack(at: currentTrackIndex, autoplay: isPlaying)
+    }
+
+    func previous() {
+        guard usingBundledTracks, !allTrackURLs.isEmpty else { return }
+        currentTrackIndex = currentTrackIndex > 0 ? currentTrackIndex - 1 : allTrackURLs.count - 1
+        playTrack(at: currentTrackIndex, autoplay: isPlaying)
     }
 
     func stop() {
-        isActive = false
+        isPlaying = false
+        if let observer = playbackObserver {
+            NotificationCenter.default.removeObserver(observer)
+            playbackObserver = nil
+        }
         player?.stop()
         player?.currentTime = 0
         queuePlayer?.pause()
+        queuePlayer?.removeAllItems()
         Self.logger.debug("Music stopped")
     }
 
@@ -82,8 +116,47 @@ final class CoachMusicPlayer {
         }
         player = nil
         queuePlayer = nil
-        queueLooper = nil
     }
+
+    private func playTrack(at index: Int, autoplay: Bool) {
+        guard usingBundledTracks, index < allTrackURLs.count else { return }
+
+        if let observer = playbackObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        queuePlayer?.pause()
+        queuePlayer?.removeAllItems()
+
+        let url = allTrackURLs[index]
+        let item = AVPlayerItem(url: url)
+        let player = AVQueuePlayer(items: [item])
+        player.volume = 0.4
+        queuePlayer = player
+
+        currentTrackName = url.deletingPathExtension().lastPathComponent
+            .replacingOccurrences(of: "_", with: " ")
+            .replacingOccurrences(of: "-", with: " ")
+            .capitalized
+
+        playbackObserver = NotificationCenter.default.addObserver(
+            forName: .AVPlayerItemDidPlayToEndTime,
+            object: item,
+            queue: .main
+        ) { [weak self] _ in
+            guard let self else { return }
+            Task { @MainActor in
+                self.currentTrackIndex = (self.currentTrackIndex + 1) % self.allTrackURLs.count
+                self.playTrack(at: self.currentTrackIndex, autoplay: true)
+            }
+        }
+
+        if autoplay {
+            player.play()
+        }
+        Self.logger.debug("Playing track \(index): \(self.currentTrackName ?? "?")")
+    }
+
+    // MARK: - Interruptions
 
     private func handleInterruption(_ notification: Notification) {
         guard let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt,
@@ -92,8 +165,7 @@ final class CoachMusicPlayer {
 
         if type == .ended {
             guard let optionsValue = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
-            let options = AVAudioSession.InterruptionOptions(rawValue: optionsValue)
-            if options.contains(.shouldResume), isActive {
+            if AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume), isPlaying {
                 if usingBundledTracks {
                     queuePlayer?.play()
                 } else {
@@ -112,7 +184,10 @@ final class CoachMusicPlayer {
             if let url = Bundle.main.resourceURL?.appendingPathComponent(dir),
                FileManager.default.fileExists(atPath: url.path) {
                 if let contents = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) {
-                    let tracks = contents.filter { $0.pathExtension == "mp3" || $0.pathExtension == "m4a" || $0.pathExtension == "wav" }
+                    let tracks = contents.filter {
+                        let ext = $0.pathExtension
+                        return ext == "mp3" || ext == "m4a" || ext == "wav"
+                    }
                     if !tracks.isEmpty {
                         Self.logger.debug("Found \(tracks.count) bundled music track(s)")
                         return tracks.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
@@ -121,16 +196,6 @@ final class CoachMusicPlayer {
             }
         }
         return []
-    }
-
-    private func prepareBundledTracks() {
-        usingBundledTracks = true
-        let items = bundledTrackURLs.map { AVPlayerItem(url: $0) }
-        let player = AVQueuePlayer(items: items)
-        player.volume = 0.4
-        queueLooper = AVPlayerLooper(player: player, templateItem: items[0])
-        queuePlayer = player
-        Self.logger.debug("Bundled music player ready")
     }
 
     // MARK: - Synthesized beat
@@ -145,6 +210,7 @@ final class CoachMusicPlayer {
         player?.volume = 0.4
         player?.numberOfLoops = -1
         player?.prepareToPlay()
+        currentTrackName = nil
         Self.logger.debug("Synthesized beat ready")
     }
 
@@ -180,7 +246,6 @@ final class CoachMusicPlayer {
         for beat in 0..<totalBeats {
             let beatStart = Int(Double(beat) * beatDuration * sampleRate)
             let halfBeat = Int(beatDuration * 0.5 * sampleRate)
-
             switch beat % beatsPerBar {
             case 0:
                 mix(into: data, channels: channels, at: beatStart, samples: kick, gain: 0.85)
@@ -198,31 +263,23 @@ final class CoachMusicPlayer {
                 mix(into: data, channels: channels, at: beatStart, samples: snare, gain: 0.70)
                 mix(into: data, channels: channels, at: beatStart, samples: hihatClosed, gain: 0.25)
                 mix(into: data, channels: channels, at: beatStart + halfBeat, samples: hihatClosed, gain: 0.22)
-            default:
-                break
+            default: break
             }
         }
-
         let url = tempBeatURL()
         return writeWAV(buffer: buffer, url: url) ? url : nil
     }
 
     private func mix(into data: UnsafePointer<UnsafeMutablePointer<Float>>,
-                     channels: AVAudioChannelCount,
-                     at startFrame: Int,
-                     samples: [Float],
-                     gain: Float) {
+                     channels: AVAudioChannelCount, at startFrame: Int,
+                     samples: [Float], gain: Float) {
         for i in 0..<samples.count {
             let idx = startFrame + i
             if idx < Int.max {
-                for ch in 0..<Int(channels) {
-                    data[ch][idx] += samples[i] * gain
-                }
+                for ch in 0..<Int(channels) { data[ch][idx] += samples[i] * gain }
             }
         }
     }
-
-    // MARK: - Drum sample generators
 
     private func generateKickSamples(sampleRate: Double) -> [Float] {
         let duration: Double = 0.22
@@ -285,35 +342,28 @@ final class CoachMusicPlayer {
         return out
     }
 
-    // MARK: - WAV writer
-
     private func writeWAV(buffer: AVAudioPCMBuffer, url: URL) -> Bool {
         guard let floatData = buffer.floatChannelData else { return false }
         let frameCount = Int(buffer.frameLength)
         let channels = Int(buffer.format.channelCount)
         let sampleRate = Int(buffer.format.sampleRate)
-
         var int16Data = Data(capacity: frameCount * channels * 2)
         for frame in 0..<frameCount {
             for ch in 0..<channels {
-                var sample = floatData[ch][frame]
-                sample = max(-1, min(1, sample))
+                var sample = max(-1, min(1, floatData[ch][frame]))
                 let intSample = Int16(sample * 32767)
                 var little = intSample.littleEndian
                 withUnsafeBytes(of: &little) { int16Data.append(contentsOf: $0) }
             }
         }
-
         let blockAlign = channels * 2
         let byteRate = sampleRate * blockAlign
         let dataSize = int16Data.count
-
         var header = Data()
         header.append("RIFF".data(using: .ascii)!)
         var fileSize = UInt32(36 + dataSize).littleEndian
         withUnsafeBytes(of: &fileSize) { header.append(contentsOf: $0) }
         header.append("WAVE".data(using: .ascii)!)
-
         header.append("fmt ".data(using: .ascii)!)
         var fmtSize = UInt32(16).littleEndian
         withUnsafeBytes(of: &fmtSize) { header.append(contentsOf: $0) }
@@ -329,19 +379,16 @@ final class CoachMusicPlayer {
         withUnsafeBytes(of: &ba) { header.append(contentsOf: $0) }
         var bps = UInt16(16).littleEndian
         withUnsafeBytes(of: &bps) { header.append(contentsOf: $0) }
-
         header.append("data".data(using: .ascii)!)
         var ds = UInt32(dataSize).littleEndian
         withUnsafeBytes(of: &ds) { header.append(contentsOf: $0) }
-
         header.append(int16Data)
-
         do {
             try? FileManager.default.removeItem(at: url)
             try header.write(to: url)
             return true
         } catch {
-            Self.logger.error("Failed to write WAV: \(error.localizedDescription)")
+            Self.logger.error("Failed WAV: \(error.localizedDescription)")
             return false
         }
     }

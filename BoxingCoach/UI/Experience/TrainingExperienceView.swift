@@ -37,19 +37,7 @@ struct TrainingExperienceView: View {
                 TrainingStatusCard(message: reactiveStatusLine)
                 errorCards(engineError: session.errorMessage)
 
-                Button {
-                    session.toggleMusic()
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: session.isMusicEnabled ? "music.note" : "music.note.slash")
-                            .imageScale(.medium)
-                        Text(session.isMusicEnabled ? "Music On" : "Music Off")
-                            .font(.subheadline.weight(.medium))
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(session.isMusicEnabled ? .accentColor : .secondary)
+                MusicControlBar(music: session.musicPlayer)
 
                 Button(session.phase == .finished ? "Calibrate Again" : "Start Calibration") {
                     onStart()
@@ -88,19 +76,7 @@ struct TrainingExperienceView: View {
 
                 errorCards(engineError: session.errorMessage)
 
-                Button {
-                    session.toggleMusic()
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: session.isMusicEnabled ? "music.note" : "music.note.slash")
-                            .imageScale(.medium)
-                        Text(session.isMusicEnabled ? "Music On" : "Music Off")
-                            .font(.subheadline.weight(.medium))
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(session.isMusicEnabled ? .accentColor : .secondary)
+                MusicControlBar(music: session.musicPlayer)
 
                 Button(session.phase == .finished ? "Try Again" : "Start Drill") {
                     onStart()
@@ -148,19 +124,7 @@ struct TrainingExperienceView: View {
 
                 errorCards(engineError: aura.errorMessage)
 
-                Button {
-                    session.toggleMusic()
-                } label: {
-                    HStack(spacing: 8) {
-                        Image(systemName: session.isMusicEnabled ? "music.note" : "music.note.slash")
-                            .imageScale(.medium)
-                        Text(session.isMusicEnabled ? "Music On" : "Music Off")
-                            .font(.subheadline.weight(.medium))
-                    }
-                    .frame(maxWidth: .infinity)
-                }
-                .buttonStyle(.bordered)
-                .tint(session.isMusicEnabled ? .accentColor : .secondary)
+                MusicControlBar(music: session.musicPlayer)
 
                 Button(aura.phase == .results ? "Try Again" : "Start Rep") {
                     onStart()
@@ -309,5 +273,58 @@ struct TrainingExperienceView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+}
+
+private struct MusicControlBar: View {
+    let music: CoachMusicPlayer
+
+    var body: some View {
+        VStack(spacing: 6) {
+            if let trackName = music.currentTrackName {
+                HStack(spacing: 6) {
+                    Image(systemName: "music.note")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    Text(trackName)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                .frame(maxWidth: .infinity, alignment: .center)
+            }
+
+            HStack(spacing: 20) {
+                Button {
+                    music.previous()
+                } label: {
+                    Image(systemName: "backward.fill")
+                        .font(.title3)
+                }
+                .disabled(!music.hasMultipleTracks)
+                .buttonStyle(.plain)
+
+                Button {
+                    music.togglePlayPause()
+                } label: {
+                    Image(systemName: music.isPlaying ? "pause.fill" : "play.fill")
+                        .font(.title2)
+                }
+                .buttonStyle(.plain)
+
+                Button {
+                    music.skip()
+                } label: {
+                    Image(systemName: "forward.fill")
+                        .font(.title3)
+                }
+                .disabled(!music.hasMultipleTracks)
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.vertical, 8)
+        .padding(.horizontal, 16)
+        .frame(maxWidth: .infinity)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
     }
 }

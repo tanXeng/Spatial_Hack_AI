@@ -1,4 +1,5 @@
 import Foundation
+import RealityKit
 import simd
 import Testing
 @testable import BoxingCoach
@@ -135,6 +136,56 @@ struct Task4ReviewRegressionTests {
 
         plan.record(.completed)
         #expect(plan.targetPosition == nil)
+    }
+
+    @Test("Target mesh and entity stay pooled across positions and radii")
+    func targetEntityPoolStabilizesAfterWarmup() {
+        let targets = TargetController()
+        let first = targets.spawnTarget(
+            at: SIMD3<Float>(0.10, 1.30, -0.50),
+            radius: 0.08
+        )
+        targets.removeActiveTarget()
+
+        let second = targets.spawnTarget(
+            at: SIMD3<Float>(-0.18, 1.12, -0.72),
+            radius: 0.11
+        )
+        targets.removeActiveTarget()
+
+        let third = targets.spawnTarget(
+            at: SIMD3<Float>(0.22, 1.40, -0.64),
+            radius: 0.06
+        )
+
+        #expect(first === second)
+        #expect(second === third)
+        #expect(targets.createdEntityCount == 1)
+        #expect(targets.activeTargetPosition == SIMD3<Float>(0.22, 1.40, -0.64))
+        #expect(third.scale == SIMD3<Float>(repeating: 0.06))
+    }
+
+    @Test("Pooled target moves between scene roots without losing accessibility")
+    func targetPoolReattachesCleanly() {
+        let firstRoot = Entity()
+        let secondRoot = Entity()
+        let targets = TargetController()
+
+        targets.attach(to: firstRoot)
+        let first = targets.spawnTarget(at: .zero, radius: 0.08)
+        #expect(first.parent === firstRoot)
+        #expect(first.components[AccessibilityComponent.self] != nil)
+
+        targets.detach()
+        #expect(first.parent == nil)
+        #expect(firstRoot.children.contains(where: { $0 === first }) == false)
+
+        targets.attach(to: secondRoot)
+        let reused = targets.spawnTarget(at: SIMD3<Float>(0.2, 1.3, -0.6), radius: 0.1)
+        #expect(reused === first)
+        #expect(reused.parent === secondRoot)
+        #expect(reused.components[AccessibilityComponent.self] != nil)
+        #expect(targets.createdEntityCount == 1)
     }
 
     @Test(

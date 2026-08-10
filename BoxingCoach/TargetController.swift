@@ -15,7 +15,8 @@ final class TargetController {
     private weak var root: Entity?
     private(set) var activeTarget: ModelEntity?
     private(set) var activeTargetPosition: SIMD3<Float>?
-    private var activeTargetRadius: Float?
+    private var pooledTarget: ModelEntity?
+    private(set) var createdEntityCount = 0
     private var invalidEvidenceShown = false
 
     private let idleColor = PlatformColor(red: 1.0, green: 0.55, blue: 0.1, alpha: 1.0)
@@ -36,21 +37,27 @@ final class TargetController {
         at position: SIMD3<Float>,
         radius: Float
     ) -> ModelEntity {
-        if let activeTarget,
-           activeTargetPosition == position,
-           activeTargetRadius == radius {
-            activeTarget.model?.materials = [SimpleMaterial(color: idleColor, isMetallic: false)]
-            invalidEvidenceShown = false
-            return activeTarget
+        let entity = pooledTarget ?? makeTargetEntity()
+        entity.model?.materials = [SimpleMaterial(color: idleColor, isMetallic: false)]
+        entity.position = position
+        entity.scale = SIMD3<Float>(repeating: radius)
+
+        if entity.parent !== root {
+            entity.removeFromParent()
+            root?.addChild(entity)
         }
 
-        removeActiveTarget()
+        activeTarget = entity
+        activeTargetPosition = position
+        invalidEvidenceShown = false
+        return entity
+    }
 
-        let mesh = MeshResource.generateSphere(radius: radius)
+    private func makeTargetEntity() -> ModelEntity {
+        let mesh = MeshResource.generateSphere(radius: 1)
         let material = SimpleMaterial(color: idleColor, isMetallic: false)
         let entity = ModelEntity(mesh: mesh, materials: [material])
         entity.name = "PunchTarget"
-        entity.position = position
         var accessibility = AccessibilityComponent()
         accessibility.isAccessibilityElement = true
         accessibility.label = LocalizedStringResource(
@@ -61,11 +68,8 @@ final class TargetController {
         )
         entity.components.set(accessibility)
 
-        root?.addChild(entity)
-        activeTarget = entity
-        activeTargetPosition = position
-        activeTargetRadius = radius
-        invalidEvidenceShown = false
+        pooledTarget = entity
+        createdEntityCount += 1
         return entity
     }
 
@@ -95,7 +99,6 @@ final class TargetController {
         activeTarget?.removeFromParent()
         activeTarget = nil
         activeTargetPosition = nil
-        activeTargetRadius = nil
         invalidEvidenceShown = false
     }
 }

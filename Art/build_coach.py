@@ -16,12 +16,18 @@ ART = "/Users/event/Documents/Spatial_Hack_AI/Art"
 OUT = os.path.join(ART, "usdz")
 
 # source file -> clip name exposed to RealityKit
+#
+# Hook and uppercut are authored on BOTH sides so the coach can alternate arms with the ghost
+# using real animation rather than a mirrored copy of the other side. Jab and cross stay
+# one-sided and are mirrored when the opposite stance needs them.
 CLIPS = [
     ("Idle_stance.fbx",        "guard_idle"),
     ("Left_hand_jab.fbx",      "jab_left"),
     ("right hand cross.fbx",   "cross_right"),
     ("back hand hook.fbx",     "hook_right"),
     ("back hand uppercut.fbx", "uppercut_right"),
+    ("Left hook.fbx",          "hook_left"),
+    ("left uppercut.fbx",      "uppercut_left"),
 ]
 BASE_FBX = "Left_hand_jab.fbx"   # the only one carrying the skinned mesh
 

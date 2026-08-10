@@ -24,10 +24,9 @@ final class CoachCharacterEntityTests: XCTestCase {
         }
     }
 
-    /// The coach stands beside the user facing the same way, so a clip already authored on the
-    /// requested side needs no mirroring at all. Reflecting only on a side mismatch is what lets
-    /// four one-sided clips cover all eight technique/side combinations.
-    func testMirroringPutsTheMotionOnTheUsersSide() throws {
+    /// Single-sided techniques mirror to reach the other stance. The coach stands beside the user
+    /// facing the same way, so a clip already authored on the requested side needs no mirroring.
+    func testSingleSidedTechniquesMirrorToReachTheOtherStance() throws {
         // Jab is authored on the coach's left. An orthodox jab is the user's left, and side by side
         // his left is already the user's left — so the most common case does not mirror at all.
         let leftJab = try XCTUnwrap(
@@ -54,6 +53,32 @@ final class CoachCharacterEntityTests: XCTestCase {
             CoachCharacterEntity.resolveClip(technique: .cross, side: .left)
         )
         XCTAssertTrue(leftCross.reflected)
+    }
+
+    /// Hook and uppercut are the `.either`-hand techniques the guided loop alternates, and both now
+    /// ship a real clip per arm. An authored clip must always beat mirroring the other side —
+    /// otherwise adding the second FBX changed nothing.
+    func testAlternatingTechniquesUseRealClipsOnBothArmsAndNeverMirror() throws {
+        for technique in [Technique.hook, .uppercut] {
+            for side in [BodySide.left, .right] {
+                let resolved = try XCTUnwrap(
+                    CoachCharacterEntity.resolveClip(technique: technique, side: side)
+                )
+                XCTAssertTrue(
+                    resolved.clip.hasSuffix(side.rawValue),
+                    "\(technique.id) on the \(side.rawValue) resolved to '\(resolved.clip)'"
+                )
+                XCTAssertFalse(
+                    resolved.reflected,
+                    "\(technique.id) has an authored \(side.rawValue) clip and must not be mirrored"
+                )
+            }
+        }
+
+        // The two arms must be genuinely different clips, not the same one twice.
+        let left = try XCTUnwrap(CoachCharacterEntity.resolveClip(technique: .hook, side: .left))
+        let right = try XCTUnwrap(CoachCharacterEntity.resolveClip(technique: .hook, side: .right))
+        XCTAssertNotEqual(left.clip, right.clip)
     }
 
     /// Regression guard for the facing change: when the coach turned from facing the user to
@@ -202,17 +227,14 @@ final class CoachCharacterEntityTests: XCTestCase {
     }
 
     func testEveryPunchClipAssetExposesAnAnimation() async throws {
-        for file in [
-            "coach_jab_left",
-            "coach_cross_right",
-            "coach_hook_right",
-            "coach_uppercut_right"
-        ] {
-            let holder = try await Entity(named: file, in: Bundle.main)
-            let animations = holder.availableAnimations
+        let entries = CoachCharacterEntity.allClipEntries
+        XCTAssertEqual(entries.count, 6, "expected four one-sided clips plus both alternating pairs")
+
+        for entry in entries {
+            let holder = try await Entity(named: entry.file, in: Bundle.main)
             XCTAssertFalse(
-                animations.isEmpty,
-                "\(file).usdz exposed no animation — RealityKit will have nothing to play"
+                holder.availableAnimations.isEmpty,
+                "\(entry.file).usdz exposed no animation — RealityKit will have nothing to play"
             )
         }
     }
@@ -224,19 +246,42 @@ final class CoachCharacterEntityTests: XCTestCase {
         XCTAssertTrue(loaded, "coach failed to load from the app bundle")
         XCTAssertTrue(coach.isLoaded)
 
-        // Playback returns a duration only when the clip resolved out of the library.
+        // Playback returns a duration only when the clip resolved out of the library. Both sides,
+        // so the alternating techniques' second-arm clips are covered too.
         for technique in Technique.all {
-            let resolved = try XCTUnwrap(
-                CoachCharacterEntity.resolveClip(technique: technique, side: .left)
-            )
-            let duration = coach.play(clip: resolved.clip)
-            XCTAssertNotNil(
-                duration,
-                "clip '\(resolved.clip)' for \(technique.id) is missing from the animation library"
-            )
-            if let duration {
-                XCTAssertGreaterThan(duration, 0.2, "'\(resolved.clip)' is suspiciously short")
-                XCTAssertLessThan(duration, 10, "'\(resolved.clip)' is suspiciously long")
+            for side in [BodySide.left, .right] {
+                let resolved = try XCTUnwrap(
+                    CoachCharacterEntity.resolveClip(technique: technique, side: side)
+                )
+                let duration = coach.play(clip: resolved.clip)
+                XCTAssertNotNil(
+                    duration,
+                    "clip '\(resolved.clip)' for \(technique.id) is missing from the animation library"
+                )
+                if let duration {
+                    XCTAssertGreaterThan(duration, 0.2, "'\(resolved.clip)' is suspiciously short")
+                    XCTAssertLessThan(duration, 10, "'\(resolved.clip)' is suspiciously long")
+                }
+            }
+        }
+    }
+
+    /// The alternating clips must also survive `playLooping`, which is how the coach actually
+    /// plays them once the demo hands over to the guided reps.
+    func testAlternatingClipsLoopFromTheAssembledLibrary() async throws {
+        let coach = CoachCharacterEntity()
+        let loaded = await coach.load()
+        XCTAssertTrue(loaded, "coach failed to load from the app bundle")
+
+        for technique in [Technique.hook, .uppercut] {
+            for side in [BodySide.left, .right] {
+                let resolved = try XCTUnwrap(
+                    CoachCharacterEntity.resolveClip(technique: technique, side: side)
+                )
+                XCTAssertTrue(
+                    coach.playLooping(clip: resolved.clip),
+                    "'\(resolved.clip)' did not loop — the coach would freeze on this rep"
+                )
             }
         }
     }

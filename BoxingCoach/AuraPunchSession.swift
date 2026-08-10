@@ -130,6 +130,15 @@ final class AuraPunchSession {
     /// that one task.
     private var coachFollowTask: Task<Void, Never>?
 
+    /// Which clip the coach is currently looping, so `matchCoachToGhost` can skip a redundant
+    /// restart that would visibly reset the punch mid-swing.
+    private var activeCoachClip: String?
+
+    /// Where the coach stands, fixed for the session at his opening arm. Read live by the follow
+    /// task rather than captured, so a rep that swaps his arm cannot desynchronise his placement.
+    private var coachStandingSide: BodySide = .left
+    private var coachIsReflected = false
+
     /// Reused briefly when head tracking flickers mid-attempt so hand samples are not discarded.
     private var cachedBodyFrame: BodyFrame?
     private var cachedBodyFrameTime: TimeInterval = 0
@@ -356,6 +365,9 @@ final class AuraPunchSession {
         demoArm?.isVisible = false
         mirrorArm?.isVisible = false
 
+        coachStandingSide = side
+        coachIsReflected = resolved.reflected
+        activeCoachClip = nil
         coach.place(
             using: frame,
             measurements: measurements,
@@ -364,7 +376,7 @@ final class AuraPunchSession {
         )
         coach.isVisible = true
         coach.playIdle()
-        startCoachFollow(solver: solver, demoSide: side, reflected: resolved.reflected)
+        startCoachFollow(solver: solver)
 
         let handLabel = technique.hand == .either ? " \(side.rawValue)" : ""
         setCoaching(
@@ -391,10 +403,30 @@ final class AuraPunchSession {
         }
 
         coach.playLooping(clip: resolved.clip)
+        activeCoachClip = resolved.clip
 
         // Hold on the coach for one more cycle before the ghost takes over, so the user sees the
         // punch at least twice and reads it as a repeating drill rather than a one-off.
         try? await Task.sleep(for: .seconds(clipDuration ?? 1.0))
+    }
+
+    /// Switches the coach onto `side` so he throws the same arm the ghost is about to.
+    ///
+    /// Only his *clip* changes, not where he stands. He is placed on the side opposite his opening
+    /// arm so that arm reads clearly, and having him orbit across the user's view every single rep
+    /// to preserve that would be far more distracting than the slightly less favourable angle on
+    /// alternate reps.
+    ///
+    /// A no-op when nothing changed, because restarting the animation every rep would restart the
+    /// punch mid-swing and make him stutter. Silent when the coach never loaded.
+    private func matchCoachToGhost(side: BodySide) {
+        guard coach.isLoaded, coach.isVisible else { return }
+        guard let resolved = CoachCharacterEntity.resolveClip(technique: technique, side: side),
+              resolved.clip != activeCoachClip else { return }
+
+        activeCoachClip = resolved.clip
+        coachIsReflected = resolved.reflected
+        coach.playLooping(clip: resolved.clip)
     }
 
     /// Keeps the coach oriented to the user for as long as he is on screen.
@@ -402,7 +434,7 @@ final class AuraPunchSession {
     /// Recomputed every frame rather than placed once: as the user turns, he orbits to hold the
     /// same angle off their forward axis and rotates to face the same way they do, so he stays in
     /// view instead of being left behind at a fixed spot in the room.
-    private func startCoachFollow(solver: ArmPoseSolver, demoSide: BodySide, reflected: Bool) {
+    private func startCoachFollow(solver: ArmPoseSolver) {
         coachFollowTask?.cancel()
         coachFollowTask = Task { [weak self] in
             while !Task.isCancelled {
@@ -411,8 +443,8 @@ final class AuraPunchSession {
                     self.coach.follow(
                         using: frame,
                         measurements: self.measurements,
-                        demoSide: demoSide,
-                        reflected: reflected
+                        demoSide: self.coachStandingSide,
+                        reflected: self.coachIsReflected
                     )
                 }
                 try? await Task.sleep(for: self.frameInterval)
@@ -426,6 +458,7 @@ final class AuraPunchSession {
     private func dismissCoach() {
         coachFollowTask?.cancel()
         coachFollowTask = nil
+        activeCoachClip = nil
         coach.stop()
         coach.isVisible = false
     }
@@ -453,6 +486,10 @@ final class AuraPunchSession {
             // Resolved per rep, not once for the whole set, so an `.either`-hand technique can
             // alternate which arm the ghost demonstrates on.
             let side = demoSide(forRep: rep, technique: technique, stance: stance)
+            // Keep the coach on the same arm as the ghost. Without this he kept throwing whichever
+            // side he opened with, so on alternating reps he and the ghost demonstrated opposite
+            // arms — two different answers to "which hand?" on screen at once.
+            matchCoachToGhost(side: side)
             let reference = ReferencePunchLibrary.punch(
                 for: technique,
                 stance: stance,

@@ -20,16 +20,44 @@ final class CoachCharacterEntity {
         static let idle = "guard_idle"
     }
 
-    /// The four punch clips that exist, and which of the coach's arms actually throws each one.
+    /// One authored animation, and which of the coach's arms actually throws it.
+    struct ClipEntry: Sendable, Equatable {
+        let file: String
+        let clip: String
+        let side: BodySide
+    }
+
+    /// The punch clips that exist, per technique.
     ///
-    /// Tripo produced one side per technique. That is enough for every case because the coach
-    /// faces the user and mirrors — see `shouldReflect(clipSide:requestedSide:)`.
-    private static let punchClips: [String: (file: String, clip: String, side: BodySide)] = [
-        Technique.jab.id: ("coach_jab_left", "jab_left", .left),
-        Technique.cross.id: ("coach_cross_right", "cross_right", .right),
-        Technique.hook.id: ("coach_hook_right", "hook_right", .right),
-        Technique.uppercut.id: ("coach_uppercut_right", "uppercut_right", .right)
+    /// **Hook and uppercut are authored on both sides.** They are the `.either`-hand techniques, so
+    /// the guided follow-along alternates arms rep to rep and the coach alternates with it — with a
+    /// real left-hand animation rather than a mirrored right one. Jab and cross are thrown with a
+    /// stance-determined hand, so one authored side plus mirroring covers both stances.
+    ///
+    /// Having a genuine clip for a side is strictly better than mirroring it: no negative scale, so
+    /// no reversed winding or inverted normals for those reps.
+    private static let punchClips: [String: [ClipEntry]] = [
+        Technique.jab.id: [
+            ClipEntry(file: "coach_jab_left", clip: "jab_left", side: .left)
+        ],
+        Technique.cross.id: [
+            ClipEntry(file: "coach_cross_right", clip: "cross_right", side: .right)
+        ],
+        Technique.hook.id: [
+            ClipEntry(file: "coach_hook_left", clip: "hook_left", side: .left),
+            ClipEntry(file: "coach_hook_right", clip: "hook_right", side: .right)
+        ],
+        Technique.uppercut.id: [
+            ClipEntry(file: "coach_uppercut_left", clip: "uppercut_left", side: .left),
+            ClipEntry(file: "coach_uppercut_right", clip: "uppercut_right", side: .right)
+        ]
     ]
+
+    /// Every distinct clip file, for loading. Flattened from `punchClips`, so adding a clip there
+    /// is the only edit needed — this and `resolveClip` both follow.
+    static var allClipEntries: [ClipEntry] {
+        punchClips.values.flatMap { $0 }
+    }
 
     private static let baseAssetName = "coach"
 
@@ -115,16 +143,16 @@ final class CoachCharacterEntity {
 
         // Each punch lives in its own animation-only USDZ built on the same skeleton, so the
         // resources bind to this model's joints by name.
-        for (file, clip) in Self.punchClips.values.map({ ($0.file, $0.clip) }) {
+        for entry in Self.allClipEntries {
             do {
-                let holder = try await Entity(named: file, in: Bundle.main)
+                let holder = try await Entity(named: entry.file, in: Bundle.main)
                 if let animation = holder.availableAnimations.first {
-                    library.animations[clip] = animation
+                    library.animations[entry.clip] = animation
                 } else {
-                    print("[Coach] '\(file)' loaded but exposed no animation")
+                    print("[Coach] '\(entry.file)' loaded but exposed no animation")
                 }
             } catch {
-                print("[Coach] clip '\(file)' failed to load: \(error)")
+                print("[Coach] clip '\(entry.file)' failed to load: \(error)")
             }
         }
 
@@ -328,13 +356,24 @@ final class CoachCharacterEntity {
     }
 
     /// Resolves the clip for a technique, and whether it must be reflected for `side`.
+    ///
+    /// **An authored clip for the requested side always wins**, and needs no reflection. Only when
+    /// the technique has nothing on that side does this fall back to mirroring the other one. That
+    /// ordering is what makes adding a second-side FBX an improvement rather than a no-op: hook and
+    /// uppercut now play real animation on both arms and never take the negative-scale path.
+    ///
     /// `nil` when no clip exists for the technique, which the caller treats as "skip the demo".
     static func resolveClip(
         technique: Technique,
         side: BodySide
     ) -> (clip: String, reflected: Bool)? {
-        guard let entry = punchClips[technique.id] else { return nil }
-        return (entry.clip, shouldReflect(clipSide: entry.side, requestedSide: side))
+        guard let entries = punchClips[technique.id], let fallback = entries.first else {
+            return nil
+        }
+        if let exact = entries.first(where: { $0.side == side }) {
+            return (exact.clip, false)
+        }
+        return (fallback.clip, shouldReflect(clipSide: fallback.side, requestedSide: side))
     }
 
     func playIdle() {

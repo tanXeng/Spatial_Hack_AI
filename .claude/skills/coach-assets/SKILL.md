@@ -6,7 +6,7 @@ description: Regenerate the Aura Punch coach character's USDZ assets from the Tr
 # Regenerating the coach assets
 
 Sources live in `Art/` as Tripo FBX exports: one file per animation, with the skinned mesh embedded
-**only** in `Left_hand_jab.fbx`. All five share an identical 65-bone Mixamo skeleton rooted at a
+**only** in `Left_hand_jab.fbx`. All seven share an identical 65-bone Mixamo skeleton rooted at a
 single `mixamorig10:Hips`, which is why the actions are interchangeable.
 
 `Art/*.fbx` and `Art/usdz/` are **gitignored** (~79 MB) — only `Art/build_coach.py` and the final
@@ -46,7 +46,7 @@ Each of these cost a debugging cycle — do not "simplify" them away.
 usdchecker BoxingCoach/Resources/Coach/coach.usdz
 ```
 
-Expect `Success!` on all five files. Filter the `RegisterBehaviorForPrimTypeId` lines — that is
+Expect `Success!` on all seven files. Filter the `RegisterBehaviorForPrimTypeId` lines — that is
 plugin chatter, not an asset problem.
 
 Then run `CoachCharacterEntityTests`, which loads every asset through RealityKit in the simulator
@@ -64,6 +64,9 @@ DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer xcodebuild \
 
 1. Export the animation from Tripo as FBX into `Art/`.
 2. Add a `(filename, clip_name)` pair to `CLIPS` in `Art/build_coach.py`.
-3. Add the clip to `CoachCharacterEntity.punchClips`, keyed by `Technique.id`, with the coach's
-   authored side — the mirroring rule in `CLAUDE.md` derives the rest.
+3. Add a `ClipEntry` to `CoachCharacterEntity.punchClips` under that `Technique.id`, with the
+   coach's authored side. `punchClips` maps a technique to a **list** of per-side clips: give a
+   technique an entry for both sides and `resolveClip` will use each arm's real animation, or
+   leave it one-sided and the mirroring rule in `CLAUDE.md` covers the other stance. Loading and
+   resolution both derive from that table, so it is the only Swift edit needed.
 4. Re-run the conversion, install, and re-run the tests.

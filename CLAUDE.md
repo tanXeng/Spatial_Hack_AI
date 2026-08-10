@@ -102,6 +102,18 @@ user should be looking at their own target.
   load by setting `faceCulling = .none` on every material. Note `faceCulling` lives on each concrete
   material type, not on the `Material` protocol, so that walk has to type-switch.
 
+**He alternates arms with the ghost.** `matchCoachToGhost(side:)` is called once per rep from
+`runGuidedFollowAlong`, so on an `.either`-hand technique he switches clips in step with the ghost
+instead of holding whichever arm he opened with. It only swaps the *clip*, never where he stands:
+orbiting him across the user's view every rep to keep the working arm nearest would be far more
+distracting than the slightly worse angle on alternate reps. It also no-ops when the clip is
+unchanged, since restarting the animation every rep would reset the punch mid-swing.
+
+`punchClips` maps a technique to a **list** of per-side clips, and `resolveClip` prefers an authored
+clip for the requested side over mirroring the other one. **Hook and uppercut ship a real clip per
+arm** — they are the alternating techniques, so both arms get genuine animation and neither takes
+the negative-scale path. Jab and cross stay one-sided and mirror for the opposite stance.
+
 `CoachCharacterEntity` **fails soft everywhere**. Missing asset, missing clip, or no body frame all
 skip the demo and fall through to the ghost unchanged. A missing model must never cost a demo.
 
@@ -320,8 +332,13 @@ Both targets use `PBXFileSystemSynchronizedRootGroup`, so **new files under `Box
       reads as him jittering with every head twitch.
 - [ ] **Mirrored demos may still light oddly.** `makeDoubleSided` stops the renderer drawing his
       interior, but a negative scale also inverts normals, so a reflected coach can shade
-      differently from an unreflected one. Only the side-mismatch cases mirror at all now (southpaw
-      jab, orthodox cross), so compare those two against a straight orthodox jab on device.
+      differently from an unreflected one. The mirrored set is now down to **jab and cross in the
+      stance they are not authored for** — hook and uppercut have real clips on both arms and never
+      mirror. So: check a southpaw jab against an orthodox one.
+- [ ] **The two new left-side clips have only been verified by test, not watched.** `hook_left` and
+      `uppercut_left` load and bind, but nobody has confirmed Tripo authored them as genuine left
+      hooks/uppercuts rather than something mislabelled. If the coach throws the wrong-looking
+      punch on alternating reps, check the source FBX rather than the mapping.
 - [ ] Coach clips are Tripo/Mixamo presets, so they do **not** match `ReferencePunchLibrary`, which
       is what the app actually scores against. The coach demonstrates one motion and the ghost grades
       another. Driving the coach's arm by IK from the reference trajectory is the fix.

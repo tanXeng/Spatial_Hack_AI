@@ -53,15 +53,6 @@ struct BoxingCoachRootView: View {
                         onBack: { flow.navigate(to: .features) }
                     )
 
-                case .competitionCombinationSetup:
-                    CompetitionCombinationSetupView(
-                        stance: flow.draftStance,
-                        controlsDisabled: competitionControlsDisabled,
-                        onStanceChange: flow.setDraftStance,
-                        onStartSetup: prepareCompetitionCombination,
-                        onBack: flow.backFromSetup
-                    )
-
                 case .competitionResult:
                     if let submission = competitionStore.latestSubmission {
                         CompetitionResultView(
@@ -283,23 +274,14 @@ struct BoxingCoachRootView: View {
         )
     }
 
+    /// Reactive Strike is the only ranked challenge, so every mode row leads to the same place.
     private func chooseCompetitionMode(_ mode: CompetitionMode) {
-        if mode == .combination {
-            flow.enterCompetitionCombinationSetup()
-            return
-        }
-
-        Task {
-            if let selection = await competitionStore.startReactiveStrike() {
-                prepareCompetitionSelection(selection)
-            }
-        }
-    }
-
-    private func prepareCompetitionCombination() {
-        Task {
-            if let selection = await competitionStore.startCombination(stance: flow.draftStance) {
-                prepareCompetitionSelection(selection)
+        switch mode {
+        case .reactiveStrike:
+            Task {
+                if let selection = await competitionStore.startReactiveStrike() {
+                    prepareCompetitionSelection(selection)
+                }
             }
         }
     }
@@ -372,7 +354,7 @@ struct BoxingCoachRootView: View {
         switch flow.route {
         case .features:
             session.voiceCoach.updateContext(.idle)
-        case .reactiveSetup, .combinationSetup, .competitionSetup, .competitionCombinationSetup:
+        case .reactiveSetup, .combinationSetup, .competitionSetup:
             session.voiceCoach.updateContext(CoachVoiceContext(
                 feature: .reactiveStrike,
                 auraPhase: nil,

@@ -3,7 +3,7 @@ import XCTest
 
 final class CompetitionDomainTests: XCTestCase {
     @MainActor
-    func testConfigureCompetitionImmediatelyUsesPassedReachForBothModes() throws {
+    func testConfigureCompetitionImmediatelyUsesPassedReach() throws {
         let calibration = BodyCalibration.calibratedFixture
         let session = ReactiveStrikeSession(calibration: calibration)
         let reach = try XCTUnwrap(BilateralReach(left: 0.58, right: 0.72))
@@ -11,9 +11,6 @@ final class CompetitionDomainTests: XCTestCase {
         session.configureCompetition(mode: .reactiveStrike, stance: .orthodox, reach: reach)
         XCTAssertEqual(session.reachProfile.forwardMax, 0.58, accuracy: 0.0001)
         XCTAssertEqual(calibration.reaches, reach.bySide)
-
-        session.configureCompetition(mode: .combination, stance: .southpaw, reach: reach)
-        XCTAssertEqual(session.reachProfile.forwardMax, 0.58, accuracy: 0.0001)
         XCTAssertEqual(calibration.measurements.armReach, 0.58, accuracy: 0.0001)
     }
 
@@ -33,20 +30,19 @@ final class CompetitionDomainTests: XCTestCase {
     }
 
     @MainActor
-    func testCompetitionSessionUsesEightTargetsAndFixedFiveByFourCombo() throws {
+    /// Every ranked run is an eight-target Air drill. A ranked run must never leave Combination
+    /// Mode selected on the session, which is what would happen if Combo were still competable.
+    func testCompetitionSessionAlwaysUsesTheEightTargetAirDrill() throws {
         let session = ReactiveStrikeSession()
         let reach = try XCTUnwrap(BilateralReach(left: 0.64, right: 0.69))
 
-        session.configureCompetition(mode: .reactiveStrike, stance: .orthodox, reach: reach)
-        XCTAssertEqual(session.mode, .air)
-        XCTAssertEqual(session.config.targetCount, 8)
-        XCTAssertEqual(session.config.timeout, 4)
-
-        session.configureCompetition(mode: .combination, stance: .southpaw, reach: reach)
-        XCTAssertEqual(session.mode, .combination)
-        XCTAssertEqual(session.selectedCombination, .jabCrossHookCross)
-        XCTAssertEqual(session.comboRepeatCount, 5)
-        XCTAssertEqual(session.selectedCombination.punchCount * session.comboRepeatCount, 20)
+        for stance in [Stance.orthodox, .southpaw] {
+            session.configureCompetition(mode: .reactiveStrike, stance: stance, reach: reach)
+            XCTAssertEqual(session.mode, .air)
+            XCTAssertNil(CompetitionMode.allCases.first { $0 != .reactiveStrike })
+            XCTAssertEqual(session.config.targetCount, 8)
+            XCTAssertEqual(session.config.timeout, 4)
+        }
 
         session.configure(mode: .air, combination: nil, stance: .orthodox)
         XCTAssertEqual(session.config, DrillConfig(), "Competition timing must not leak into normal training")
@@ -179,37 +175,6 @@ final class CompetitionDomainTests: XCTestCase {
         XCTAssertEqual(try XCTUnwrap(submission(player: player, evidence: halfAtEdge)).score, 40)
     }
 
-    func testComboWrongHandAndMissingRetractionEarnZeroForThoseSteps() throws {
-        let player = makePlayer()
-        var steps = makeEvidence(mode: .combination, validCount: 20, error: 0).steps
-        steps[3] = CompetitionStepEvidence(
-            index: 3,
-            valid: false,
-            centreErrorMeters: 0,
-            reactionTime: nil,
-            requiredHand: .left,
-            returnedToGuard: true
-        )
-        steps[4] = CompetitionStepEvidence(
-            index: 4,
-            valid: true,
-            centreErrorMeters: 0,
-            reactionTime: nil,
-            requiredHand: .right,
-            returnedToGuard: false
-        )
-        let evidence = CompetitionEvidence(
-            mode: .combination,
-            steps: steps,
-            completedRepetitions: 4,
-            activeElapsedTime: 18,
-            trackingStatus: .complete
-        )
-        let result = try XCTUnwrap(submission(player: player, evidence: evidence))
-        XCTAssertEqual(result.validSteps, 18)
-        XCTAssertEqual(result.score, 90)
-    }
-
     func testPartialStaleAndTechnicalEvidenceCannotSubmit() {
         let player = makePlayer()
         let partial = CompetitionEvidence(
@@ -287,15 +252,15 @@ final class CompetitionDomainTests: XCTestCase {
                 valid: index < validCount,
                 centreErrorMeters: index < validCount ? error : nil,
                 reactionTime: index < validCount ? 0.35 : nil,
-                requiredHand: mode == .combination ? (index.isMultiple(of: 2) ? .left : .right) : nil,
+                requiredHand: nil,
                 returnedToGuard: index < validCount
             )
         }
         return CompetitionEvidence(
             mode: mode,
             steps: steps,
-            completedRepetitions: mode == .combination ? validCount / 4 : 0,
-            activeElapsedTime: mode == .combination ? 16 : nil,
+            completedRepetitions: 0,
+            activeElapsedTime: nil,
             trackingStatus: .complete
         )
     }

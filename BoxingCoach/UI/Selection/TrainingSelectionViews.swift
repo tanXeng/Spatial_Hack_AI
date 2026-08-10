@@ -203,46 +203,6 @@ struct CompetitionSetupView: View {
     }
 }
 
-struct CompetitionCombinationSetupView: View {
-    let stance: Stance
-    let controlsDisabled: Bool
-    let onStanceChange: (Stance) -> Void
-    let onStartSetup: () -> Void
-    let onBack: () -> Void
-
-    var body: some View {
-        TrainingDetailScaffold(
-            backLabel: "Competition",
-            title: "Combo",
-            subtitle: "Choose your stance for the ranked challenge",
-            controlsDisabled: controlsDisabled,
-            onBack: onBack
-        ) {
-            VStack(spacing: 20) {
-                StancePickerCard(
-                    stance: stance,
-                    controlsDisabled: controlsDisabled,
-                    onStanceChange: onStanceChange
-                )
-
-                Button(action: onStartSetup) {
-                    selectionRow(
-                        title: "1–2–3–2 · Jab-Cross-Hook-Cross",
-                        subtitle: "Five repetitions · Required hand, contact, and retraction"
-                    )
-                }
-                .buttonStyle(.plain)
-                .disabled(controlsDisabled)
-                .accessibilityElement(children: .ignore)
-                .accessibilityLabel(
-                    "1 2 3 2, Jab Cross Hook Cross, five ranked repetitions"
-                )
-                .accessibilityHint("Opens the competition ready screen")
-            }
-        }
-    }
-}
-
 struct AuraSetupView: View {
     let stance: Stance
     let controlsDisabled: Bool
@@ -359,17 +319,6 @@ private func selectionRow(title: String, subtitle: String) -> some View {
         onLeaderboard: {},
         onRecalibrate: {},
         onChangePlayer: {},
-        onBack: {}
-    )
-    .padding(32)
-}
-
-#Preview("Competition Combo Setup") {
-    CompetitionCombinationSetupView(
-        stance: .southpaw,
-        controlsDisabled: false,
-        onStanceChange: { _ in },
-        onStartSetup: {},
         onBack: {}
     )
     .padding(32)

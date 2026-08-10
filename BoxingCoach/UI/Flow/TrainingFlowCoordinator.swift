@@ -52,7 +52,6 @@ enum TrainingFlowRoute: Hashable, Sendable {
     case reactiveSetup
     case combinationSetup
     case competitionSetup
-    case competitionCombinationSetup
     case competitionResult
     case auraSetup
     case experience(TrainingSelection)
@@ -182,12 +181,6 @@ final class TrainingFlowCoordinator {
         route = .competitionSetup
     }
 
-    func enterCompetitionCombinationSetup() {
-        guard transition == .idle, route == .competitionSetup else { return }
-        presentationError = nil
-        route = .competitionCombinationSetup
-    }
-
     func enterCompetitionResult() {
         guard transition == .idle else { return }
         presentationError = nil
@@ -199,8 +192,6 @@ final class TrainingFlowCoordinator {
         presentationError = nil
         if route == .combinationSetup {
             route = .reactiveSetup
-        } else if route == .competitionCombinationSetup {
-            route = .competitionSetup
         } else {
             route = .features
         }
@@ -382,12 +373,10 @@ final class TrainingFlowCoordinator {
             session.resetForNewRound()
             route = .features
 
-        case .competition(_, let mode, let stance, _):
+        case .competition(_, _, let stance, _):
             draftStance = stance
             session.resetForNewRound()
-            route = mode == .combination
-                ? .competitionCombinationSetup
-                : .competitionSetup
+            route = .competitionSetup
         }
 
         presentationError = nil

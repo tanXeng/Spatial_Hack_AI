@@ -129,27 +129,25 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
         XCTAssertEqual(flow.route, .competitionSetup)
         XCTAssertEqual(flow.draftStance, .southpaw)
 
-        flow.enterCompetitionCombinationSetup()
-        XCTAssertEqual(flow.route, .competitionCombinationSetup)
-
+        // Competition setup is one level deep now that Combo is not a ranked mode: there is no
+        // intermediate stance screen, so Back goes straight home.
         flow.backFromSetup()
-        XCTAssertEqual(flow.route, .competitionSetup)
+        XCTAssertEqual(flow.route, .features)
         XCTAssertEqual(flow.draftStance, .southpaw)
     }
 
-    func testReturningFromPreparedCompetitionComboRestoresCompetitionSetup() async {
+    func testReturningFromAPreparedRankedRunRestoresCompetitionSetup() async {
         let flow = TrainingFlowCoordinator()
         let session = ReactiveStrikeSession()
         let reach = try! XCTUnwrap(BilateralReach(left: 0.62, right: 0.60))
         let selection = TrainingSelection.competition(
             playerID: UUID(),
-            mode: .combination,
+            mode: .reactiveStrike,
             stance: .southpaw,
             reach: reach
         )
 
         flow.enterCompetitionSetup(stance: .southpaw)
-        flow.enterCompetitionCombinationSetup()
         flow.navigate(to: .experience(selection))
 
         await flow.returnToSetup(
@@ -158,7 +156,7 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
             dismissImmersive: {}
         )
 
-        XCTAssertEqual(flow.route, .competitionCombinationSetup)
+        XCTAssertEqual(flow.route, .competitionSetup)
         XCTAssertEqual(flow.draftStance, .southpaw)
     }
 

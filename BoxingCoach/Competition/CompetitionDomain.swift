@@ -1,29 +1,35 @@
 import Foundation
 
+/// The ranked challenges. Reactive Strike is currently the only one.
+///
+/// Combo was removed from the competition layer — Combination Mode still exists as ordinary
+/// (unranked) Reactive Strike training via `ReactiveStrikeMode.combination`; it simply is not
+/// something you can compete at or appear on a leaderboard for.
+///
+/// Kept as an enum rather than collapsed away so submissions stay mode-tagged in the store: the
+/// persisted schema already writes `modeRawValue`, and a record whose raw value no longer resolves
+/// is dropped by `compactMap(\.snapshot)` rather than failing the load. That is what lets old combo
+/// results disappear from a device that already has them without a migration.
 nonisolated enum CompetitionMode: String, Codable, CaseIterable, Identifiable, Hashable, Sendable {
     case reactiveStrike
-    case combination
 
     var id: String { rawValue }
 
     var title: String {
         switch self {
         case .reactiveStrike: return "Reactive Strike"
-        case .combination: return "Combo"
         }
     }
 
     var subtitle: String {
         switch self {
         case .reactiveStrike: return "Eight reaction targets"
-        case .combination: return "Five repetitions of 1–2–3–2"
         }
     }
 
     var totalSteps: Int {
         switch self {
         case .reactiveStrike: return 8
-        case .combination: return 20
         }
     }
 }
@@ -252,9 +258,11 @@ nonisolated enum CompetitionLeaderboard {
         }
     }
 
+    // `completedRepetitions` was the Combo board's first tie-break. Reactive Strike has no
+    // repetitions, so with Combo gone from the competition layer that term is dead and both the
+    // key field and the comparison branch come out rather than sitting here always comparing zero.
     private struct RankKey: Equatable {
         let score: Int
-        let repetitions: Int
         let validSteps: Int
         let centreError: Float?
         let speed: TimeInterval?
@@ -263,7 +271,6 @@ nonisolated enum CompetitionLeaderboard {
     private static func rankingKey(_ value: CompetitionSubmission) -> RankKey {
         RankKey(
             score: value.score,
-            repetitions: value.mode == .combination ? value.completedRepetitions : 0,
             validSteps: value.validSteps,
             centreError: value.meanCentreErrorMeters,
             speed: value.speedTieBreakSeconds
@@ -272,9 +279,6 @@ nonisolated enum CompetitionLeaderboard {
 
     private static func ranksBefore(_ lhs: CompetitionSubmission, _ rhs: CompetitionSubmission) -> Bool {
         if lhs.score != rhs.score { return lhs.score > rhs.score }
-        if lhs.mode == .combination, lhs.completedRepetitions != rhs.completedRepetitions {
-            return lhs.completedRepetitions > rhs.completedRepetitions
-        }
         if lhs.validSteps != rhs.validSteps { return lhs.validSteps > rhs.validSteps }
         if lhs.meanCentreErrorMeters != rhs.meanCentreErrorMeters {
             return optionalLower(lhs.meanCentreErrorMeters, rhs.meanCentreErrorMeters)

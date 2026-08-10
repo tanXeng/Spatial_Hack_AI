@@ -51,7 +51,6 @@ final class CompetitionStore {
     private(set) var currentPlayer: CompetitionPlayer?
     private(set) var latestSubmission: CompetitionSubmission?
     private(set) var reactiveStandings: [CompetitionStanding] = []
-    private(set) var combinationStandings: [CompetitionStanding] = []
     private(set) var activeRun: ActiveCompetitionRun?
     private(set) var isLoading = false
     private(set) var isSaving = false
@@ -89,7 +88,6 @@ final class CompetitionStore {
         route: CompetitionSheetRoute = .nameEntry,
         player: CompetitionPlayer? = nil,
         reactiveStandings: [CompetitionStanding] = [],
-        combinationStandings: [CompetitionStanding] = [],
         errorMessage: String? = nil,
         latestSubmission: CompetitionSubmission? = nil
     ) -> CompetitionStore {
@@ -98,7 +96,6 @@ final class CompetitionStore {
         store.currentPlayer = player
         store.selectedStance = player?.rememberedStance ?? .orthodox
         store.reactiveStandings = reactiveStandings
-        store.combinationStandings = combinationStandings
         store.errorMessage = errorMessage
         store.latestSubmission = latestSubmission
         return store
@@ -216,10 +213,6 @@ final class CompetitionStore {
         return await prepareRankedRun(mode: .reactiveStrike, stance: player.rememberedStance)
     }
 
-    func startCombination(stance: Stance) async -> TrainingSelection? {
-        await prepareRankedRun(mode: .combination, stance: stance)
-    }
-
     func showLeaderboard(_ mode: CompetitionMode) {
         errorMessage = nil
         sheetRoute = .leaderboard(mode)
@@ -324,7 +317,6 @@ final class CompetitionStore {
             currentPlayer = nil
             latestSubmission = nil
             reactiveStandings = []
-            combinationStandings = []
             nameDraft = ""
             selectedStance = .orthodox
             errorMessage = nil
@@ -334,8 +326,12 @@ final class CompetitionStore {
         }
     }
 
+    /// Reactive Strike is the only ranked mode, so there is one board. Kept keyed by mode so the
+    /// call sites and the sheet route do not have to change if another challenge is added.
     func standings(for mode: CompetitionMode) -> [CompetitionStanding] {
-        mode == .reactiveStrike ? reactiveStandings : combinationStandings
+        switch mode {
+        case .reactiveStrike: return reactiveStandings
+        }
     }
 
     private func prepareRankedRun(
@@ -408,16 +404,6 @@ final class CompetitionStore {
                 activeElapsedTime: nil,
                 trackingStatus: session.competitionTrackingStatus
             )
-
-        case .combination:
-            guard session.competitionSteps.count == mode.totalSteps else { return nil }
-            return CompetitionEvidence(
-                mode: mode,
-                steps: session.competitionSteps,
-                completedRepetitions: session.comboRepsCompleted,
-                activeElapsedTime: session.competitionActiveElapsedTime,
-                trackingStatus: session.competitionTrackingStatus
-            )
         }
     }
 
@@ -429,10 +415,6 @@ final class CompetitionStore {
             let submissions = try await repository.submissions()
             reactiveStandings = CompetitionLeaderboard.standings(
                 mode: .reactiveStrike,
-                submissions: submissions
-            )
-            combinationStandings = CompetitionLeaderboard.standings(
-                mode: .combination,
                 submissions: submissions
             )
             errorMessage = nil

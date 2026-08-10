@@ -47,6 +47,25 @@ Two subsystems arrived from `merge-voice-ui` and sit alongside the three feature
   reference, so the failure is a project-load error, not a Swift error).
 - **Competition** (`Competition/`) — persisted players, ranked runs, and a leaderboard.
 
+**Reactive Strike is the only ranked mode.** Combo was removed from the competition layer:
+`CompetitionMode` has one case, there is one leaderboard (no segmented picker), and
+`configureCompetition` always sets up the eight-target Air drill.
+
+Two things that are easy to get wrong here:
+
+- **Combination Mode itself is untouched.** It remains ordinary Reactive Strike training via
+  `ReactiveStrikeMode.combination`, with its own setup route and view. It is simply not something
+  you can compete at. Removing `CompetitionMode.combination` must never take
+  `ReactiveStrikeMode.combination` with it.
+- **`CompetitionMode` stays an enum rather than being collapsed away.** Submissions are persisted
+  with `modeRawValue`, and a stored row whose raw value no longer resolves is dropped by
+  `compactMap(\.snapshot)` instead of failing the load. That is what lets pre-existing Combo results
+  vanish from a device that already has them with no migration and no crash.
+
+`completedRepetitions` survives on `CompetitionEvidence`/`CompetitionSubmission` because the
+persisted schema has the field, but it is always zero and is no longer a ranking tie-break — that
+term was Combo's.
+
 Merge decisions worth knowing, because both undid a duplicate that branch had introduced:
 
 - **There is still exactly one reach measurement.** `merge-voice-ui` had its own

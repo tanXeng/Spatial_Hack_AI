@@ -169,15 +169,13 @@ struct CompetitionSheetView: View {
 
     private func leaderboardBoard(_ mode: CompetitionMode) -> some View {
         VStack(alignment: .leading, spacing: 18) {
-            Picker("Leaderboard", selection: Binding(
-                get: { mode },
-                set: { store.showLeaderboard($0) }
-            )) {
-                Text("Reactive Strike").tag(CompetitionMode.reactiveStrike)
-                Text("Combo").tag(CompetitionMode.combination)
-            }
-            .pickerStyle(.segmented)
-            .accessibilityFocused($focus, equals: .leaderboard)
+            // Reactive Strike is the only ranked mode, so there is nothing to switch between and
+            // the segmented picker is gone. The board still names itself, since the sheet can be
+            // reached from several places.
+            Text("\(mode.title) Leaderboard")
+                .font(.title3.weight(.semibold))
+                .accessibilityAddTraits(.isHeader)
+                .accessibilityFocused($focus, equals: .leaderboard)
 
             let standings = store.standings(for: mode)
             if standings.isEmpty {
@@ -247,20 +245,16 @@ struct CompetitionResultView: View {
             onBack: onHome
         ) {
             VStack(spacing: 16) {
+                // Reactive Strike wording throughout: the "valid steps" / "active time" variants
+                // and the repetitions row all belonged to the Combo board.
                 VStack(alignment: .leading, spacing: 8) {
                     LabeledMetricRow(
-                        title: submission.mode == .reactiveStrike ? "Valid hits" : "Valid steps",
+                        title: "Valid hits",
                         value: "\(submission.validSteps) / \(submission.totalSteps)"
                     )
-                    if submission.mode == .combination {
-                        LabeledMetricRow(
-                            title: "Completed repetitions",
-                            value: "\(submission.completedRepetitions) / 5"
-                        )
-                    }
                     if let speed = submission.speedTieBreakSeconds {
                         LabeledMetricRow(
-                            title: submission.mode == .reactiveStrike ? "Average reaction" : "Active time",
+                            title: "Average reaction",
                             value: String(format: "%.2f s", speed),
                             spokenValue: String(format: "%.2f seconds", speed)
                         )

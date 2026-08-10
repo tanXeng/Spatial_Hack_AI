@@ -3,7 +3,7 @@ import XCTest
 
 @MainActor
 final class CompetitionPersistenceTests: XCTestCase {
-    func testSheetLifecycleAndComboStanceAreStateDriven() async throws {
+    func testSheetLifecycleAndRankedStanceAreStateDriven() async throws {
         let repository = InMemoryCompetitionRepository()
         try await repository.save(player: makePlayer())
         let store = CompetitionStore(repository: repository)
@@ -13,9 +13,11 @@ final class CompetitionPersistenceTests: XCTestCase {
         await store.join(name: "Alex")
         XCTAssertEqual(store.sheetRoute, .enterSetup)
 
-        let selection = await store.startCombination(stance: .orthodox)
-        guard case .competition(_, .combination, .orthodox, _)? = selection else {
-            return XCTFail("Expected a fixed Combo competition selection")
+        // The stance is not passed in: Reactive Strike is the only ranked mode and it takes the
+        // stance off the player record, which `makePlayer` sets to southpaw.
+        let selection = await store.startReactiveStrike()
+        guard case .competition(_, .reactiveStrike, .southpaw, _)? = selection else {
+            return XCTFail("Expected a Reactive Strike selection using the player's stance")
         }
 
         store.cancelActiveRun(message: "Cancelled for test")
@@ -76,7 +78,7 @@ final class CompetitionPersistenceTests: XCTestCase {
         store.discardPreparedRun()
 
         XCTAssertNil(store.activeRun)
-        let replacementSelection = await store.startCombination(stance: .southpaw)
+        let replacementSelection = await store.startReactiveStrike()
         XCTAssertNotNil(replacementSelection)
     }
 

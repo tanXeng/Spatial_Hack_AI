@@ -27,8 +27,8 @@ struct TrainingExperienceView: View {
             calibrationExperience(context: .competition)
         case .competition(_, let mode, let stance, _):
             reactiveExperience(
-                mode: mode == .combination ? .combination : .air,
-                combination: mode == .combination ? .jabCrossHookCross : nil,
+                mode: .air,
+                combination: nil,
                 stance: stance,
                 competitionMode: mode
             )
@@ -219,7 +219,7 @@ struct TrainingExperienceView: View {
 
         let backLabel = competitionMode == nil
             ? (combination == nil ? "Change Mode" : "Change Combination")
-            : (competitionMode == .combination ? "Change Stance" : "Competition")
+            : "Competition"
         let title = competitionMode.map { "\($0.title) Competition" } ?? "Reactive Strike"
 
         return TrainingDetailScaffold(

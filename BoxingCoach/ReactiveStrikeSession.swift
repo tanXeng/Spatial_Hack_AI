@@ -163,12 +163,8 @@ final class ReactiveStrikeSession {
     ) {
         let retainedGuards = calibration.guardPositionsBody
         calibration.store(reaches: reach.bySide, guardPositionsBody: retainedGuards)
-        let reactiveMode: ReactiveStrikeMode = mode == .combination ? .combination : .air
-        configure(
-            mode: reactiveMode,
-            combination: mode == .combination ? .jabCrossHookCross : nil,
-            stance: stance
-        )
+        // Every ranked mode is an Air-profile target drill now that Combo is not competable.
+        configure(mode: .air, combination: nil, stance: stance)
         capturesCompetitionEvidence = true
         comboRepeatCount = 5
         config.targetCount = CompetitionMode.reactiveStrike.totalSteps

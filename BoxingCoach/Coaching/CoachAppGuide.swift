@@ -29,9 +29,9 @@ nonisolated enum CoachAppGuide {
 
     /// Shorter app summary for the live voice coach prompt (less latency + tokens).
     static let compactOverview: String = """
-    Boxing Coach on Vision Pro. Aura Punch = follow hologram for Jab/Cross/Hook/Uppercut. \
-    Reactive Strike = hit orange targets (Air or Combination mode). Hold Ask Coach to talk. \
-    Jab practice: Home → Aura Punch → Jab → raise guard → mirror hologram. No feet/hip tracking.
+    Boxing Coach on Vision Pro. Aura Punch: a 3D coach demos the punch, then a ghost hologram guides reps, \
+    then you throw solo. Techniques: Jab/Cross/Hook/Uppercut. Reactive Strike = hit orange targets \
+    (Air or Combination mode). Hold Ask Coach to talk. Jab: Home → Aura Punch → Jab → raise guard → follow hologram.
     """
 
     static func sessionContext(for context: CoachVoiceContext) -> String {

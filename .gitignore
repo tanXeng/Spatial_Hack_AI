@@ -46,7 +46,10 @@ Carthage/Build/
 
 # Tooling / editor state
 .cursor/
-.claude/
+# Local Claude Code state stays out (settings.local.json holds machine-specific approvals), but
+# shared skills are project documentation and must travel with the repo.
+.claude/*
+!.claude/skills/
 .idea/
 .vscode/
 .xcodeshareddata/
@@ -58,9 +61,18 @@ local/
 # API keys
 Secrets.xcconfig
 
-# Keep local docs/notes/scratch files local only (track only root README).
+# Keep local docs/notes/scratch files local only (track only root README, CLAUDE.md, and the
+# shared Claude Code skills — those three are project documentation, not scratch).
 *.md
 !README.md
+!CLAUDE.md
+!.claude/skills/**/*.md
 *.txt
 *.docx
 *.pdf
+
+# Coach character sources. The Tripo FBX exports and the intermediate USDZ are ~79 MB and are
+# not needed to build — only BoxingCoach/Resources/Coach/*.usdz is. Regenerate with
+# Art/build_coach.py (tracked) from the FBX, which live outside git.
+Art/*.fbx
+Art/usdz/

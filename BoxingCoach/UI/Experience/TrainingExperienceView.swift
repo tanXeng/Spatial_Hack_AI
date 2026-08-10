@@ -47,10 +47,23 @@ struct TrainingExperienceView: View {
             }
         }
         .onChange(of: session.phase) { _, phase in
-            if phase == .finished { resultPrimaryActionFocused = true }
+            restoreResultFocusIfNeeded()
         }
         .onChange(of: session.auraPunch.phase) { _, phase in
-            if phase == .results { resultPrimaryActionFocused = true }
+            restoreResultFocusIfNeeded()
+        }
+        .onAppear {
+            restoreResultFocusIfNeeded()
+        }
+    }
+
+    private func restoreResultFocusIfNeeded() {
+        if TrainingAccessibility.shouldFocusResult(
+            selection: selection,
+            reactivePhase: session.phase,
+            auraPhase: session.auraPunch.phase
+        ) {
+            resultPrimaryActionFocused = true
         }
     }
 
@@ -160,7 +173,7 @@ struct TrainingExperienceView: View {
                             if let note = score.wrongHandNote {
                                 Label(note, systemImage: "hand.raised.slash")
                                     .font(.callout.weight(.medium))
-                                    .foregroundStyle(.orange)
+                                    .foregroundStyle(TrainingPalette.activeAmber)
                                     .frame(maxWidth: .infinity, alignment: .leading)
                                     .padding()
                                     .background(
@@ -383,7 +396,7 @@ struct TrainingExperienceView: View {
             if score.wrongHand {
                 Text("Reduced: thrown with the \(score.thrownHandName) hand instead of the \(score.requiredHandName).")
                     .font(.footnote)
-                    .foregroundStyle(.orange)
+                    .foregroundStyle(TrainingPalette.activeAmber)
             }
 
             Divider()
@@ -404,7 +417,7 @@ struct TrainingExperienceView: View {
         VStack(alignment: .leading, spacing: 8) {
             Label(title, systemImage: "viewfinder.trianglebadge.exclamationmark")
                 .font(.headline)
-                .foregroundStyle(.orange)
+                .foregroundStyle(TrainingPalette.activeAmber)
             Text(message)
                 .font(.body)
                 .foregroundStyle(.secondary)

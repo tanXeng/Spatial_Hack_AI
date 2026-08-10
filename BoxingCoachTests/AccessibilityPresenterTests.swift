@@ -38,6 +38,30 @@ struct AccessibilityPresenterTests {
         #expect(TrainingAccessibility.focus(after: .participantHandoff) == .joinCompetition)
     }
 
+    @Test("A terminal screen restores result focus when first presented")
+    func terminalInitialPresentationRestoresResultFocus() {
+        #expect(TrainingAccessibility.shouldFocusResult(
+            selection: .reachCalibration,
+            reactivePhase: .finished,
+            auraPhase: .idle
+        ))
+        #expect(!TrainingAccessibility.shouldFocusResult(
+            selection: .reachCalibration,
+            reactivePhase: .idle,
+            auraPhase: .results
+        ))
+        #expect(TrainingAccessibility.shouldFocusResult(
+            selection: .aura(track: .firstRound, technique: .jab, stance: .orthodox),
+            reactivePhase: .idle,
+            auraPhase: .results
+        ))
+        #expect(!TrainingAccessibility.shouldFocusResult(
+            selection: .aura(track: .firstRound, technique: .jab, stance: .orthodox),
+            reactivePhase: .finished,
+            auraPhase: .idle
+        ))
+    }
+
     @Test("Voice permission completion chooses the live focus target")
     func voicePermissionFocusIsDeterministic() {
         let permission = CoachVoiceLifecycleState.needsPermission(

@@ -50,7 +50,7 @@ struct TrainingSafetyPreflightCard: View {
             }
         } icon: {
             Image(systemName: "figure.mind.and.body")
-                .foregroundStyle(.orange)
+                .foregroundStyle(TrainingPalette.activeAmber)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding()

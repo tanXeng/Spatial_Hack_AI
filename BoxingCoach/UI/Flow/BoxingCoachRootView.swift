@@ -21,9 +21,8 @@ struct BoxingCoachRootView: View {
     }
 
     var body: some View {
-        ZStack(alignment: .bottomLeading) {
-            Group {
-                switch flow.route {
+        Group {
+            switch flow.route {
                 case .features:
                     featureSelection
 
@@ -69,11 +68,10 @@ struct BoxingCoachRootView: View {
                         onStart: { start(selection) },
                         onChangeSelection: { changeSelection(selection) }
                     )
-                }
             }
-
+        }
+        .safeAreaInset(edge: .bottom, spacing: 16) {
             CoachVoiceCoachPanel(isDisabled: flow.controlsDisabled)
-                .padding(.bottom, 8)
         }
         .padding(32)
         .frame(

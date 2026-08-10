@@ -4,6 +4,13 @@ import Testing
 
 @Suite("Audience mirror production presenter")
 struct AudienceMirrorPresenterTests {
+    @Test("Shared coaching provenance follows the presented feedback source")
+    func coachingProvenanceMatchesFeedback() {
+        #expect(TrainingPresentationPolicy.coachingSource(for: nil) == .offline)
+        #expect(TrainingPresentationPolicy.coachingSource(for: .offlineCoach) == .offline)
+        #expect(TrainingPresentationPolicy.coachingSource(for: .aiPhrasing) == .aiPhrasing)
+    }
+
     @Test("Every Aura learning stage maps to a public presentation stage", arguments: [
         (LearningStage.fit, TrainingPresentationStage.fit),
         (.learnWatch, .learn),

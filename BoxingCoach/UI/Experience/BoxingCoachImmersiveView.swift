@@ -204,7 +204,7 @@ struct BoxingCoachImmersiveView: View {
                     endTraining()
                 }
                 .buttonStyle(.bordered)
-                .tint(.red)
+                .tint(TrainingPalette.invalidCoral)
                 .controlSize(isAuraExperience ? .large : .regular)
                 .font(isAuraExperience ? .title3.weight(.semibold) : .body)
                 .frame(minWidth: 60, minHeight: 60)

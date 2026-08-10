@@ -89,6 +89,19 @@ nonisolated enum TrainingAccessibilityAnchor: Equatable, Sendable {
 nonisolated enum TrainingAccessibility {
     static let minimumControlHitRegion: CGFloat = 60
 
+    static func shouldFocusResult(
+        selection: TrainingSelection,
+        reactivePhase: DrillPhase,
+        auraPhase: AuraPunchPhase
+    ) -> Bool {
+        switch selection {
+        case .aura:
+            auraPhase == .results
+        case .reactive, .reachCalibration, .competitionCalibration, .competition:
+            reactivePhase == .finished
+        }
+    }
+
     static func focus(
         after transition: TrainingAccessibilityTransition
     ) -> TrainingAccessibilityFocusDestination {

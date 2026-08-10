@@ -74,6 +74,15 @@ nonisolated enum TrainingCoachingSource: Equatable, Sendable {
     case offline
     case aiPhrasing
 
+    init(feedbackSource: CoachingFeedbackSource) {
+        switch feedbackSource {
+        case .offlineCoach:
+            self = .offline
+        case .aiPhrasing:
+            self = .aiPhrasing
+        }
+    }
+
     var text: String {
         switch self {
         case .offline: "Measured locally · Offline coach"
@@ -207,6 +216,12 @@ nonisolated enum TrainingPresentationContext: Sendable {
 }
 
 nonisolated enum TrainingPresentationPolicy {
+    static func coachingSource(
+        for feedbackSource: CoachingFeedbackSource?
+    ) -> TrainingCoachingSource {
+        feedbackSource.map(TrainingCoachingSource.init(feedbackSource:)) ?? .offline
+    }
+
     static func state(for context: TrainingPresentationContext) -> TrainingPresentationState? {
         switch context {
         case .welcome:
@@ -348,7 +363,7 @@ nonisolated enum TrainingPresentationPolicy {
                 },
                 focus: session.auraPunch.correctionFocus,
                 proofDisposition: session.auraPunch.proofDisposition,
-                source: .offline
+                source: coachingSource(for: session.auraPunch.feedback?.source)
             ))!
         case .reactive(_, let combination, _):
             return state(for: .reactive(

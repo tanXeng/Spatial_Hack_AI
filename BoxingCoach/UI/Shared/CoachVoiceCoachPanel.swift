@@ -104,6 +104,10 @@ struct TrainingAudioRecoveryButton: View {
     var body: some View {
         Button("Resume Audio", systemImage: "speaker.wave.2.fill", action: action)
             .buttonStyle(.borderedProminent)
+            .frame(
+                minWidth: TrainingAccessibility.minimumControlHitRegion,
+                minHeight: TrainingAccessibility.minimumControlHitRegion
+            )
             .accessibilityLabel("Resume Audio")
             .accessibilityHint(
                 "Restores training audio after an interruption or audio route change"

@@ -137,7 +137,7 @@ struct CoachPushToTalkButton: View {
 
     private var buttonTint: Color {
         if isGeneratingResponse || isRouting { return .purple }
-        if isListening || isPressed { return .orange }
+        if isListening || isPressed { return TrainingPalette.activeAmber }
         return .blue
     }
 

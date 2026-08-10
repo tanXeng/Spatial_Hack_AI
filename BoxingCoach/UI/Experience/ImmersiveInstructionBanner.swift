@@ -119,7 +119,7 @@ struct ImmersiveInstructionBanner: View {
         if let metric = instruction.metric {
             Text(metric)
                 .font(.headline.monospacedDigit())
-                .foregroundStyle(.cyan)
+                .foregroundStyle(TrainingPalette.referenceCyan)
         }
         if let source = instruction.source {
             Text(source)

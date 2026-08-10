@@ -36,18 +36,18 @@ struct AudienceMirrorView: View {
         VStack(alignment: .leading, spacing: spacing) {
             Text(presentation.stage)
                 .font(.system(.largeTitle, design: .rounded, weight: .black))
-                .foregroundStyle(.orange)
+                .foregroundStyle(TrainingPalette.activeAmber)
                 .accessibilityAddTraits(.isHeader)
 
             Text(presentation.instruction)
                 .font(.system(.title, design: .rounded, weight: .bold))
-                .foregroundStyle(.white)
+                .foregroundStyle(TrainingPalette.glassPrimary)
                 .fixedSize(horizontal: false, vertical: true)
 
             if let source = presentation.coachingSource {
                 Text(source)
                     .font(.headline)
-                    .foregroundStyle(.white.opacity(0.76))
+                    .foregroundStyle(TrainingPalette.glassSecondary)
             }
 
             if let progress = presentation.progress {
@@ -67,18 +67,20 @@ struct AudienceMirrorView: View {
             if let identity = presentation.publicIdentity {
                 Label(identity, systemImage: "person.crop.circle")
                     .font(.title2.bold())
-                    .foregroundStyle(.white)
+                    .foregroundStyle(TrainingPalette.glassPrimary)
                     .accessibilityLabel("Event-local participant \(identity)")
             } else {
                 Text("No private profile, transcript, or motion data is shown.")
                     .font(.headline)
-                    .foregroundStyle(.white.opacity(0.72))
+                    .foregroundStyle(TrainingPalette.glassMuted)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
         .padding(36)
         .background(
-            reduceTransparency ? Color.black : Color.black.opacity(0.72),
+            reduceTransparency
+                ? TrainingPalette.glassOpaqueBackground
+                : TrainingPalette.glassBackground,
             in: RoundedRectangle(cornerRadius: 32)
         )
     }
@@ -87,10 +89,10 @@ struct AudienceMirrorView: View {
         VStack(alignment: .leading, spacing: 4) {
             Text(label.uppercased())
                 .font(.caption.bold())
-                .foregroundStyle(.white.opacity(0.64))
+                .foregroundStyle(TrainingPalette.glassSubdued)
             Text(value)
                 .font(.title2.monospacedDigit().bold())
-                .foregroundStyle(.cyan)
+                .foregroundStyle(TrainingPalette.referenceCyan)
         }
         .accessibilityElement(children: .combine)
     }

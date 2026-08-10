@@ -69,7 +69,7 @@ struct TrainingErrorCard: View {
     var body: some View {
         Label(message, systemImage: "exclamationmark.triangle.fill")
             .font(.footnote)
-            .foregroundStyle(.red)
+            .foregroundStyle(TrainingPalette.invalidCoral)
             .multilineTextAlignment(.center)
             .frame(maxWidth: .infinity)
             .padding()

@@ -12,7 +12,6 @@ final class BoxingCoachCompositionRoot {
     let session: ReactiveStrikeSession
     let flow: TrainingFlowCoordinator
     let competitionStore: CompetitionStore
-    let athleteMemoryRepository: any AthleteMemoryRepository
     let audioCoordinator: TrainingAudioCoordinator
     let speechClient: any SpeechRecognizing
     let relayClient: CoachRelayClient
@@ -26,12 +25,10 @@ final class BoxingCoachCompositionRoot {
         speechClient: any SpeechRecognizing,
         flow: TrainingFlowCoordinator,
         competitionStore: CompetitionStore,
-        athleteMemoryRepository: any AthleteMemoryRepository,
         relayClient: CoachRelayClient = CoachRelayClient(endpoint: nil)
     ) {
         self.flow = flow
         self.competitionStore = competitionStore
-        self.athleteMemoryRepository = athleteMemoryRepository
         self.audioCoordinator = audioCoordinator
         self.speechClient = speechClient
         self.relayClient = relayClient
@@ -63,7 +60,6 @@ final class BoxingCoachCompositionRoot {
                         container: container
                     )
                 ),
-                athleteMemoryRepository: SwiftDataAthleteMemoryRepository(container: container),
                 relayClient: relayClient
             )
         } catch {
@@ -77,7 +73,6 @@ final class BoxingCoachCompositionRoot {
                     startupError: "Saved competition data is unavailable. Results will last only until the app closes.",
                     coachingCyclePersistenceScope: .sessionOnly
                 ),
-                athleteMemoryRepository: InMemoryAthleteMemoryRepository(),
                 relayClient: relayClient
             )
         }

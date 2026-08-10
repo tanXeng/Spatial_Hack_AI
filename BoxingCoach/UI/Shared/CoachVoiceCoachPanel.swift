@@ -3,6 +3,7 @@ import SwiftUI
 /// Window-level push-to-talk coach for home, setup, and results screens.
 struct CoachVoiceCoachPanel: View {
     @Environment(ReactiveStrikeSession.self) private var session
+    @AccessibilityFocusState private var focusedControl: TrainingAccessibilityFocusDestination?
 
     let isDisabled: Bool
 
@@ -24,6 +25,7 @@ struct CoachVoiceCoachPanel: View {
                 },
                 onRelease: { session.endCoachPushToTalk() }
             )
+            .accessibilityFocused($focusedControl, equals: voiceControlFocusDestination)
 
             if requiresRecovery {
                 TrainingAudioRecoveryButton {
@@ -68,6 +70,18 @@ struct CoachVoiceCoachPanel: View {
         } message: {
             Text("Your voice is transcribed on this device and is never saved.")
         }
+        .onChange(of: session.voiceCoach.state) { oldState, newState in
+            if let destination = TrainingAccessibility.focusAfterVoiceTransition(
+                from: oldState,
+                to: newState
+            ) {
+                focusedControl = destination
+            }
+        }
+    }
+
+    private var voiceControlFocusDestination: TrainingAccessibilityFocusDestination {
+        session.voiceCoach.state == .denied ? .permissionRecovery : .askCoach
     }
 
     private var privacyNoticeBinding: Binding<Bool> {

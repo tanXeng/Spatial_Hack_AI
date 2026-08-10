@@ -16,12 +16,62 @@ struct AccessibilityPresenterTests {
         #expect(gate.announcement(for: .result("Round complete, 820 points"), at: 16.4) == "Round complete, 820 points")
     }
 
+    @Test("Correction proof and result transitions are never lost behind stage throttling")
+    func priorityAnnouncementsAreNotDropped() {
+        var gate = TrainingAccessibilityAnnouncementGate(minimumInterval: 1.5)
+
+        #expect(gate.announcement(for: .stage("CORRECT"), at: 10) == "Stage: Correct")
+        #expect(gate.announcement(for: .correction("Keep the elbow tucked"), at: 10.1)
+            == "Correction: Keep the elbow tucked")
+        #expect(gate.announcement(for: .proof("Path improved by 12 points"), at: 10.2)
+            == "Proof: Path improved by 12 points")
+        #expect(gate.announcement(for: .result("Round complete"), at: 10.3)
+            == "Round complete")
+    }
+
     @Test("Each modal and terminal transition has a deterministic focus destination")
     func focusDestinationsAreExplicit() {
         #expect(TrainingAccessibility.focus(after: .permissionDismissed) == .askCoach)
         #expect(TrainingAccessibility.focus(after: .permissionFailed) == .permissionRecovery)
         #expect(TrainingAccessibility.focus(after: .resultPresented) == .resultPrimaryAction)
         #expect(TrainingAccessibility.focus(after: .participantHandoff) == .joinCompetition)
+    }
+
+    @Test("Voice permission completion chooses the live focus target")
+    func voicePermissionFocusIsDeterministic() {
+        let permission = CoachVoiceLifecycleState.needsPermission(
+            id: CoachVoiceCaptureID(rawValue: 1),
+            origin: .controlWindow
+        )
+
+        #expect(TrainingAccessibility.focusAfterVoiceTransition(
+            from: permission,
+            to: .denied
+        ) == .permissionRecovery)
+        #expect(TrainingAccessibility.focusAfterVoiceTransition(
+            from: permission,
+            to: .ready
+        ) == .askCoach)
+        #expect(TrainingAccessibility.focusAfterVoiceTransition(
+            from: .ready,
+            to: .interrupted
+        ) == nil)
+    }
+
+    @Test("Proof announcements state the metric and signed local delta")
+    func proofAnnouncementIsActionable() {
+        let proof = CoachingProofMetric(
+            kind: .path,
+            baseline: 60,
+            retest: 72,
+            delta: 12,
+            trackedFraction: 1,
+            correctionCode: .path,
+            evidenceLabel: .measured,
+            sourceBadge: "Measured locally · Offline coach"
+        )
+
+        #expect(TrainingAccessibility.proofAnnouncement(for: proof) == "Path improved by 12 points")
     }
 
     @Test("Reduced motion and stable-anchor preferences select nonmoving alternatives")

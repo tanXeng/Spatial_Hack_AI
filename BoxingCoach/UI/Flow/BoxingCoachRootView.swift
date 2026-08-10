@@ -96,6 +96,9 @@ struct BoxingCoachRootView: View {
             else { return }
             if oldPlayer?.id != newPlayer?.id {
                 flow.participantDidChange(session: session)
+                if TrainingAccessibility.focus(after: .participantHandoff) == .joinCompetition {
+                    landingActionFocused = .competition
+                }
             }
             syncPlayerCalibration(newPlayer)
         }

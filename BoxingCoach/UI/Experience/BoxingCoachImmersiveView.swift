@@ -23,6 +23,7 @@ struct BoxingCoachImmersiveView: View {
     @State private var voiceCommandRegistrationID: UUID?
     @State private var thermalProfile = ThermalPerformancePolicy.profile(for: .nominal)
     @State private var announcementGate = TrainingAccessibilityAnnouncementGate()
+    @AccessibilityFocusState private var voiceFocusDestination: TrainingAccessibilityFocusDestination?
     @AppStorage("BoxingCoach.prefersHeadAnchoredGuidance")
     private var prefersHeadAnchoredGuidance = true
 
@@ -125,6 +126,10 @@ struct BoxingCoachImmersiveView: View {
                                 session.beginCoachPushToTalk(origin: .immersiveSpace)
                             },
                             onRelease: { session.endCoachPushToTalk() }
+                        )
+                        .accessibilityFocused(
+                            $voiceFocusDestination,
+                            equals: immersiveVoiceControlFocusDestination
                         )
                     }
                     if audioControlVisibility.showsRecoveryAction {
@@ -251,6 +256,22 @@ struct BoxingCoachImmersiveView: View {
             guard wasPaused != isPaused else { return }
             announceSemantic(isPaused ? .trackingPaused : .trackingRecovered)
         }
+        .onChange(of: session.auraPunch.correctionFocus) { oldFocus, newFocus in
+            guard oldFocus != newFocus, newFocus != nil else { return }
+            announceSemantic(.correction(session.auraPunch.cyclePresentation.instruction))
+        }
+        .onChange(of: session.auraPunch.proofMetric) { oldProof, newProof in
+            guard oldProof != newProof, let newProof else { return }
+            announceSemantic(.proof(TrainingAccessibility.proofAnnouncement(for: newProof)))
+        }
+        .onChange(of: session.voiceCoach.state) { oldState, newState in
+            if let destination = TrainingAccessibility.focusAfterVoiceTransition(
+                from: oldState,
+                to: newState
+            ) {
+                voiceFocusDestination = destination
+            }
+        }
         .onChange(of: immersiveRecoveryPresentation?.action) { oldAction, newAction in
             guard oldAction != newAction,
                   let presentation = immersiveRecoveryPresentation else { return }
@@ -349,6 +370,10 @@ struct BoxingCoachImmersiveView: View {
             allowsVoiceCoaching: showsVoiceCoach && immersiveRecoveryPresentation == nil,
             requiresExplicitRecovery: session.audioCoordinator.presentation.requiresExplicitRecovery
         )
+    }
+
+    private var immersiveVoiceControlFocusDestination: TrainingAccessibilityFocusDestination {
+        session.voiceCoach.state == .denied ? .permissionRecovery : .askCoach
     }
 
     private var immersiveRecoveryPresentation: RuntimeRecoveryPresentation? {

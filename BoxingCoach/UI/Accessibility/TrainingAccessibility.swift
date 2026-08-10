@@ -24,6 +24,15 @@ nonisolated enum TrainingAccessibilityEvent: Equatable, Sendable {
             result
         }
     }
+
+    var bypassesThrottle: Bool {
+        switch self {
+        case .correction, .proof, .result:
+            true
+        case .stage, .trackingPaused, .trackingRecovered:
+            false
+        }
+    }
 }
 
 nonisolated struct TrainingAccessibilityAnnouncementGate: Sendable {
@@ -41,7 +50,9 @@ nonisolated struct TrainingAccessibilityAnnouncementGate: Sendable {
     ) -> String? {
         guard time.isFinite else { return nil }
         if event == lastEvent { return nil }
-        if let lastAnnouncementAt, time - lastAnnouncementAt < minimumInterval {
+        if !event.bypassesThrottle,
+           let lastAnnouncementAt,
+           time - lastAnnouncementAt < minimumInterval {
             return nil
         }
         lastEvent = event
@@ -57,7 +68,7 @@ nonisolated enum TrainingAccessibilityTransition: Sendable {
     case participantHandoff
 }
 
-nonisolated enum TrainingAccessibilityFocusDestination: Equatable, Sendable {
+nonisolated enum TrainingAccessibilityFocusDestination: Hashable, Sendable {
     case askCoach
     case permissionRecovery
     case resultPrimaryAction
@@ -88,6 +99,29 @@ nonisolated enum TrainingAccessibility {
         case .participantHandoff:
             .joinCompetition
         }
+    }
+
+    static func focusAfterVoiceTransition(
+        from oldState: CoachVoiceLifecycleState,
+        to newState: CoachVoiceLifecycleState
+    ) -> TrainingAccessibilityFocusDestination? {
+        guard case .needsPermission = oldState,
+              case .needsPermission = newState else {
+            guard case .needsPermission = oldState else { return nil }
+            return newState == .denied ? .permissionRecovery : .askCoach
+        }
+        return nil
+    }
+
+    static func proofAnnouncement(for proof: CoachingProofMetric) -> String {
+        let roundedDelta = Int(proof.delta.rounded())
+        if roundedDelta > 0 {
+            return "\(proof.kind.title) improved by \(roundedDelta) points"
+        }
+        if roundedDelta < 0 {
+            return "\(proof.kind.title) decreased by \(abs(roundedDelta)) points"
+        }
+        return "\(proof.kind.title) held steady"
     }
 
     static func motion(reduceMotion: Bool) -> TrainingAccessibilityMotion {

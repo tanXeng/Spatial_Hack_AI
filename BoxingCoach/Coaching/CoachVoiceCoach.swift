@@ -68,7 +68,11 @@ final class CoachVoiceCoach {
         }
     }
 
-    func endPushToTalk() {
+    func endPushToTalk(snapshotContext: CoachVoiceContext? = nil) {
+        if let snapshotContext {
+            context = snapshotContext
+        }
+
         setupTask?.cancel()
         setupTask = nil
 

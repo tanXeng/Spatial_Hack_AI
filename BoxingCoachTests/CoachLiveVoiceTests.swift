@@ -100,7 +100,8 @@ final class OpenAICoachChatClientTests: XCTestCase {
             techniqueName: nil,
             stance: .orthodox,
             reactiveMode: nil,
-            combinationName: nil
+            combinationName: nil,
+            liveSummary: nil
         )
         _ = try await OpenAICoachChatClient(apiKey: "sk-test", session: URLSession(configuration: configuration))
             .answer(transcript: "how do I practice my jab?", context: context)
@@ -129,12 +130,30 @@ final class CoachAppGuideTests: XCTestCase {
             techniqueName: nil,
             stance: .southpaw,
             reactiveMode: .combination,
-            combinationName: "Jab-Cross"
+            combinationName: "Jab-Cross",
+            liveSummary: nil
         )
         let summary = CoachAppGuide.sessionContext(for: context)
         XCTAssertTrue(summary.contains("Reactive Strike"))
         XCTAssertTrue(summary.contains("Combination Mode"))
         XCTAssertTrue(summary.contains("Jab-Cross"))
+    }
+
+    func testSessionContextIncludesLiveScoreData() {
+        let context = CoachVoiceContext(
+            feature: .auraPunch,
+            auraPhase: .results,
+            drillPhase: nil,
+            techniqueName: "Jab",
+            stance: .orthodox,
+            reactiveMode: nil,
+            combinationName: nil,
+            liveSummary: "Overall score 78 (Solid). Sub-scores: Extension 82, Path 71."
+        )
+        let summary = CoachAppGuide.sessionContext(for: context)
+        XCTAssertTrue(summary.contains("LIVE UI DATA"))
+        XCTAssertTrue(summary.contains("Overall score 78"))
+        XCTAssertTrue(summary.contains("Extension 82"))
     }
 }
 

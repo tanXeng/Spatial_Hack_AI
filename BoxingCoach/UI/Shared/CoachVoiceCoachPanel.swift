@@ -5,6 +5,7 @@ struct CoachVoiceCoachPanel: View {
     @Environment(ReactiveStrikeSession.self) private var session
 
     let isDisabled: Bool
+    var snapshotContext: (() -> CoachVoiceContext?)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -15,7 +16,9 @@ struct CoachVoiceCoachPanel: View {
                 isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
                 isDisabled: isDisabled,
                 onPress: { session.voiceCoach.beginPushToTalk() },
-                onRelease: { session.voiceCoach.endPushToTalk() }
+                onRelease: {
+                    session.voiceCoach.endPushToTalk(snapshotContext: snapshotContext?())
+                }
             )
 
             if session.voiceCoach.isListening, !session.voiceCoach.isCaptureReady {

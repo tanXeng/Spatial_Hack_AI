@@ -61,7 +61,10 @@ struct BoxingCoachRootView: View {
             }
         }
         .safeAreaInset(edge: .bottom, spacing: 12) {
-            CoachVoiceCoachPanel(isDisabled: flow.controlsDisabled)
+            CoachVoiceCoachPanel(
+                isDisabled: flow.controlsDisabled,
+                snapshotContext: voiceContextSnapshot
+            )
         }
         .padding(32)
         .frame(
@@ -87,6 +90,11 @@ struct BoxingCoachRootView: View {
             session.musicPlayer.resumeAfterVoice()
             session.musicPlayer.resumePlaybackIfNeeded()
         }
+        .onChange(of: session.auraPunch.score?.overall) { _, _ in refreshWindowVoiceContext() }
+        .onChange(of: session.auraPunch.feedback) { _, _ in refreshWindowVoiceContext() }
+        .onChange(of: session.metrics.hitCount) { _, _ in refreshWindowVoiceContext() }
+        .onChange(of: session.metrics.missCount) { _, _ in refreshWindowVoiceContext() }
+        .onChange(of: session.phase) { _, _ in refreshWindowVoiceContext() }
         .onChange(of: competitionStore.currentPlayer) { oldPlayer, newPlayer in
             guard oldPlayer?.id != newPlayer?.id
                     || oldPlayer?.reach != newPlayer?.reach
@@ -291,59 +299,53 @@ struct BoxingCoachRootView: View {
         switch flow.route {
         case .features:
             session.voiceCoach.updateContext(.idle)
-        case .reactiveSetup, .combinationSetup:
-            session.voiceCoach.updateContext(CoachVoiceContext(
-                feature: .reactiveStrike,
-                auraPhase: nil,
-                drillPhase: .idle,
-                techniqueName: nil,
-                stance: flow.draftStance,
-                reactiveMode: nil,
-                combinationName: nil
-            ))
+        case .reactiveSetup:
+            session.voiceCoach.updateContext(
+                CoachVoiceContextBuilder.makeSetup(
+                    feature: .reactiveStrike,
+                    stance: flow.draftStance,
+                    reactiveMode: .air
+                )
+            )
+        case .combinationSetup:
+            session.voiceCoach.updateContext(
+                CoachVoiceContextBuilder.makeSetup(
+                    feature: .reactiveStrike,
+                    stance: flow.draftStance,
+                    reactiveMode: .combination
+                )
+            )
         case .auraSetup:
-            session.voiceCoach.updateContext(CoachVoiceContext(
-                feature: .auraPunch,
-                auraPhase: .idle,
-                drillPhase: nil,
-                techniqueName: nil,
-                stance: flow.draftStance,
-                reactiveMode: nil,
-                combinationName: nil
-            ))
+            session.voiceCoach.updateContext(
+                CoachVoiceContextBuilder.makeSetup(feature: .auraPunch, stance: flow.draftStance)
+            )
         case .experience(let selection):
-            switch selection {
-            case .aura(let technique, let stance):
-                session.voiceCoach.updateContext(CoachVoiceContext(
-                    feature: .auraPunch,
-                    auraPhase: session.auraPunch.phase,
-                    drillPhase: nil,
-                    techniqueName: technique.name,
-                    stance: stance,
-                    reactiveMode: nil,
-                    combinationName: nil
-                ))
-            case .reactive(let mode, let combination, let stance):
-                session.voiceCoach.updateContext(CoachVoiceContext(
-                    feature: .reactiveStrike,
-                    auraPhase: nil,
-                    drillPhase: session.phase,
-                    techniqueName: nil,
-                    stance: stance,
-                    reactiveMode: mode,
-                    combinationName: combination?.name
-                ))
-            case .reachCalibration, .competitionCalibration, .competition:
-                session.voiceCoach.updateContext(CoachVoiceContext(
-                    feature: .reactiveStrike,
-                    auraPhase: nil,
-                    drillPhase: session.phase,
-                    techniqueName: nil,
-                    stance: session.stance,
-                    reactiveMode: session.mode,
-                    combinationName: session.selectedCombination.name
-                ))
-            }
+            session.voiceCoach.updateContext(
+                CoachVoiceContextBuilder.make(session: session, selection: selection)
+            )
+        }
+    }
+
+    private func voiceContextSnapshot() -> CoachVoiceContext? {
+        switch flow.route {
+        case .experience(let selection):
+            return CoachVoiceContextBuilder.make(session: session, selection: selection)
+        case .auraSetup:
+            return CoachVoiceContextBuilder.makeSetup(feature: .auraPunch, stance: flow.draftStance)
+        case .reactiveSetup:
+            return CoachVoiceContextBuilder.makeSetup(
+                feature: .reactiveStrike,
+                stance: flow.draftStance,
+                reactiveMode: .air
+            )
+        case .combinationSetup:
+            return CoachVoiceContextBuilder.makeSetup(
+                feature: .reactiveStrike,
+                stance: flow.draftStance,
+                reactiveMode: .combination
+            )
+        default:
+            return nil
         }
     }
 }

@@ -66,6 +66,10 @@ nonisolated enum CoachAppGuide {
             lines.append("Stance: \(stance.rawValue).")
         }
 
+        if let live = context.liveSummary, !live.isEmpty {
+            lines.append("LIVE UI DATA (use these exact numbers when asked about score or stats): \(live)")
+        }
+
         if lines.isEmpty {
             return "User is on the home/setup screen (not in an active drill)."
         }

@@ -86,6 +86,8 @@ nonisolated struct CoachVoiceContext: Sendable, Equatable {
     var stance: Stance?
     var reactiveMode: ReactiveStrikeMode?
     var combinationName: String?
+    /// Compact snapshot of on-screen scores, metrics, and status for PTT score questions.
+    var liveSummary: String?
 
-    static let idle = CoachVoiceContext(feature: .auraPunch)
+    static let idle = CoachVoiceContext(feature: .auraPunch, liveSummary: nil)
 }

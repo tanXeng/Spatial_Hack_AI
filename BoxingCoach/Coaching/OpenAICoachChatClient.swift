@@ -64,7 +64,9 @@ nonisolated struct OpenAICoachChatClient {
 
         NOW: \(CoachAppGuide.sessionContext(for: context))
 
-        Rules: Answer in one short spoken sentence (under 20 words). Be direct. \
+        Rules: Answer in one or two short spoken sentences (under 25 words). Be direct. \
+        When LIVE UI DATA is present and the user asks about score, stats, or how they did, \
+        quote those exact numbers. \
         For app/how-to questions, name Aura Punch or Reactive Strike. \
         No markdown, lists, or home shadowboxing unless asked.
         """

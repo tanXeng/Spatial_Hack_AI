@@ -69,7 +69,9 @@ struct BoxingCoachImmersiveView: View {
                         isDisabled: flow.controlsDisabled,
                         style: .compactSpatial,
                         onPress: { session.voiceCoach.beginPushToTalk() },
-                        onRelease: { session.voiceCoach.endPushToTalk() }
+                        onRelease: {
+                            session.voiceCoach.endPushToTalk(snapshotContext: voiceContextSnapshot())
+                        }
                     )
                     .padding(10)
                     .glassBackgroundEffect()
@@ -136,6 +138,25 @@ struct BoxingCoachImmersiveView: View {
         .onChange(of: flow.route) { _, _ in refreshVoiceCoachContext() }
         .onChange(of: session.phase) { _, _ in refreshVoiceCoachContext() }
         .onChange(of: session.auraPunch.phase) { _, _ in refreshVoiceCoachContext() }
+        .onChange(of: session.auraPunch.score?.overall) { _, _ in refreshVoiceCoachContext() }
+        .onChange(of: session.auraPunch.feedback) { _, _ in refreshVoiceCoachContext() }
+        .onChange(of: session.metrics.hitCount) { _, _ in refreshVoiceCoachContext() }
+        .onChange(of: session.metrics.missCount) { _, _ in refreshVoiceCoachContext() }
+    }
+
+    private func voiceContextSnapshot() -> CoachVoiceContext? {
+        guard case .experience(let selection) = flow.route else { return nil }
+        return CoachVoiceContextBuilder.make(session: session, selection: selection)
+    }
+
+    private func refreshVoiceCoachContext() {
+        guard case .experience(let selection) = flow.route else {
+            session.voiceCoach.updateContext(.idle)
+            return
+        }
+        session.voiceCoach.updateContext(
+            CoachVoiceContextBuilder.make(session: session, selection: selection)
+        )
     }
 
     private var showsVoiceCoach: Bool {
@@ -147,43 +168,6 @@ struct BoxingCoachImmersiveView: View {
             return true
         default:
             return false
-        }
-    }
-
-    private func refreshVoiceCoachContext() {
-        switch flow.route {
-        case .experience(.aura(let technique, let stance)):
-            session.voiceCoach.updateContext(CoachVoiceContext(
-                feature: .auraPunch,
-                auraPhase: session.auraPunch.phase,
-                drillPhase: nil,
-                techniqueName: technique.name,
-                stance: stance,
-                reactiveMode: nil,
-                combinationName: nil
-            ))
-        case .experience(.reactive(let mode, let combination, let stance)):
-            session.voiceCoach.updateContext(CoachVoiceContext(
-                feature: .reactiveStrike,
-                auraPhase: nil,
-                drillPhase: session.phase,
-                techniqueName: nil,
-                stance: stance,
-                reactiveMode: mode,
-                combinationName: combination?.name
-            ))
-        case .experience(.reachCalibration), .experience(.competitionCalibration), .experience(.competition):
-            session.voiceCoach.updateContext(CoachVoiceContext(
-                feature: .reactiveStrike,
-                auraPhase: nil,
-                drillPhase: session.phase,
-                techniqueName: nil,
-                stance: session.stance,
-                reactiveMode: session.mode,
-                combinationName: session.selectedCombination.name
-            ))
-        default:
-            session.voiceCoach.updateContext(CoachVoiceContext.idle)
         }
     }
 

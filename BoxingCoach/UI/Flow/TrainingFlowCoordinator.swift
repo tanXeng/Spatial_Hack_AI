@@ -1,5 +1,26 @@
 import Foundation
 
+nonisolated enum AuraVoiceCommandStatePolicy {
+    static func state(for stage: LearningStage, trackingPaused: Bool) -> VoiceCommandState {
+        if trackingPaused { return .trackingPaused }
+        switch stage {
+        case .fit, .learnWatch, .learnOutbound, .learnLanding, .learnReturn,
+             .guidedRehearsal:
+            return .learn
+        case .baseline:
+            return .baseline
+        case .correction, .correctiveDrill:
+            return .correction
+        case .proof, .retest:
+            return .retest
+        case .transfer:
+            return .transfer
+        case .complete:
+            return .results
+        }
+    }
+}
+
 enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
     case auraPunch
     case reactiveStrike
@@ -389,13 +410,11 @@ final class TrainingFlowCoordinator {
         case .experience(.competition):
             return .ranked
         case .experience(.aura):
-            if session.auraPunch.isVoicePaused { return .trackingPaused }
-            switch session.auraPunch.phase {
-            case .idle: return .idle
-            case .acquiring, .guiding: return .learn
-            case .countdown, .attempting: return .baseline
-            case .scoring, .results: return .results
-            }
+            if session.auraPunch.phase == .idle { return .idle }
+            return AuraVoiceCommandStatePolicy.state(
+                for: session.auraPunch.learningStage,
+                trackingPaused: session.auraPunch.isTrackingPaused
+            )
         case .experience(.reactive), .experience(.reachCalibration),
              .experience(.competitionCalibration):
             if session.isVoicePaused || session.isTrackingPaused { return .trackingPaused }

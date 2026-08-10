@@ -149,11 +149,18 @@ nonisolated struct TrainingCoachCue: Equatable, Sendable {
     let kind: TrainingCoachCueKind
     let clip: CoachClipID
     let caption: String
+    let responseID: UInt64?
 
-    init(kind: TrainingCoachCueKind, clip: CoachClipID, caption: String) {
+    init(
+        kind: TrainingCoachCueKind,
+        clip: CoachClipID,
+        caption: String,
+        responseID: UInt64? = nil
+    ) {
         self.kind = kind
         self.clip = clip
         self.caption = caption
+        self.responseID = responseID
     }
 }
 

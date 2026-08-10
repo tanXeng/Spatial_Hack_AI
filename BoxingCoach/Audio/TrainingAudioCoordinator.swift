@@ -66,6 +66,21 @@ final class TrainingAudioCoordinator {
         let resource: TrainingAudioResourceID
         let generation: UInt64
         let priority: TrainingCoachCueKind?
+        let responseID: UInt64?
+
+        init(
+            handle: TrainingAudioPlaybackHandle,
+            resource: TrainingAudioResourceID,
+            generation: UInt64,
+            priority: TrainingCoachCueKind?,
+            responseID: UInt64? = nil
+        ) {
+            self.handle = handle
+            self.resource = resource
+            self.generation = generation
+            self.priority = priority
+            self.responseID = responseID
+        }
     }
 
     private struct CapturePreparation {
@@ -106,6 +121,7 @@ final class TrainingAudioCoordinator {
     private var capturePreparation: CapturePreparation?
     private var activeCaptureOrigin: TrainingAudioSceneOwner?
     private var captureRevocationHandler: (@MainActor () -> Void)?
+    private var voiceResponseCompletionHandler: (@MainActor (UInt64, Bool) -> Void)?
     private var rejectedImpactPresentedForTarget = false
     private weak var spatialWorldRoot: Entity?
     private weak var spatialBodyAnchor: Entity?
@@ -150,6 +166,22 @@ final class TrainingAudioCoordinator {
 
     func setCaptureRevocationHandler(_ handler: @escaping @MainActor () -> Void) {
         captureRevocationHandler = handler
+    }
+
+    func setVoiceResponseCompletionHandler(
+        _ handler: (@MainActor (UInt64, Bool) -> Void)?
+    ) {
+        voiceResponseCompletionHandler = handler
+    }
+
+    func ownsVoiceResponse(responseID: UInt64) -> Bool {
+        (foreground?.priority == .voiceResponse && foreground?.responseID == responseID)
+            || pendingVoiceResponse?.cue.responseID == responseID
+    }
+
+    func presentVoiceResponseCaption(_ caption: String) {
+        presentation.caption = caption
+        presentation.symbolName = "person.wave.2.fill"
     }
 
     func attachSpatialScene(worldRoot: Entity, bodyAnchor: Entity) {
@@ -470,9 +502,15 @@ final class TrainingAudioCoordinator {
         guard presentation.preset.allows(.coach) else { return .handled }
 
         if let current = foreground {
+            let cancelledResponseID = current.priority == .voiceResponse
+                ? current.responseID
+                : nil
             backend.stop(current.handle)
             foreground = nil
             presentation.activePriority = nil
+            if let cancelledResponseID {
+                voiceResponseCompletionHandler?(cancelledResponseID, false)
+            }
         }
         if let currentStatus = status,
            let statusPriority = currentStatus.priority,
@@ -501,7 +539,8 @@ final class TrainingAudioCoordinator {
             handle: handle,
             resource: resource,
             generation: generation,
-            priority: cue.kind
+            priority: cue.kind,
+            responseID: cue.responseID
         )
         presentation.activePriority = highestActivePriority
         applyCurrentMix()
@@ -761,6 +800,9 @@ final class TrainingAudioCoordinator {
             backend.stop(foreground.handle)
             self.foreground = nil
             presentation.activePriority = highestActivePriority
+            if let responseID = foreground.responseID {
+                voiceResponseCompletionHandler?(responseID, false)
+            }
             stoppedVoiceResponse = true
         }
 
@@ -1085,9 +1127,15 @@ final class TrainingAudioCoordinator {
     private func playbackFinished(_ handle: TrainingAudioPlaybackHandle) {
         if foreground?.handle == handle {
             guard foreground?.generation == generation else { return }
+            let completedResponseID = foreground?.priority == .voiceResponse
+                ? foreground?.responseID
+                : nil
             foreground = nil
             presentation.activePriority = highestActivePriority
             applyCurrentMix()
+            if let completedResponseID {
+                voiceResponseCompletionHandler?(completedResponseID, true)
+            }
             return
         }
         if status?.handle == handle {
@@ -1113,7 +1161,13 @@ final class TrainingAudioCoordinator {
 
     private func clearPlaybackRecords(in channels: Set<TrainingAudioChannel>) {
         if channels.contains(.coach) {
+            let cancelledResponseID = foreground?.priority == .voiceResponse
+                ? foreground?.responseID
+                : nil
             foreground = nil
+            if let cancelledResponseID {
+                voiceResponseCompletionHandler?(cancelledResponseID, false)
+            }
         }
         if channels.contains(.impact) {
             impactVoices.removeAll()
@@ -1132,6 +1186,9 @@ final class TrainingAudioCoordinator {
     }
 
     private func clearAllPlaybackRecords() {
+        let cancelledResponseID = foreground?.priority == .voiceResponse
+            ? foreground?.responseID
+            : nil
         foreground = nil
         ambience = nil
         crowd = nil
@@ -1139,6 +1196,9 @@ final class TrainingAudioCoordinator {
         impactVoices.removeAll()
         accentVoices.removeAll()
         presentation.activePriority = nil
+        if let cancelledResponseID {
+            voiceResponseCompletionHandler?(cancelledResponseID, false)
+        }
     }
 
     private func waitForActiveCapturePreparation() async -> TrainingAudioEventOutcome {

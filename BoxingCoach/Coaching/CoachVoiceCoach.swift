@@ -44,6 +44,7 @@ nonisolated enum CoachVoiceLifecycleEvent: Equatable, Sendable {
     case cancel(id: CoachVoiceCaptureID)
     case interrupted(id: CoachVoiceCaptureID)
     case guardRestored
+    case sessionCleared
 }
 
 nonisolated enum CoachVoiceLifecycleEffect: Equatable, Sendable {
@@ -173,6 +174,11 @@ nonisolated struct CoachVoiceLifecycle: Sendable {
             guard state == .awaitingGuard || state == .interrupted else { return .none }
             state = modelIsPrepared ? .ready : .off
             return .none
+
+        case .sessionCleared:
+            activeCaptureID = nil
+            state = modelIsPrepared ? .ready : .off
+            return .clearPrivateState
         }
     }
 
@@ -281,6 +287,8 @@ final class CoachVoiceCoach {
     private var processingTask: Task<Void, Never>?
     private var lifecycle = CoachVoiceLifecycle()
     private var trainingPauseEventIDs: [CoachVoiceCaptureID: UUID] = [:]
+    private var commandHandler: (@MainActor (String) async -> CoachVoiceCommandResponse?)?
+    private var responseAwaitingPlayback: CoachVoiceCaptureID?
     var onCaptureCycleEvent: ((CoachVoiceCyclePauseOwner.Event) -> Void)?
 
     init(
@@ -291,6 +299,9 @@ final class CoachVoiceCoach {
         self.speechClient = speechClient ?? SpeechRecognitionClient()
         audioCoordinator.setCaptureRevocationHandler { [weak self] in
             self?.revokeCaptureLocally(interrupted: true)
+        }
+        audioCoordinator.setVoiceResponseCompletionHandler { [weak self] responseID, completed in
+            self?.voiceResponsePlaybackDidEnd(responseID: responseID, completed: completed)
         }
         self.speechClient.setTranscriptUpdateHandler { [weak self] transcript in
             guard let self, case .listening = self.state else { return }
@@ -303,6 +314,12 @@ final class CoachVoiceCoach {
             clearPrivateSessionState()
         }
         self.context = context
+    }
+
+    func setCommandHandler(
+        _ handler: (@MainActor (String) async -> CoachVoiceCommandResponse?)?
+    ) {
+        commandHandler = handler
     }
 
     @discardableResult
@@ -405,22 +422,45 @@ final class CoachVoiceCoach {
                 lastTranscript = transcript
                 lastRoutedClip = .didntCatch
                 _ = reduce(.commandExecuted(id: captureID))
-                finishVoiceResponse(with: .didntCatch)
-                completeResponse(id: captureID)
+                finishVoiceResponse(with: .didntCatch, captureID: captureID)
                 return
             }
 
             lastTranscript = transcript
 
-            let clipID = await router.resolve(transcript: transcript, context: context)
+            let commandResponse: CoachVoiceCommandResponse?
+            if let commandHandler {
+                commandResponse = await commandHandler(transcript)
+            } else {
+                commandResponse = nil
+            }
             guard !Task.isCancelled, lifecycle.activeCaptureID == captureID else {
                 return
             }
+            let clipID: CoachClipID?
+            let caption: String
+            if let commandResponse {
+                clipID = commandResponse.clip
+                caption = commandResponse.caption
+            } else if commandHandler == nil {
+                let fallbackClip = await router.resolve(transcript: transcript, context: context)
+                clipID = fallbackClip
+                caption = Self.caption(for: fallbackClip)
+            } else {
+                clipID = .didntCatch
+                caption = Self.caption(for: .didntCatch)
+            }
+            guard !Task.isCancelled, lifecycle.activeCaptureID == captureID else { return }
             lastRoutedClip = clipID
             lastRoutedAt = Date()
             _ = reduce(.commandExecuted(id: captureID))
-            finishVoiceResponse(with: clipID)
-            completeResponse(id: captureID)
+            if let clipID {
+                finishVoiceResponse(with: clipID, caption: caption, captureID: captureID)
+            } else {
+                audioCoordinator.handleImmediately(.voiceCaptureDidEnd)
+                audioCoordinator.presentVoiceResponseCaption(caption)
+                completeResponse(id: captureID)
+            }
         }
     }
 
@@ -436,6 +476,7 @@ final class CoachVoiceCoach {
     func clearPrivateSessionState() {
         revokeCaptureLocally(interrupted: false)
         endCoordinatorCaptureIfNeeded()
+        _ = reduce(.sessionCleared)
         lastTranscript = nil
         lastRoutedClip = nil
         lastError = nil
@@ -445,6 +486,7 @@ final class CoachVoiceCoach {
     }
 
     private func revokeCaptureLocally(interrupted: Bool) {
+        responseAwaitingPlayback = nil
         if let captureID = lifecycle.activeCaptureID {
             _ = reduce(interrupted ? .interrupted(id: captureID) : .cancel(id: captureID))
             finishTrainingPause(for: captureID, completed: false)
@@ -536,16 +578,43 @@ final class CoachVoiceCoach {
         }
     }
 
-    private func finishVoiceResponse(with clip: CoachClipID) {
+    private func finishVoiceResponse(
+        with clip: CoachClipID,
+        caption: String? = nil,
+        captureID: CoachVoiceCaptureID? = nil
+    ) {
         let captureNeedsEnding = audioCoordinator.presentation.status == .capturing
             || audioCoordinator.presentation.status == .capturePreparing
+        let responseID = captureID?.rawValue
+        if let captureID {
+            responseAwaitingPlayback = captureID
+        }
         audioCoordinator.handleImmediately(.coachCue(TrainingCoachCue(
             kind: .voiceResponse,
             clip: clip,
-            caption: Self.caption(for: clip)
+            caption: caption ?? Self.caption(for: clip),
+            responseID: responseID
         )))
         if captureNeedsEnding {
             audioCoordinator.handleImmediately(.voiceCaptureDidEnd)
+        }
+        guard let captureID else { return }
+        if !audioCoordinator.ownsVoiceResponse(responseID: captureID.rawValue) {
+            responseAwaitingPlayback = nil
+            completeResponse(id: captureID)
+        }
+    }
+
+    private func voiceResponsePlaybackDidEnd(responseID: UInt64, completed: Bool) {
+        guard let captureID = responseAwaitingPlayback,
+              captureID.rawValue == responseID else { return }
+        responseAwaitingPlayback = nil
+        if completed {
+            completeResponse(id: captureID)
+        } else {
+            _ = reduce(.cancel(id: captureID))
+            clearPrivateState()
+            finishTrainingPause(for: captureID, completed: false)
         }
     }
 

@@ -329,9 +329,8 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_COACH_RELAY_URL = "$(COACH_RELAY_URL)";
 				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "Boxing Coach uses hand tracking to detect when you punch virtual targets.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice commands let you ask the coach questions during training.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech is converted to text on device to pick a coaching response.";
 				INFOPLIST_KEY_UIApplicationSupportsMultipleScenes = YES;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MARKETING_VERSION = 1.0;
@@ -392,9 +391,8 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
+				INFOPLIST_KEY_COACH_RELAY_URL = "$(COACH_RELAY_URL)";
 				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "Boxing Coach uses hand tracking to detect when you punch virtual targets.";
-				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice commands let you ask the coach questions during training.";
-				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech is converted to text on device to pick a coaching response.";
 				INFOPLIST_KEY_UIApplicationSupportsMultipleScenes = YES;
 				LD_RUNPATH_SEARCH_PATHS = "@executable_path/Frameworks";
 				MARKETING_VERSION = 1.0;

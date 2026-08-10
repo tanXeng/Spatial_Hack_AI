@@ -322,6 +322,79 @@ struct TrainingCommandExecutor {
     }
 }
 
+/// A fully resolved, authored response to one final on-device transcript. The caption is the
+/// executor receipt, while the clip remains an authored bundle resource rather than synthesized
+/// speech.
+nonisolated struct CoachVoiceCommandResponse: Equatable, Sendable {
+    let intent: VoiceIntent
+    let clip: CoachClipID?
+    let caption: String
+}
+
+/// Parses one final transcript exactly once and then delegates mutation to the generation-safe
+/// executor. A rejected parse or mutation returns nil so the voice facade can use its authored
+/// recovery response without claiming that an action ran.
+@MainActor
+struct CoachVoiceCommandRouter {
+    private let parser = VoiceIntentParser()
+    private let executor = TrainingCommandExecutor()
+
+    func resolve(
+        transcript: String,
+        issuedFor generation: UInt64,
+        on target: any TrainingCommandTarget
+    ) async -> CoachVoiceCommandResponse? {
+        let parseResult = parser.parse(
+            VoiceUtterance(
+                transcript: transcript,
+                localeIdentifier: "en-US",
+                isFinal: true,
+                confidence: .high
+            ),
+            in: target.commandContext
+        )
+        guard let intent = parseResult.acceptedIntent else { return nil }
+        guard case let .executed(receipt) = await executor.execute(
+            intent,
+            issuedFor: generation,
+            on: target
+        ) else { return nil }
+        return CoachVoiceCommandResponse(
+            intent: intent,
+            clip: Self.authoredClip(for: intent),
+            caption: receipt.response
+        )
+    }
+
+    private static func authoredClip(for intent: VoiceIntent) -> CoachClipID? {
+        switch intent {
+        case .pause:
+            .pauseAck
+        case .resume:
+            .resumeAck
+        case .repeatDemo:
+            .qaRepeatDemo
+        case .slower:
+            .qaSlower
+        case .faster:
+            .repFaster
+        case .correction, .why:
+            .qaWhatFix
+        case .guardExplanation:
+            .qaWhyGuard
+        case .targetHelp:
+            .qaHitTarget
+        case .progress:
+            .qaThreePunches
+        case .help:
+            .helpCommands
+        case .normalPace, .requestEnd, .confirmEnd, .cancelEnd, .next, .score,
+             .leaderboard, .requestParticipantHandoff:
+            nil
+        }
+    }
+}
+
 /// Production adapter over the existing session and serialized flow coordinator. Task 5 can
 /// construct this after on-device speech finalization without coupling capture to drill engines.
 @MainActor

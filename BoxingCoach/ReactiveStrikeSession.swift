@@ -267,6 +267,8 @@ final class ReactiveStrikeSession {
     private var competitionElapsedClock = CompetitionElapsedClock()
     private var trackingResumeRequested = false
     private var phaseBeforeVoicePause: DrillPhase?
+    private var reactiveVoicePauseOwner = CoachVoiceCyclePauseOwner()
+    private var reactiveVoiceRecoveryTask: Task<Void, Never>?
     private weak var audioBodyAnchor: Entity?
     let audioCoordinator: TrainingAudioCoordinator
     private let roundReadyDelay: @MainActor () async throws -> Void
@@ -312,16 +314,40 @@ final class ReactiveStrikeSession {
             if auraPunch.isRunning {
                 auraPunch.handleCoachVoiceCycle(event)
             } else {
-                switch event {
-                case .responseCompleted, .responseCancelled:
-                    voiceCoach.confirmGuardRestored()
-                case .captureBegan, .captureReleased, .freshGuardRecovered:
-                    break
-                }
+                handleReactiveCoachVoiceCycle(event)
             }
         }
         auraPunch.voiceGuardDidRecover = { [weak self] in
             self?.voiceCoach.confirmGuardRestored()
+        }
+    }
+
+    private func handleReactiveCoachVoiceCycle(_ event: CoachVoiceCyclePauseOwner.Event) {
+        switch reactiveVoicePauseOwner.observe(event) {
+        case .pauseTraining:
+            reactiveVoiceRecoveryTask?.cancel()
+            reactiveVoiceRecoveryTask = nil
+            _ = pauseForVoice()
+        case .holdTraining, .ignore:
+            break
+        case .beginFreshGuardRecovery:
+            let captureID: UUID
+            switch event {
+            case .responseCompleted(let id), .responseCancelled(let id):
+                captureID = id
+            default:
+                return
+            }
+            reactiveVoiceRecoveryTask?.cancel()
+            reactiveVoiceRecoveryTask = Task { [weak self] in
+                guard let self,
+                      await resumeAfterFreshGuard() != nil,
+                      reactiveVoicePauseOwner.observe(.freshGuardRecovered(captureID))
+                        == .resumeTraining else { return }
+                voiceCoach.confirmGuardRestored()
+            }
+        case .resumeTraining:
+            voiceCoach.confirmGuardRestored()
         }
     }
 
@@ -570,6 +596,9 @@ final class ReactiveStrikeSession {
             preservingVoiceCapture: preservingVoiceCapture
         ))
         invalidateVoiceResume()
+        reactiveVoiceRecoveryTask?.cancel()
+        reactiveVoiceRecoveryTask = nil
+        reactiveVoicePauseOwner.reset()
 
         drillTask?.cancel()
         drillTask = nil

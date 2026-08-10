@@ -100,6 +100,7 @@ struct BoxingCoachRootView: View {
         .onAppear {
             flow.controlWindowDidAppear()
             session.controlWindowDidOpen()
+            bindVoiceCommands()
             refreshWindowVoiceContext()
         }
         .task {
@@ -113,6 +114,7 @@ struct BoxingCoachRootView: View {
             }
         }
         .onDisappear {
+            session.voiceCoach.setCommandHandler(nil)
             flow.controlWindowDidDisappear()
             session.controlWindowDidClose()
         }
@@ -287,6 +289,23 @@ struct BoxingCoachRootView: View {
 
     private func dismissImmersive() async {
         await dismissImmersiveSpace()
+    }
+
+    private func bindVoiceCommands() {
+        session.voiceCoach.setCommandHandler { [session, flow] transcript in
+            let generation = flow.commandGeneration
+            let target = TrainingSessionCommandTarget(
+                flow: flow,
+                session: session,
+                showControlWindow: {},
+                dismissImmersive: dismissImmersive
+            )
+            return await CoachVoiceCommandRouter().resolve(
+                transcript: transcript,
+                issuedFor: generation,
+                on: target
+            )
+        }
     }
 
     private func announce(_ message: String) {

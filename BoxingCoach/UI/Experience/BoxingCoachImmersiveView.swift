@@ -204,12 +204,14 @@ struct BoxingCoachImmersiveView: View {
         }
         .onDisappear {
             session.auraPunch.cycleDidComplete = nil
+            session.voiceCoach.setCommandHandler(nil)
             // Idempotent whether closure was requested by the coordinator or by the system.
             session.detachSceneRoot()
             openWindow(id: BoxingCoachSceneID.controlWindow)
             flow.immersiveSceneDidClose(session: session)
         }
         .task {
+            bindVoiceCommands()
             session.auraPunch.cycleDidComplete = { result, reach in
                 try await competitionStore.persistStandaloneCoachingCycle(
                     result,
@@ -221,6 +223,23 @@ struct BoxingCoachImmersiveView: View {
         .onChange(of: flow.route) { _, _ in refreshVoiceCoachContext() }
         .onChange(of: session.phase) { _, _ in refreshVoiceCoachContext() }
         .onChange(of: session.auraPunch.phase) { _, _ in refreshVoiceCoachContext() }
+    }
+
+    private func bindVoiceCommands() {
+        session.voiceCoach.setCommandHandler { [session, flow] transcript in
+            let generation = flow.commandGeneration
+            let target = TrainingSessionCommandTarget(
+                flow: flow,
+                session: session,
+                showControlWindow: showControlWindow,
+                dismissImmersive: dismissImmersive
+            )
+            return await CoachVoiceCommandRouter().resolve(
+                transcript: transcript,
+                issuedFor: generation,
+                on: target
+            )
+        }
     }
 
     private var immersivePrivacyNoticeBinding: Binding<Bool> {

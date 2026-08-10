@@ -234,7 +234,7 @@ struct ArmPoseSolver: Sendable {
     /// `poleDirection` need not be perpendicular or normalized; it is projected and normalized
     /// internally. It resolves the one genuine ambiguity in the problem — the elbow can lie
     /// anywhere on a circle around the shoulder→wrist axis, and the pole picks the point.
-    static func twoBoneElbow(
+    nonisolated static func twoBoneElbow(
         shoulder: SIMD3<Float>,
         wrist: SIMD3<Float>,
         upperArm: Float,

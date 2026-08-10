@@ -313,7 +313,7 @@ struct CoachingCycleReviewTests {
         #expect(!entity.root.isEnabled)
     }
 
-    @Test("Participant handoff clears reusable reach and Aura private cycle state")
+    @Test("Participant handoff clears reusable reach, Aura state, and an active voice capture")
     @MainActor
     func participantHandoffClearsReachReuse() throws {
         let session = ReactiveStrikeSession()
@@ -323,6 +323,8 @@ struct CoachingCycleReviewTests {
 
         #expect(session.hasCalibratedReach)
         #expect(session.auraPunch.persistedReach == reach)
+        #expect(session.voiceCoach.beginPushToTalk())
+        #expect(session.voiceCoach.isListening)
 
         session.resetForParticipantHandoff()
 

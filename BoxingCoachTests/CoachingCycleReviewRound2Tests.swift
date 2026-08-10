@@ -464,15 +464,31 @@ struct CoachingCycleReviewRound2Tests {
         arguments: [
             LiveAuraScenario(technique: .jab, baselineNeedsCorrection: true),
             LiveAuraScenario(technique: .uppercut, baselineNeedsCorrection: true),
-            LiveAuraScenario(technique: .jab, baselineNeedsCorrection: false),
+            LiveAuraScenario(
+                technique: .jab,
+                baselineNeedsCorrection: false,
+                sessionOnlyPersistence: true
+            ),
         ]
     )
     @MainActor
     func liveAuraBoundaryCompletesAndPersists(scenario: LiveAuraScenario) async throws {
         let technique = scenario.technique
-        let container = try CompetitionModelContainer.make(inMemory: true)
-        let repository = SwiftDataCompetitionRepository(container: container)
-        let store = CompetitionStore(repository: repository)
+        let repository: any CompetitionRepository
+        let store: CompetitionStore
+        if scenario.sessionOnlyPersistence {
+            let sessionRepository = InMemoryCompetitionRepository()
+            repository = sessionRepository
+            store = CompetitionStore.live(
+                makePersistentRepository: { throw LiveAuraPersistentStoreFailure() },
+                makeSessionRepository: { sessionRepository }
+            )
+        } else {
+            let container = try CompetitionModelContainer.make(inMemory: true)
+            let persistentRepository = SwiftDataCompetitionRepository(container: container)
+            repository = persistentRepository
+            store = CompetitionStore(repository: persistentRepository)
+        }
         if scenario.baselineNeedsCorrection {
             await store.join(name: "Live Aura")
         }
@@ -515,7 +531,10 @@ struct CoachingCycleReviewRound2Tests {
         var completionCount = 0
         aura.cycleDidComplete = { result, reach in
             completionCount += 1
-            try await store.persistStandaloneCoachingCycle(result, fittedReach: reach)
+            return try await store.persistStandaloneCoachingCycle(
+                result,
+                fittedReach: reach
+            )
         }
 
         aura.start()
@@ -532,7 +551,28 @@ struct CoachingCycleReviewRound2Tests {
         #expect(interruptions.learningTrackingRecoveryCompleted)
         #expect(interruptions.drillTrackingRecoveryCompleted)
         #expect(!audio.played.contains(.calibrateReach))
-        #expect(aura.coachingDetail == "Your proof is saved locally")
+        let persistenceScope: CoachingCyclePersistenceScope = scenario.sessionOnlyPersistence
+            ? .sessionOnly
+            : .durable
+        let expectedCompletionDetail = AuraCyclePersistencePresentation.detail(
+            for: persistenceScope
+        )
+        #expect(aura.coachingDetail == expectedCompletionDetail)
+        let completionInstruction = AuraImmersiveInstructionPolicy.instruction(
+            phase: .results,
+            coachingHeadline: aura.coachingHeadline,
+            coachingDetail: aura.coachingDetail,
+            cyclePresentation: aura.cyclePresentation,
+            trackingPaused: false,
+            trainingPaused: false,
+            statusMessage: aura.statusMessage
+        )
+        #expect(completionInstruction.message == expectedCompletionDetail)
+        #expect(completionInstruction.accessibilityValue.contains(expectedCompletionDetail))
+        if scenario.sessionOnlyPersistence {
+            #expect(expectedCompletionDetail.localizedCaseInsensitiveContains("this session only"))
+            #expect(!expectedCompletionDetail.localizedCaseInsensitiveContains("saved locally"))
+        }
 
         let result = try #require(aura.cycleResult)
         let player = try #require(store.currentPlayer)
@@ -773,7 +813,20 @@ struct CoachingCycleReviewRound2Tests {
 nonisolated struct LiveAuraScenario: Sendable {
     let technique: Technique
     let baselineNeedsCorrection: Bool
+    let sessionOnlyPersistence: Bool
+
+    init(
+        technique: Technique,
+        baselineNeedsCorrection: Bool,
+        sessionOnlyPersistence: Bool = false
+    ) {
+        self.technique = technique
+        self.baselineNeedsCorrection = baselineNeedsCorrection
+        self.sessionOnlyPersistence = sessionOnlyPersistence
+    }
 }
+
+private struct LiveAuraPersistentStoreFailure: Error {}
 
 @MainActor
 private final class LiveAuraTrackingHarness: AuraHandTracking {

@@ -58,6 +58,7 @@ final class CompetitionStore {
     private(set) var isLoading = false
     private(set) var isSaving = false
     private(set) var errorMessage: String?
+    private(set) var coachingCyclePersistenceScope: CoachingCyclePersistenceScope
     var nameDraft = ""
     var selectedStance: Stance = .orthodox
 
@@ -68,23 +69,36 @@ final class CompetitionStore {
     init(
         repository: any CompetitionRepository,
         startupError: String? = nil,
+        coachingCyclePersistenceScope: CoachingCyclePersistenceScope = .durable,
         now: @escaping () -> Date = Date.init
     ) {
         self.repository = repository
         self.now = now
+        self.coachingCyclePersistenceScope = coachingCyclePersistenceScope
         errorMessage = startupError
     }
 
-    static func live() -> CompetitionStore {
-        do {
+    static func live(
+        makePersistentRepository: @MainActor () throws -> any CompetitionRepository = {
             let container = try CompetitionModelContainer.make(inMemory: false)
-            return CompetitionStore(repository: CompetitionLiveRepositoryFactory.makeLiveRepository(
+            return CompetitionLiveRepositoryFactory.makeLiveRepository(
                 container: container
-            ))
+            )
+        },
+        makeSessionRepository: @MainActor () -> any CompetitionRepository = {
+            InMemoryCompetitionRepository()
+        }
+    ) -> CompetitionStore {
+        do {
+            return CompetitionStore(
+                repository: try makePersistentRepository(),
+                coachingCyclePersistenceScope: .durable
+            )
         } catch {
             return CompetitionStore(
-                repository: InMemoryCompetitionRepository(),
-                startupError: "Saved competition data is unavailable. Results will last only until the app closes."
+                repository: makeSessionRepository(),
+                startupError: "Saved competition data is unavailable. Results will last only until the app closes.",
+                coachingCyclePersistenceScope: .sessionOnly
             )
         }
     }
@@ -359,10 +373,11 @@ final class CompetitionStore {
     /// Gives standalone Aura a durable, non-identifying participant instead of silently dropping
     /// its proof on a fresh launch. The participant is published only after the cycle transaction
     /// succeeds, so visible "saved" state always has a matching durable record.
+    @discardableResult
     func persistStandaloneCoachingCycle(
         _ result: CoachingCycleResult,
         fittedReach: BilateralReach
-    ) async throws {
+    ) async throws -> CoachingCyclePersistenceScope {
         let localName = "Local Athlete"
         let normalizedName = CompetitionName.normalized(localName)
         let timestamp = now()
@@ -389,6 +404,7 @@ final class CompetitionStore {
         )
         currentPlayer = persisted
         selectedStance = persisted.rememberedStance
+        return coachingCyclePersistenceScope
     }
 
     private func persistCoachingCycle(

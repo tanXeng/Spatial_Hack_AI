@@ -119,7 +119,9 @@ final class AuraPunchSession {
     /// A same-participant Fit result may be reused; nil runs Fit in the immersive cycle.
     var persistedReach: BilateralReach?
     var reachDidFit: ((BilateralReach) -> Void)?
-    var cycleDidComplete: ((CoachingCycleResult, BilateralReach) async throws -> Void)?
+    var cycleDidComplete: (
+        (CoachingCycleResult, BilateralReach) async throws -> CoachingCyclePersistenceScope
+    )?
 
     /// Anthropometry will populate this later; until then every user gets average proportions.
     var measurements: BodyMeasurements = .averageAdult
@@ -816,18 +818,18 @@ final class AuraPunchSession {
         }
 
         guard await waitForTrainingResume() else { return }
-        if let result = coachingCycle.result,
-           let reach = coachingCycle.fittedReach {
-            guard let cycleDidComplete else {
-                fail("Athlete memory is unavailable, so this proof was not saved.")
-                return
-            }
-            do {
-                try await cycleDidComplete(result, reach)
-            } catch {
-                fail("Your proof is complete, but athlete memory could not be saved.")
-                return
-            }
+        guard let result = coachingCycle.result,
+              let reach = coachingCycle.fittedReach,
+              let cycleDidComplete else {
+            fail("Athlete memory is unavailable, so this proof was not saved.")
+            return
+        }
+        let persistenceScope: CoachingCyclePersistenceScope
+        do {
+            persistenceScope = try await cycleDidComplete(result, reach)
+        } catch {
+            fail("Your proof is complete, but athlete memory could not be saved.")
+            return
         }
         guard await waitForTrainingResume() else { return }
 
@@ -837,8 +839,8 @@ final class AuraPunchSession {
         targets.removeActiveTarget()
         setCoaching(
             headline: "COMPLETE",
-            detail: "Your proof is saved locally",
-            status: "Coaching cycle complete"
+            detail: AuraCyclePersistencePresentation.detail(for: persistenceScope),
+            status: AuraCyclePersistencePresentation.status(for: persistenceScope)
         )
         audioCoordinator.handleImmediately(.experienceDidEnter(.celebrate))
         audioCoordinator.handleImmediately(.unrankedResultDidFinalize)

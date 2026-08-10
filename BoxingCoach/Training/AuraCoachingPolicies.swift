@@ -1,6 +1,34 @@
 import Foundation
 import simd
 
+/// Truth carried from the athlete-memory transaction back to Aura's completion UI.
+/// Session-only storage is useful during a persistent-store outage, but it must never be
+/// presented as durable across an app relaunch.
+nonisolated enum CoachingCyclePersistenceScope: Equatable, Sendable {
+    case durable
+    case sessionOnly
+}
+
+nonisolated enum AuraCyclePersistencePresentation {
+    static func detail(for scope: CoachingCyclePersistenceScope) -> String {
+        switch scope {
+        case .durable:
+            return "Your proof is saved locally"
+        case .sessionOnly:
+            return "Your proof is available this session only"
+        }
+    }
+
+    static func status(for scope: CoachingCyclePersistenceScope) -> String {
+        switch scope {
+        case .durable:
+            return "Coaching cycle complete · proof saved locally"
+        case .sessionOnly:
+            return "Coaching cycle complete · proof available this session only"
+        }
+    }
+}
+
 nonisolated enum AuraGuidanceAvailability: Equatable, Sendable {
     case ready
     case guardUnavailable

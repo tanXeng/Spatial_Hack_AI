@@ -8,14 +8,14 @@ enum ReactiveStrikeMode: String, CaseIterable, Identifiable, Hashable, Sendable 
 
     var id: String { rawValue }
 
-    var title: String {
+    nonisolated var title: String {
         switch self {
         case .air: return "Air Mode"
         case .combination: return "Combination Mode"
         }
     }
 
-    var subtitle: String {
+    nonisolated var subtitle: String {
         switch self {
         case .air: return "Targets float in front of you"
         case .combination: return "Throw a stance-aware punch sequence"

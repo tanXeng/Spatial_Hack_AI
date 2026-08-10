@@ -133,7 +133,7 @@ final class CoachVoiceCoach {
         }
 
         let setupResult: Result<Void, Error> = await withTaskGroup(of: Result<Void, Error>.self) { group in
-            group.addTask { [weak self] in
+            group.addTask { @MainActor [weak self] in
                 guard let self else { return .failure(CaptureSetupError.cancelled) }
                 do {
                     liveVoice.beginUserInteraction()

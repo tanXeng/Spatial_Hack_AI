@@ -1,11 +1,14 @@
 import Foundation
 
 nonisolated struct OpenAICoachChatClient {
+    static let defaultModel = "gpt-4.1-nano"
+    static let defaultMaxTokens = 60
+
     var apiKey: String?
     var session: URLSession
     var timeout: TimeInterval
 
-    init(apiKey: String? = nil, session: URLSession? = nil, timeout: TimeInterval = 12) {
+    init(apiKey: String? = nil, session: URLSession? = nil, timeout: TimeInterval = 8) {
         self.apiKey = apiKey
         self.timeout = timeout
         if let session {
@@ -31,9 +34,9 @@ nonisolated struct OpenAICoachChatClient {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(effectiveKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
-            "model": "gpt-4o-mini",
-            "temperature": 0.4,
-            "max_tokens": 200,
+            "model": Self.defaultModel,
+            "temperature": 0.3,
+            "max_tokens": Self.defaultMaxTokens,
             "messages": [
                 [
                     "role": "system",
@@ -55,19 +58,15 @@ nonisolated struct OpenAICoachChatClient {
 
     private func systemPrompt(for context: CoachVoiceContext) -> String {
         """
-        You are the voice coach inside Boxing Coach on Apple Vision Pro. You know this product intimately.
+        Voice coach for Boxing Coach on Vision Pro.
 
-        \(CoachAppGuide.overview)
+        \(CoachAppGuide.compactOverview)
 
-        CURRENT SESSION: \(CoachAppGuide.sessionContext(for: context))
+        NOW: \(CoachAppGuide.sessionContext(for: context))
 
-        RULES:
-        - When users ask how to practice a punch or use the app, give concrete in-app steps \
-        (Aura Punch, Reactive Strike, guard, hologram, targets). Do not tell them to shadowbox at home \
-        unless they explicitly ask about training without the headset.
-        - For general questions (math, trivia, facts), answer directly and briefly.
-        - For boxing form, tie advice to what this app tracks and the active mode when relevant.
-        - Reply in 1 to 3 short spoken sentences. No markdown, lists, or clip names.
+        Rules: Answer in one short spoken sentence (under 20 words). Be direct. \
+        For app/how-to questions, name Aura Punch or Reactive Strike. \
+        No markdown, lists, or home shadowboxing unless asked.
         """
     }
 

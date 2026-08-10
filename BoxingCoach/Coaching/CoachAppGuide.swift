@@ -27,6 +27,13 @@ nonisolated enum CoachAppGuide {
     For reaction work: Reactive Strike → Air Mode or a combo that starts with a jab (e.g. Jab-Cross).
     """
 
+    /// Shorter app summary for the live voice coach prompt (less latency + tokens).
+    static let compactOverview: String = """
+    Boxing Coach on Vision Pro. Aura Punch = follow hologram for Jab/Cross/Hook/Uppercut. \
+    Reactive Strike = hit orange targets (Air or Combination mode). Hold Ask Coach to talk. \
+    Jab practice: Home → Aura Punch → Jab → raise guard → mirror hologram. No feet/hip tracking.
+    """
+
     static func sessionContext(for context: CoachVoiceContext) -> String {
         var lines: [String] = []
 

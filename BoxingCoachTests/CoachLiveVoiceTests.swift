@@ -110,7 +110,7 @@ final class OpenAICoachChatClientTests: XCTestCase {
         let messages = try XCTUnwrap(payload["messages"] as? [[String: Any]])
         let system = try XCTUnwrap(messages.first?["content"] as? String)
         XCTAssertTrue(system.contains("Aura Punch"))
-        XCTAssertTrue(system.contains("HOW TO PRACTICE A JAB"))
+        XCTAssertEqual(payload["model"] as? String, OpenAICoachChatClient.defaultModel)
     }
 }
 

@@ -340,11 +340,22 @@ final class ReactiveStrikeSession {
             }
             reactiveVoiceRecoveryTask?.cancel()
             reactiveVoiceRecoveryTask = Task { [weak self] in
-                guard let self,
-                      await resumeAfterFreshGuard() != nil,
-                      reactiveVoicePauseOwner.observe(.freshGuardRecovered(captureID))
-                        == .resumeTraining else { return }
-                voiceCoach.confirmGuardRestored()
+                guard let self else { return }
+                while !Task.isCancelled,
+                      reactiveVoicePauseOwner.owns(captureID),
+                      isVoicePaused {
+                    if await resumeAfterFreshGuard(
+                        commandIsCurrent: { [weak self] in
+                            self?.reactiveVoicePauseOwner.owns(captureID) == true
+                        }
+                    ) != nil,
+                       reactiveVoicePauseOwner.observe(.freshGuardRecovered(captureID))
+                        == .resumeTraining {
+                        voiceCoach.confirmGuardRestored()
+                        return
+                    }
+                    try? await Task.sleep(for: .milliseconds(50))
+                }
             }
         case .resumeTraining:
             voiceCoach.confirmGuardRestored()

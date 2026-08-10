@@ -227,6 +227,15 @@ nonisolated struct CoachVoiceCyclePauseOwner: Sendable {
         return true
     }
 
+    func owns(_ id: UUID) -> Bool {
+        switch state {
+        case .capturing(let current), .processing(let current), .awaitingFreshGuard(let current):
+            return current == id
+        case .idle:
+            return false
+        }
+    }
+
     mutating func reset() {
         state = .idle
     }

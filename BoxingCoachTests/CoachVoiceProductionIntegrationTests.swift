@@ -20,6 +20,23 @@ struct CoachVoiceProductionIntegrationTests {
         #expect(response?.caption == "Training paused.")
     }
 
+    @Test("A transcript uses its pre-capture context while generation is revalidated live")
+    func finalTranscriptUsesPreCaptureContext() async throws {
+        let target = ProductionVoiceTarget(state: .trackingPaused, capabilities: [.resume])
+        let issuedContext = VoiceCommandContext(state: .learn, capabilities: [.next])
+
+        let response = await CoachVoiceCommandRouter().resolve(
+            transcript: "next",
+            issuedFor: target.commandGeneration,
+            issuedContext: issuedContext,
+            on: target
+        )
+
+        #expect(target.advanceCount == 1)
+        #expect(response?.intent == .next)
+        #expect(response?.caption == "Next step.")
+    }
+
     @Test("A coach response owns the pause until its actual playback finishes")
     func responseCompletionFollowsPlayback() async throws {
         let audio = ProductionVoiceAudioSystem()
@@ -32,10 +49,11 @@ struct CoachVoiceProductionIntegrationTests {
         let speech = ProductionVoiceSpeechClient(transcript: "pause training")
         let target = ProductionVoiceTarget(state: .learn, capabilities: [.pause])
         let coach = CoachVoiceCoach(audioCoordinator: coordinator, speechClient: speech)
-        coach.setCommandHandler { transcript in
+        coach.setCommandHandler { transcript, issuedContext in
             await CoachVoiceCommandRouter().resolve(
                 transcript: transcript,
                 issuedFor: target.commandGeneration,
+                issuedContext: issuedContext,
                 on: target
             )
         }
@@ -135,6 +153,7 @@ private final class ProductionVoiceTarget: TrainingCommandTarget {
     var commandGeneration: UInt64 = 7
     var commandContext: VoiceCommandContext
     private(set) var pauseCount = 0
+    private(set) var advanceCount = 0
 
     init(state: VoiceCommandState, capabilities: Set<VoiceCommandCapability>) {
         commandContext = VoiceCommandContext(state: state, capabilities: capabilities)
@@ -144,7 +163,7 @@ private final class ProductionVoiceTarget: TrainingCommandTarget {
     func resumeAfterFreshGuard() async -> String? { "Training resumed." }
     func repeatDemo() -> String? { nil }
     func setDemoRate(_ rate: TrainingDemoRate) -> String? { nil }
-    func advance() -> String? { nil }
+    func advance() -> String? { advanceCount += 1; return "Next step." }
     func requestCorrection() -> String? { nil }
     func requestGuardExplanation() -> String? { nil }
     func requestTargetHelp() -> String? { nil }

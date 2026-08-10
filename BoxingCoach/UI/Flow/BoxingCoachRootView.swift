@@ -292,7 +292,11 @@ struct BoxingCoachRootView: View {
     }
 
     private func bindVoiceCommands() {
-        session.voiceCoach.setCommandHandler { [session, flow] transcript in
+        session.voiceCoach.setCommandHandler(
+            contextProvider: { [session, flow] in
+                flow.voiceCommandContext(session: session)
+            }
+        ) { [session, flow] transcript, issuedContext in
             let generation = flow.commandGeneration
             let target = TrainingSessionCommandTarget(
                 flow: flow,
@@ -303,6 +307,7 @@ struct BoxingCoachRootView: View {
             return await CoachVoiceCommandRouter().resolve(
                 transcript: transcript,
                 issuedFor: generation,
+                issuedContext: issuedContext,
                 on: target
             )
         }

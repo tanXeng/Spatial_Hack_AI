@@ -229,6 +229,7 @@ struct TrainingCommandExecutor {
     func execute(
         _ intent: VoiceIntent,
         issuedFor generation: UInt64,
+        issuedContext: VoiceCommandContext? = nil,
         on target: any TrainingCommandTarget
     ) async -> TrainingCommandExecutionResult {
         guard generation == target.commandGeneration else {
@@ -237,7 +238,7 @@ struct TrainingCommandExecutor {
             )
         }
 
-        let context = target.commandContext
+        let context = issuedContext ?? target.commandContext
         guard intent.isAvailable(in: context.state) else {
             return .rejected(.unavailableInState(intent: intent, state: context.state))
         }
@@ -342,6 +343,7 @@ struct CoachVoiceCommandRouter {
     func resolve(
         transcript: String,
         issuedFor generation: UInt64,
+        issuedContext: VoiceCommandContext? = nil,
         on target: any TrainingCommandTarget
     ) async -> CoachVoiceCommandResponse? {
         let parseResult = parser.parse(
@@ -351,12 +353,13 @@ struct CoachVoiceCommandRouter {
                 isFinal: true,
                 confidence: .high
             ),
-            in: target.commandContext
+            in: issuedContext ?? target.commandContext
         )
         guard let intent = parseResult.acceptedIntent else { return nil }
         guard case let .executed(receipt) = await executor.execute(
             intent,
             issuedFor: generation,
+            issuedContext: issuedContext,
             on: target
         ) else { return nil }
         return CoachVoiceCommandResponse(

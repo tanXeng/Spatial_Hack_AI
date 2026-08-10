@@ -177,7 +177,14 @@ nonisolated struct CoachVoiceLifecycle: Sendable {
 
         case .sessionCleared:
             activeCaptureID = nil
-            state = modelIsPrepared ? .ready : .off
+            switch state {
+            case .denied, .unsupported:
+                break
+            case .needsPermission, .preparingModel:
+                state = .off
+            default:
+                state = modelIsPrepared ? .ready : .off
+            }
             return .clearPrivateState
         }
     }
@@ -287,7 +294,9 @@ final class CoachVoiceCoach {
     private var processingTask: Task<Void, Never>?
     private var lifecycle = CoachVoiceLifecycle()
     private var trainingPauseEventIDs: [CoachVoiceCaptureID: UUID] = [:]
-    private var commandHandler: (@MainActor (String) async -> CoachVoiceCommandResponse?)?
+    private var commandContextProvider: (@MainActor () -> VoiceCommandContext)?
+    private var commandContextAtCapture: VoiceCommandContext?
+    private var commandHandler: (@MainActor (String, VoiceCommandContext?) async -> CoachVoiceCommandResponse?)?
     private var responseAwaitingPlayback: CoachVoiceCaptureID?
     var onCaptureCycleEvent: ((CoachVoiceCyclePauseOwner.Event) -> Void)?
 
@@ -317,8 +326,10 @@ final class CoachVoiceCoach {
     }
 
     func setCommandHandler(
-        _ handler: (@MainActor (String) async -> CoachVoiceCommandResponse?)?
+        contextProvider: (@MainActor () -> VoiceCommandContext)? = nil,
+        _ handler: (@MainActor (String, VoiceCommandContext?) async -> CoachVoiceCommandResponse?)?
     ) {
+        commandContextProvider = contextProvider
         commandHandler = handler
     }
 
@@ -430,7 +441,7 @@ final class CoachVoiceCoach {
 
             let commandResponse: CoachVoiceCommandResponse?
             if let commandHandler {
-                commandResponse = await commandHandler(transcript)
+                commandResponse = await commandHandler(transcript, commandContextAtCapture)
             } else {
                 commandResponse = nil
             }
@@ -487,6 +498,7 @@ final class CoachVoiceCoach {
 
     private func revokeCaptureLocally(interrupted: Bool) {
         responseAwaitingPlayback = nil
+        commandContextAtCapture = nil
         if let captureID = lifecycle.activeCaptureID {
             _ = reduce(interrupted ? .interrupted(id: captureID) : .cancel(id: captureID))
             finishTrainingPause(for: captureID, completed: false)
@@ -504,6 +516,7 @@ final class CoachVoiceCoach {
         origin: TrainingAudioSceneOwner
     ) {
         lastTranscript = nil
+        commandContextAtCapture = commandContextProvider?()
         beginTrainingPause(for: id)
         setupTask?.cancel()
         setupTask = Task { [weak self] in
@@ -545,6 +558,7 @@ final class CoachVoiceCoach {
 
     private func completeResponse(id: CoachVoiceCaptureID) {
         _ = reduce(.responseFinished(id: id))
+        commandContextAtCapture = nil
         clearPrivateState()
         finishTrainingPause(for: id, completed: true)
     }

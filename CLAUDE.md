@@ -250,7 +250,9 @@ One measurement serves both Reactive Strike modes and Aura Punch — `mode.reach
 
 ### Uppercut extension is measured differently — do not "simplify" this
 
-Most punches peak at maximum radial shoulder-to-fist distance. An uppercut does not: loading beside the hip is radially **farther** from the shoulder than the centreline finish at the chin.
+Most punches peak at maximum radial shoulder-to-fist distance. An uppercut does not — a deep hip load can be radially **farther** from the shoulder than the finish, so radial reach would credit a hand that just drops and stops.
+
+Note this is a statement about **user attempts**, not about the authored reference. The reference's own finish *is* now its radially furthest point (0.77 against the hip load's 0.65); it only used to be the other way round because the finish was authored too close to the user. Do not "restore" that — see the target-distance section below. The ordered-rise rule still earns its place, because a real attempt can load deeper than the reference, and `BoxingCoachTechniqueTests` authors that trap into the attempt fixture explicitly rather than borrowing it from the reference.
 
 `PunchExtensionSemantics.magnitude(samples:techniqueID:)` (in `MotionRecorder.swift`) is the single shared rule used by both recorded attempts and authored references:
 
@@ -258,6 +260,17 @@ Most punches peak at maximum radial shoulder-to-fist distance. An uppercut does 
 - Everything else → peak `reachFraction`.
 
 The same asymmetry drives `ReferencePunch.peakSample` / `peakTime` / `shouldEmphasize(_:)`. Treating radial distance as the uppercut's peak made the guide hold at the hip and play the actual strike during "bring it back."
+
+### Where the target ball lands — an authored trajectory is also a placement
+
+The orange target spawns at the reference's `peakTime` sample, so **the authored landing decides how far from the user's face the ball appears**. `PunchTargetGeometryTests` pins that distance, because nothing else in the codebase connects the two and the failure does not look like a geometry bug.
+
+It has bitten once: the uppercut finished at a forward 0.42, putting its ball **0.18 m from the user's eyes**. With `targetVisualRadius` at 0.07 that is a near face ~0.11 m out — on device it reads as *the uppercut having no target at all*, not as a target that is too close. It was being spawned correctly the whole time. The finish is now 0.62, landing at 0.31 m, just inside the hook's 0.34 m — right, because the uppercut is the shortest of the three but is still thrown at someone.
+
+Two things follow:
+
+- The ball is also the **hit test** (`capturePunchUntilHit` reads `targets.activeTargetPosition`), so the ball cannot simply be pushed away from the face for visibility — that would desynchronise it from the ghost, which holds at the authored peak. Fix the trajectory, not the ball.
+- Landings scale with measured arm reach, but `eyeToShoulderDrop`/`eyeToShoulderSetback` stay at `averageAdult`, so **a small user's targets sit closer to their face** than the numbers above. `BodyCalibration` clamps the chain to 0.80...1.25 and the test sweeps that range.
 
 ## Building
 

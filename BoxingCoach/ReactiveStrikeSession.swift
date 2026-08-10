@@ -562,6 +562,11 @@ final class ReactiveStrikeSession {
         audioBodyAnchor.transform = Transform(matrix: bodyTransform)
     }
 
+    func setThermalPerformanceProfile(_ profile: ThermalPerformanceProfile) {
+        audioCoordinator.setThermalPerformanceProfile(profile)
+        auraPunch.setThermalPerformanceProfile(profile)
+    }
+
     func startDrill() {
         guard phase != .running, phase != .calibrating else { return }
 

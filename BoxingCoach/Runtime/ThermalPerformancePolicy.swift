@@ -25,6 +25,7 @@ nonisolated struct ThermalPerformanceProfile: Equatable, Sendable {
     let caption: String?
 
     var isReduced: Bool { caption != nil }
+    var showsLandingEmphasis: Bool { particlesEnabled }
 
     func applying(to mix: TrainingAudioMix) -> TrainingAudioMix {
         TrainingAudioMix(
@@ -34,6 +35,21 @@ nonisolated struct ThermalPerformanceProfile: Equatable, Sendable {
             impact: mix.impact,
             status: mix.status
         )
+    }
+}
+
+/// Deterministic cadence gate for visual-only work. Tracking and scoring never consult this gate.
+nonisolated struct ThermalNonessentialUpdateGate: Sendable {
+    private var tick: UInt64 = 0
+
+    mutating func shouldUpdate(divisor: Int) -> Bool {
+        let safeDivisor = UInt64(max(1, divisor))
+        defer { tick &+= 1 }
+        return tick % safeDivisor == 0
+    }
+
+    mutating func reset() {
+        tick = 0
     }
 }
 

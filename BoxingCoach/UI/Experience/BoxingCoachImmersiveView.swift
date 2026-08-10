@@ -315,7 +315,7 @@ struct BoxingCoachImmersiveView: View {
     private func refreshThermalProfile() {
         let level = ThermalPerformanceLevel(ProcessInfo.processInfo.thermalState)
         thermalProfile = ThermalPerformancePolicy.profile(for: level)
-        session.audioCoordinator.setThermalPerformanceProfile(thermalProfile)
+        session.setThermalPerformanceProfile(thermalProfile)
     }
 
     private var immersivePrivacyNoticeBinding: Binding<Bool> {

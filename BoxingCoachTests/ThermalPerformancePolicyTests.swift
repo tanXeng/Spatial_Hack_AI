@@ -36,4 +36,32 @@ struct ThermalPerformancePolicyTests {
         #expect(reduced.crowd == .muted)
         #expect(reduced.impact == source.impact)
     }
+
+    @Test("Serious and critical profiles deterministically reduce visual update work", arguments: [
+        (ThermalPerformanceLevel.nominal, [true, true, true, true, true, true, true, true]),
+        (.serious, [true, false, true, false, true, false, true, false]),
+        (.critical, [true, false, false, false, true, false, false, false]),
+    ])
+    func visualUpdateCadence(
+        level: ThermalPerformanceLevel,
+        expected: [Bool]
+    ) {
+        let profile = ThermalPerformancePolicy.profile(for: level)
+        var gate = ThermalNonessentialUpdateGate()
+
+        let actual = expected.indices.map { _ in
+            gate.shouldUpdate(divisor: profile.nonessentialUpdateDivisor)
+        }
+
+        #expect(actual == expected)
+    }
+
+    @Test("Thermal reduction removes decorative landing emphasis before tracking")
+    func visualEffectReductionOrder() {
+        #expect(ThermalPerformancePolicy.profile(for: .nominal).showsLandingEmphasis)
+        #expect(ThermalPerformancePolicy.profile(for: .fair).showsLandingEmphasis)
+        #expect(!ThermalPerformancePolicy.profile(for: .serious).showsLandingEmphasis)
+        #expect(!ThermalPerformancePolicy.profile(for: .critical).showsLandingEmphasis)
+        #expect(ThermalPerformancePolicy.profile(for: .critical).trackingIntegrityPreserved)
+    }
 }

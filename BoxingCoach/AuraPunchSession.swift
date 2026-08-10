@@ -226,6 +226,9 @@ final class AuraPunchSession {
     private let captureOverride: (@MainActor (AuraPunchCaptureRequest) async -> AuraCapturedPunch?)?
     private let targets = TargetController()
     private let pathOverlay = PunchPathOverlayEntity()
+    private var thermalProfile = ThermalPerformancePolicy.profile(for: .nominal)
+    private var demoVisualUpdateGate = ThermalNonessentialUpdateGate()
+    private var mirrorVisualUpdateGate = ThermalNonessentialUpdateGate()
 
     private var demoArm: ArmSilhouetteEntity?
     private var mirrorArm: ArmSilhouetteEntity?
@@ -324,6 +327,16 @@ final class AuraPunchSession {
     }
 
     // MARK: Control
+
+    func setThermalPerformanceProfile(_ profile: ThermalPerformanceProfile) {
+        guard thermalProfile != profile else { return }
+        thermalProfile = profile
+        demoVisualUpdateGate.reset()
+        mirrorVisualUpdateGate.reset()
+        if !profile.showsLandingEmphasis {
+            demoArm?.setTint(.demo)
+        }
+    }
 
     func start() {
         guard phase == .idle || phase == .results else { return }
@@ -1329,7 +1342,7 @@ final class AuraPunchSession {
         guard span > 0 else {
             guard !Task.isCancelled,
                   continuationGeneration == demoContinuationGeneration else { return }
-            poseGhost(reference: reference, side: side, solver: solver, at: end)
+            poseGhost(reference: reference, side: side, solver: solver, at: end, force: true)
             return
         }
 
@@ -1386,7 +1399,8 @@ final class AuraPunchSession {
                 reference: reference,
                 side: side,
                 solver: solver,
-                at: start + span * progress
+                at: start + span * progress,
+                force: progress >= 1
             )
             updateLiveReach(side: side, solver: solver)
             if trackLandingTarget {
@@ -1480,8 +1494,13 @@ final class AuraPunchSession {
         reference: ReferencePunch,
         side: BodySide,
         solver: ArmPoseSolver,
-        at referenceTime: TimeInterval
+        at referenceTime: TimeInterval,
+        force: Bool = false
     ) {
+        guard force || demoVisualUpdateGate.shouldUpdate(
+            divisor: thermalProfile.nonessentialUpdateDivisor
+        ) else { return }
+
         // Re-solve the body frame every frame so the ghost stays glued to the user even as they
         // shift their weight or turn — it is their body the demo is drawn on.
         guard let frame = currentBodyFrame(solver: solver),
@@ -1499,7 +1518,9 @@ final class AuraPunchSession {
 
         // Flash near the punch's semantic landing. Most punches use radial reach; uppercuts use
         // spatial proximity to the chin landing so the radially longer hip load does not flash.
-        demoArm?.setTint(reference.shouldEmphasize(sample) ? .emphasis : .demo)
+        let emphasizesLanding = thermalProfile.showsLandingEmphasis
+            && reference.shouldEmphasize(sample)
+        demoArm?.setTint(emphasizesLanding ? .emphasis : .demo)
     }
 
     /// Current normalized fist position of one arm — shoulder-relative, arm-reach units, same
@@ -2303,11 +2324,7 @@ final class AuraPunchSession {
             if let leadingPose, leadingReach >= 0 {
                 liveReach = leadingReach
                 mirrorArm?.isVisible = true
-                mirrorArm?.pose(
-                    shoulder: leadingPose.shoulder,
-                    elbow: leadingPose.elbow,
-                    fist: leadingPose.fist
-                )
+                updateMirrorArmIfNeeded(leadingPose)
             }
             return leadingReach >= 0 ? leadingReach : nil
         }
@@ -2319,16 +2336,23 @@ final class AuraPunchSession {
         if let leadingPose, leadingReach >= 0 {
             liveReach = leadingReach
             mirrorArm?.isVisible = true
-            mirrorArm?.pose(
-                shoulder: leadingPose.shoulder,
-                elbow: leadingPose.elbow,
-                fist: leadingPose.fist
-            )
+            updateMirrorArmIfNeeded(leadingPose)
             return leadingReach
         }
 
         mirrorArm?.isVisible = false
         return nil
+    }
+
+    private func updateMirrorArmIfNeeded(_ pose: ArmPose) {
+        guard mirrorVisualUpdateGate.shouldUpdate(
+            divisor: thermalProfile.nonessentialUpdateDivisor
+        ) else { return }
+        mirrorArm?.pose(
+            shoulder: pose.shoulder,
+            elbow: pose.elbow,
+            fist: pose.fist
+        )
     }
 
     private func capturedAttempt(for side: BodySide) -> RecordedAttempt? {

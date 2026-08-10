@@ -297,7 +297,7 @@ struct BoxingCoachRootView: View {
                     drillPhase: nil,
                     techniqueName: technique.name
                 ))
-            case .reactive, .competitionCalibration, .competition:
+            case .reactive, .reachCalibration, .competitionCalibration, .competition:
                 session.voiceCoach.updateContext(CoachVoiceContext(
                     feature: .reactiveStrike,
                     auraPhase: nil,

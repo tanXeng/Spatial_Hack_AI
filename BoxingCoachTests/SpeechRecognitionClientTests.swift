@@ -1,16 +1,18 @@
 import Foundation
-import Speech
 import Testing
 @testable import BoxingCoach
 
 @Suite("Speech recognition capture generations")
 @MainActor
 struct SpeechRecognitionClientTests {
-    @Test("System recognition requests require on-device execution")
-    func systemRecognitionRequestIsOnDeviceOnly() {
-        let request = SystemSpeechRecognitionSessionBackend.makeOnDeviceRecognitionRequest()
+    @Test("Model preparation is delegated before capture")
+    func modelPreparationIsDelegated() async throws {
+        let backend = ControlledSpeechRecognitionSessionBackend()
+        let client = SpeechRecognitionClient(backend: backend)
 
-        #expect(request.requiresOnDeviceRecognition)
+        try await client.prepareModel()
+
+        #expect(backend.prepareCount == 1)
     }
 
     @Test("Unsupported on-device recognition fails before audio capture")
@@ -58,9 +60,14 @@ private final class ControlledSpeechRecognitionSessionBackend: SpeechRecognition
         @MainActor @Sendable (SpeechRecognitionSessionUpdate) -> Void
     ] = []
     private(set) var startCount = 0
+    private(set) var prepareCount = 0
     private(set) var cancelCount = 0
     var isAvailable = true
     var supportsOnDeviceRecognition = true
+
+    func prepareModel() async throws {
+        prepareCount += 1
+    }
 
     func start(
         updateHandler: @escaping @MainActor @Sendable (SpeechRecognitionSessionUpdate) -> Void

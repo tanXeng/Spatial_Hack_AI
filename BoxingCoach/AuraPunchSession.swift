@@ -119,6 +119,7 @@ final class AuraPunchSession {
     /// A same-participant Fit result may be reused; nil runs Fit in the immersive cycle.
     var persistedReach: BilateralReach?
     var reachDidFit: ((BilateralReach) -> Void)?
+    var voiceGuardDidRecover: (() -> Void)?
     var cycleDidComplete: (
         (CoachingCycleResult, BilateralReach) async throws -> CoachingCyclePersistenceScope
     )?
@@ -675,6 +676,7 @@ final class AuraPunchSession {
             trainingDidFinishVoiceResponse(captureID: captureID)
         case .resumeTraining:
             trainingDidConfirmVoiceGuardRecovery()
+            voiceGuardDidRecover?()
         }
     }
 

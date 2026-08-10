@@ -42,7 +42,7 @@ nonisolated struct CoachPushToTalkInteractionPolicy: Sendable {
     }
 }
 
-/// Hold to capture speech; release to route and play a coach clip.
+/// Tap to toggle capture, or hold while speaking and release to submit.
 struct CoachPushToTalkButton: View {
     enum Style {
         case standard
@@ -55,6 +55,7 @@ struct CoachPushToTalkButton: View {
     let isGeneratingResponse: Bool
     let isDisabled: Bool
     var style: Style = .standard
+    let onToggle: () -> Void
     let onPress: () -> Void
     let onRelease: () -> Void
 
@@ -85,10 +86,15 @@ struct CoachPushToTalkButton: View {
         .contentShape(Rectangle())
         .disabled(isDisabled || isBusy)
         .simultaneousGesture(pressGesture)
+        .hoverEffect(.highlight)
+        .focusable()
         .accessibilityLabel("Ask Coach")
         .accessibilityValue(accessibilityValue)
         .accessibilityHint("Tap to start or stop, or hold while speaking and release to hear a coaching response")
         .accessibilityInputLabels(["Ask Coach", "Hold to Ask Coach", "Voice command"])
+        .accessibilityAction(named: isListening ? "Stop Listening" : "Start Listening") {
+            onToggle()
+        }
     }
 
     private var standardButton: some View {
@@ -105,7 +111,7 @@ struct CoachPushToTalkButton: View {
             VStack(spacing: 6) {
                 Image(systemName: micSymbol)
                     .font(.title2.weight(.semibold))
-                    .frame(width: 52, height: 52)
+                    .frame(width: 60, height: 60)
                 Text(shortLabel)
                     .font(.caption2.weight(.semibold))
                     .multilineTextAlignment(.center)

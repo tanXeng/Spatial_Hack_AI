@@ -88,6 +88,9 @@ struct BoxingCoachImmersiveView: View {
                             isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
                             isDisabled: flow.controlsDisabled,
                             style: .compactSpatial,
+                            onToggle: {
+                                session.voiceCoach.toggleCapture(origin: .immersiveSpace)
+                            },
                             onPress: {
                                 session.beginCoachPushToTalk(origin: .immersiveSpace)
                             },
@@ -100,6 +103,21 @@ struct BoxingCoachImmersiveView: View {
                         }
                     }
                     audioPresetMenu
+                    Text(session.voiceCoach.controlPresentation.visibleCaption)
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 280)
+                        .accessibilityLabel(
+                            "Ask Coach status: \(session.voiceCoach.controlPresentation.visibleCaption)"
+                        )
+                    if let transcript = session.voiceCoach.controlPresentation.visibleTranscript,
+                       !transcript.isEmpty {
+                        Text("You said: \(transcript)")
+                            .font(.caption)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 280)
+                            .accessibilityLabel("Voice transcript: \(transcript)")
+                    }
                     if let caption = session.audioCoordinator.presentation.caption {
                         Label(
                             caption,
@@ -114,6 +132,18 @@ struct BoxingCoachImmersiveView: View {
                 }
                 .padding(10)
                 .glassBackgroundEffect()
+                .confirmationDialog(
+                    "Private voice capture",
+                    isPresented: immersivePrivacyNoticeBinding,
+                    titleVisibility: .visible
+                ) {
+                    Button("Continue") { session.voiceCoach.acceptPrivacyNotice() }
+                    Button("Not Now", role: .cancel) {
+                        session.voiceCoach.declinePrivacyNotice()
+                    }
+                } message: {
+                    Text("Your voice is transcribed on this device and is never saved.")
+                }
             }
 
             Attachment(id: controlsAttachmentID) {
@@ -186,12 +216,24 @@ struct BoxingCoachImmersiveView: View {
                     fittedReach: reach
                 )
             }
-            session.voiceCoach.prepare()
             refreshVoiceCoachContext()
         }
         .onChange(of: flow.route) { _, _ in refreshVoiceCoachContext() }
         .onChange(of: session.phase) { _, _ in refreshVoiceCoachContext() }
         .onChange(of: session.auraPunch.phase) { _, _ in refreshVoiceCoachContext() }
+    }
+
+    private var immersivePrivacyNoticeBinding: Binding<Bool> {
+        Binding(
+            get: {
+                if case .needsPermission = session.voiceCoach.state { true } else { false }
+            },
+            set: { isPresented in
+                if !isPresented, case .needsPermission = session.voiceCoach.state {
+                    session.voiceCoach.declinePrivacyNotice()
+                }
+            }
+        )
     }
 
     private var showsVoiceCoach: Bool {

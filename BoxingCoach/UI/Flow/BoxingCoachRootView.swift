@@ -100,7 +100,6 @@ struct BoxingCoachRootView: View {
         .onAppear {
             flow.controlWindowDidAppear()
             session.controlWindowDidOpen()
-            session.voiceCoach.prepare()
             refreshWindowVoiceContext()
         }
         .task {

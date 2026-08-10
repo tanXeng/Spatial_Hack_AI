@@ -17,6 +17,7 @@ protocol SpeechRecognitionSessionBackend: AnyObject {
     var isAvailable: Bool { get }
     var supportsOnDeviceRecognition: Bool { get }
 
+    func prepareModel() async throws
     func start(
         updateHandler: @escaping @MainActor @Sendable (SpeechRecognitionSessionUpdate) -> Void
     ) throws
@@ -27,34 +28,124 @@ protocol SpeechRecognitionSessionBackend: AnyObject {
 @MainActor
 protocol SpeechRecognizing: AnyObject {
     func requestPermissions() async -> Bool
+    func prepareModel() async throws
+    func setTranscriptUpdateHandler(
+        _ handler: (@MainActor @Sendable (String) -> Void)?
+    )
     func start() throws
     func stop() async -> SpeechRecognitionResult
     func cancel()
+}
+
+extension SpeechRecognitionSessionBackend {
+    func prepareModel() async throws {}
+}
+
+extension SpeechRecognizing {
+    func prepareModel() async throws {}
+    func setTranscriptUpdateHandler(
+        _ handler: (@MainActor @Sendable (String) -> Void)?
+    ) {}
 }
 
 /// Owns the framework objects for one speech-recognition stream. The semantic client binds every
 /// callback from this backend to the capture generation that created it.
 @MainActor
 final class SystemSpeechRecognitionSessionBackend: SpeechRecognitionSessionBackend {
-    private let speechRecognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US"))
     private let audioEngine = AVAudioEngine()
-    private var request: SFSpeechAudioBufferRecognitionRequest?
-    private var recognitionTask: SFSpeechRecognitionTask?
+    private var analyzer: SpeechAnalyzer?
+    private var selectedModule: SelectedTranscriber?
+    private var inputConverter: AnalyzerInputConverter?
+    private var inputBridge: AnalyzerAudioInputBridge?
+    private var analysisTask: Task<Void, Never>?
+    private var resultTask: Task<Void, Never>?
+    private var finalizationTask: Task<Void, Never>?
     private var hasInstalledTap = false
 
     var isAvailable: Bool {
-        speechRecognizer?.isAvailable == true
+        selectedModule != nil || SpeechTranscriber.isAvailable
     }
 
     var supportsOnDeviceRecognition: Bool {
-        speechRecognizer?.supportsOnDeviceRecognition == true
+        selectedModule != nil
+    }
+
+    func prepareModel() async throws {
+        cancel()
+        let requestedLocale = Locale.autoupdatingCurrent
+        let selectedModule: SelectedTranscriber
+
+        if SpeechTranscriber.isAvailable,
+           let locale = await SpeechTranscriber.supportedLocale(equivalentTo: requestedLocale) {
+            selectedModule = .speech(SpeechTranscriber(
+                locale: locale,
+                preset: .progressiveTranscription
+            ))
+        } else if let locale = await DictationTranscriber.supportedLocale(
+            equivalentTo: requestedLocale
+        ) {
+            selectedModule = .dictation(DictationTranscriber(
+                locale: locale,
+                preset: .progressiveShortDictation
+            ))
+        } else {
+            throw SpeechRecognitionClient.SpeechError.unsupportedLocale
+        }
+
+        let modules = selectedModule.modules
+        switch await AssetInventory.status(forModules: modules) {
+        case .unsupported:
+            throw SpeechRecognitionClient.SpeechError.onDeviceRecognitionUnavailable
+        case .downloading, .supported:
+            if let installation = try await AssetInventory.assetInstallationRequest(
+                supporting: modules
+            ) {
+                try await installation.downloadAndInstall()
+            }
+        case .installed:
+            break
+        @unknown default:
+            throw SpeechRecognitionClient.SpeechError.onDeviceRecognitionUnavailable
+        }
+
+        guard await AssetInventory.status(forModules: modules) == .installed else {
+            throw SpeechRecognitionClient.SpeechError.onDeviceRecognitionUnavailable
+        }
+
+        self.selectedModule = selectedModule
+        inputConverter = try await AnalyzerInputConverter.converter(compatibleWith: modules)
     }
 
     func start(
         updateHandler: @escaping @MainActor @Sendable (SpeechRecognitionSessionUpdate) -> Void
     ) throws {
-        let request = Self.makeOnDeviceRecognitionRequest()
-        self.request = request
+        guard let selectedModule, let inputConverter else {
+            throw SpeechRecognitionClient.SpeechError.onDeviceRecognitionUnavailable
+        }
+        let analyzer = SpeechAnalyzer(
+            modules: selectedModule.modules,
+            options: .init(priority: .userInitiated, modelRetention: .whileInUse)
+        )
+        self.analyzer = analyzer
+
+        let streamPair = AsyncStream<AnalyzerInput>.makeStream()
+        let bridge = try AnalyzerAudioInputBridge(
+            converter: inputConverter,
+            continuation: streamPair.continuation
+        )
+        inputBridge = bridge
+
+        resultTask = selectedModule.makeResultTask(updateHandler: updateHandler)
+        analysisTask = Task { [weak self] in
+            do {
+                try await analyzer.start(inputSequence: streamPair.stream)
+            } catch is CancellationError {
+                return
+            } catch {
+                guard self?.inputBridge === bridge else { return }
+                updateHandler(.init(transcript: nil, isFinal: true))
+            }
+        }
 
         let inputNode = audioEngine.inputNode
         let recordingFormat = Self.recordingFormat(for: inputNode)
@@ -64,9 +155,8 @@ final class SystemSpeechRecognitionSessionBackend: SpeechRecognitionSessionBacke
                 onBus: 0,
                 bufferSize: 1024,
                 format: recordingFormat,
-                tapProvider: { buffer, _ in
-                    guard let writable = Self.writableCopy(of: buffer) else { return }
-                    request.append(writable)
+                tapProvider: { [bridge] buffer, time in
+                    bridge.consume(buffer, at: time)
                 }
             )
             hasInstalledTap = true
@@ -77,77 +167,44 @@ final class SystemSpeechRecognitionSessionBackend: SpeechRecognitionSessionBacke
             cancel()
             throw error
         }
+    }
 
-        recognitionTask = speechRecognizer?.recognitionTask(with: request) { result, error in
-            let update = SpeechRecognitionSessionUpdate(
-                transcript: result?.bestTranscription.formattedString,
-                isFinal: result?.isFinal == true || error != nil
-            )
-            Task { @MainActor in
-                updateHandler(update)
+    func finishAudio() {
+        if audioEngine.isRunning {
+            audioEngine.stop()
+        }
+        removeInputTapIfNeeded()
+        inputBridge?.finish()
+        if let analyzer {
+            finalizationTask = Task {
+                try? await analyzer.finalizeAndFinishThroughEndOfInput()
             }
         }
     }
 
-    static func makeOnDeviceRecognitionRequest() -> SFSpeechAudioBufferRecognitionRequest {
-        let request = SFSpeechAudioBufferRecognitionRequest()
-        request.shouldReportPartialResults = true
-        request.requiresOnDeviceRecognition = true
-        return request
-    }
-
-    func finishAudio() {
-        request?.endAudio()
-        if audioEngine.isRunning {
-            audioEngine.stop()
-        }
-        removeInputTapIfNeeded()
-    }
-
     func cancel() {
-        recognitionTask?.cancel()
-        recognitionTask = nil
-        request = nil
         if audioEngine.isRunning {
             audioEngine.stop()
         }
         removeInputTapIfNeeded()
+        inputBridge?.cancel()
+        inputBridge = nil
+        analysisTask?.cancel()
+        analysisTask = nil
+        resultTask?.cancel()
+        resultTask = nil
+        finalizationTask?.cancel()
+        finalizationTask = nil
+        if let analyzer {
+            self.analyzer = nil
+            Task { await analyzer.cancelAndFinishNow() }
+        }
     }
 
     private func removeInputTapIfNeeded() {
         guard hasInstalledTap else { return }
         audioEngine.inputNode.removeTap(onBus: 0)
         hasInstalledTap = false
-    }
-
-    nonisolated private static func writableCopy(
-        of source: AVReadOnlyAudioPCMBuffer
-    ) -> AVAudioPCMBuffer? {
-        guard let copy = AVAudioPCMBuffer(
-            pcmFormat: source.format,
-            frameCapacity: AVAudioFrameCount(source.frameLength)
-        ) else { return nil }
-        copy.frameLength = AVAudioFrameCount(source.frameLength)
-
-        source.withUnsafeAudioBufferList { sourceList in
-            let sourceBuffers = UnsafeMutableAudioBufferListPointer(
-                UnsafeMutablePointer(mutating: sourceList)
-            )
-            let destinationBuffers = UnsafeMutableAudioBufferListPointer(
-                copy.mutableAudioBufferList
-            )
-            for index in 0..<min(sourceBuffers.count, destinationBuffers.count) {
-                guard let sourceData = sourceBuffers[index].mData,
-                      let destinationData = destinationBuffers[index].mData else { continue }
-                let byteCount = min(
-                    Int(sourceBuffers[index].mDataByteSize),
-                    Int(destinationBuffers[index].mDataByteSize)
-                )
-                destinationData.copyMemory(from: sourceData, byteCount: byteCount)
-                destinationBuffers[index].mDataByteSize = UInt32(byteCount)
-            }
-        }
-        return copy
     }
 
     private static func recordingFormat(for inputNode: AVAudioInputNode) -> AVAudioFormat {
@@ -161,6 +218,110 @@ final class SystemSpeechRecognitionSessionBackend: SpeechRecognitionSessionBacke
         }
         return AVAudioFormat(standardFormatWithSampleRate: 44_100, channels: 1)!
     }
+
+    private enum SelectedTranscriber {
+        case speech(SpeechTranscriber)
+        case dictation(DictationTranscriber)
+
+        var modules: [any SpeechModule] {
+            switch self {
+            case let .speech(transcriber): [transcriber]
+            case let .dictation(transcriber): [transcriber]
+            }
+        }
+
+        func makeResultTask(
+            updateHandler: @escaping @MainActor @Sendable (
+                SpeechRecognitionSessionUpdate
+            ) -> Void
+        ) -> Task<Void, Never> {
+            switch self {
+            case let .speech(transcriber):
+                Task {
+                    do {
+                        for try await result in transcriber.results {
+                            updateHandler(.init(
+                                transcript: String(result.text.characters),
+                                isFinal: result.isFinal
+                            ))
+                        }
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        updateHandler(.init(transcript: nil, isFinal: true))
+                    }
+                }
+            case let .dictation(transcriber):
+                Task {
+                    do {
+                        for try await result in transcriber.results {
+                            updateHandler(.init(
+                                transcript: String(result.text.characters),
+                                isFinal: result.isFinal
+                            ))
+                        }
+                    } catch is CancellationError {
+                        return
+                    } catch {
+                        updateHandler(.init(transcript: nil, isFinal: true))
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// The audio tap is synchronously serialized by AVAudioEngine. The lock also excludes `finish()`
+/// after the engine has stopped, so the non-Sendable converter never has concurrent callers and
+/// no captured buffer escapes the tap callback.
+nonisolated private final class AnalyzerAudioInputBridge: @unchecked Sendable {
+    private let lock = NSLock()
+    private let converter: AnalyzerInputConverter
+    private var continuation: AsyncStream<AnalyzerInput>.Continuation?
+
+    init(
+        converter: AnalyzerInputConverter,
+        continuation: AsyncStream<AnalyzerInput>.Continuation
+    ) throws {
+        self.converter = converter
+        self.continuation = continuation
+    }
+
+    func consume(_ buffer: AVReadOnlyAudioPCMBuffer, at time: AVAudioTime) {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let continuation else { return }
+        do {
+            // The visionOS 27 tap intentionally exposes read-only input. The analyzer converter
+            // accepts an owned AVAudioBuffer, so make an in-memory copy whose lifetime cannot
+            // escape this synchronous callback.
+            let ownedBuffer = AVAudioPCMBuffer(copying: buffer)
+            for input in try converter.convert(ownedBuffer, at: time) {
+                continuation.yield(input)
+            }
+        } catch {
+            continuation.finish()
+            self.continuation = nil
+        }
+    }
+
+    func finish() {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let continuation else { return }
+        if let inputs = try? converter.flush() {
+            for input in inputs { continuation.yield(input) }
+        }
+        continuation.finish()
+        self.continuation = nil
+    }
+
+    func cancel() {
+        lock.lock()
+        defer { lock.unlock() }
+        continuation?.finish()
+        continuation = nil
+    }
 }
 
 /// On-device speech-to-text for push-to-talk voice commands.
@@ -172,6 +333,7 @@ final class SpeechRecognitionClient: SpeechRecognizing {
     private var receivedFinal = false
     private var nextCaptureGeneration: UInt64 = 0
     private var activeCaptureGeneration: UInt64?
+    private var transcriptUpdateHandler: (@MainActor @Sendable (String) -> Void)?
     private(set) var isRecording = false
 
     convenience init() {
@@ -183,19 +345,21 @@ final class SpeechRecognitionClient: SpeechRecognizing {
     }
 
     func requestPermissions() async -> Bool {
-        let speechStatus = await withCheckedContinuation { continuation in
-            SFSpeechRecognizer.requestAuthorization { status in
-                continuation.resume(returning: status)
-            }
-        }
-        guard speechStatus == .authorized else { return false }
-
-        let micStatus = await withCheckedContinuation { continuation in
+        await withCheckedContinuation { continuation in
             AVAudioApplication.requestRecordPermission { granted in
                 continuation.resume(returning: granted)
             }
         }
-        return micStatus
+    }
+
+    func prepareModel() async throws {
+        try await backend.prepareModel()
+    }
+
+    func setTranscriptUpdateHandler(
+        _ handler: (@MainActor @Sendable (String) -> Void)?
+    ) {
+        transcriptUpdateHandler = handler
     }
 
     func start() throws {
@@ -220,6 +384,7 @@ final class SpeechRecognitionClient: SpeechRecognizing {
                       self.activeCaptureGeneration == captureGeneration else { return }
                 if let transcript = update.transcript {
                     self.latestTranscript = transcript
+                    self.transcriptUpdateHandler?(transcript)
                 }
                 if update.isFinal {
                     self.receivedFinal = true
@@ -264,6 +429,8 @@ final class SpeechRecognitionClient: SpeechRecognizing {
         let transcript = latestTranscript.trimmingCharacters(in: .whitespacesAndNewlines)
         activeCaptureGeneration = nil
         backend.cancel()
+        latestTranscript = ""
+        receivedFinal = false
         startedAt = nil
 
         return SpeechRecognitionResult(transcript: transcript, duration: duration)
@@ -278,9 +445,10 @@ final class SpeechRecognitionClient: SpeechRecognizing {
         startedAt = nil
     }
 
-    enum SpeechError: LocalizedError {
+    enum SpeechError: LocalizedError, Equatable {
         case recognizerUnavailable
         case onDeviceRecognitionUnavailable
+        case unsupportedLocale
 
         var errorDescription: String? {
             switch self {
@@ -288,6 +456,8 @@ final class SpeechRecognitionClient: SpeechRecognizing {
                 return "Speech recognition is unavailable on this device."
             case .onDeviceRecognitionUnavailable:
                 return "On-device speech recognition is unavailable on this device."
+            case .unsupportedLocale:
+                return "On-device speech recognition is unavailable for this language."
             }
         }
     }

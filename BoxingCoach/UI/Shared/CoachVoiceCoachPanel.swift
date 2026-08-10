@@ -16,6 +16,9 @@ struct CoachVoiceCoachPanel: View {
                 isRouting: session.voiceCoach.isRouting,
                 isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
                 isDisabled: isDisabled || requiresRecovery,
+                onToggle: {
+                    session.voiceCoach.toggleCapture(origin: .controlWindow)
+                },
                 onPress: {
                     session.beginCoachPushToTalk(origin: .controlWindow)
                 },
@@ -28,10 +31,22 @@ struct CoachVoiceCoachPanel: View {
                 }
             }
 
-            Text("Hold to ask · Try \"help\" or \"what should I fix?\"")
+            Text(session.voiceCoach.controlPresentation.visibleCaption)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .accessibilityLabel(
+                    "Ask Coach status: \(session.voiceCoach.controlPresentation.visibleCaption)"
+                )
+
+            if let transcript = session.voiceCoach.controlPresentation.visibleTranscript,
+               !transcript.isEmpty {
+                Text("You said: \(transcript)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .accessibilityLabel("Voice transcript: \(transcript)")
+            }
 
             if let caption = session.audioCoordinator.presentation.caption {
                 Text(caption)
@@ -43,6 +58,29 @@ struct CoachVoiceCoachPanel: View {
         }
         .padding(12)
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: 12))
+        .confirmationDialog(
+            "Private voice capture",
+            isPresented: privacyNoticeBinding,
+            titleVisibility: .visible
+        ) {
+            Button("Continue") { session.voiceCoach.acceptPrivacyNotice() }
+            Button("Not Now", role: .cancel) { session.voiceCoach.declinePrivacyNotice() }
+        } message: {
+            Text("Your voice is transcribed on this device and is never saved.")
+        }
+    }
+
+    private var privacyNoticeBinding: Binding<Bool> {
+        Binding(
+            get: {
+                if case .needsPermission = session.voiceCoach.state { true } else { false }
+            },
+            set: { isPresented in
+                if !isPresented, case .needsPermission = session.voiceCoach.state {
+                    session.voiceCoach.declinePrivacyNotice()
+                }
+            }
+        )
     }
 }
 

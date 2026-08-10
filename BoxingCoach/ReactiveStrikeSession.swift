@@ -308,7 +308,20 @@ final class ReactiveStrikeSession {
             )
         }
         voiceCoach.onCaptureCycleEvent = { [weak self] event in
-            self?.auraPunch.handleCoachVoiceCycle(event)
+            guard let self else { return }
+            if auraPunch.isRunning {
+                auraPunch.handleCoachVoiceCycle(event)
+            } else {
+                switch event {
+                case .responseCompleted, .responseCancelled:
+                    voiceCoach.confirmGuardRestored()
+                case .captureBegan, .captureReleased, .freshGuardRecovered:
+                    break
+                }
+            }
+        }
+        auraPunch.voiceGuardDidRecover = { [weak self] in
+            self?.voiceCoach.confirmGuardRestored()
         }
     }
 

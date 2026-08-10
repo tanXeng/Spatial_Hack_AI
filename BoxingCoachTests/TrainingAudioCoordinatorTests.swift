@@ -731,6 +731,7 @@ struct TrainingAudioCoordinatorTests {
 
         session.controlWindowDidOpen()
         session.voiceCoach.beginPushToTalk(origin: .controlWindow)
+        session.voiceCoach.acceptPrivacyNotice()
         await speechClient.waitForStartCount(1)
         session.immersiveSpaceDidClose()
 
@@ -765,6 +766,7 @@ struct TrainingAudioCoordinatorTests {
         flow.immersiveSceneDidBecomeReady(session: session)
         session.controlWindowDidOpen()
         session.voiceCoach.beginPushToTalk(origin: .controlWindow)
+        session.voiceCoach.acceptPrivacyNotice()
         await speechClient.waitForStartCount(1)
 
         flow.immersiveSceneDidClose(session: session)
@@ -795,6 +797,7 @@ struct TrainingAudioCoordinatorTests {
         let flow = TrainingFlowCoordinator()
         flow.immersiveSceneDidBecomeReady(session: session)
         session.voiceCoach.beginPushToTalk(origin: .immersiveSpace)
+        session.voiceCoach.acceptPrivacyNotice()
         await speechClient.waitForStartCount(1)
 
         session.controlWindowDidOpen()
@@ -833,6 +836,7 @@ struct TrainingAudioCoordinatorTests {
         flow.navigate(to: .experience(selection))
         session.controlWindowDidOpen()
         session.voiceCoach.beginPushToTalk(origin: .controlWindow)
+        session.voiceCoach.acceptPrivacyNotice()
         await speechClient.waitForStartCount(1)
         flow.immersiveSceneDidBecomeReady(session: session)
         var hideCount = 0
@@ -976,6 +980,7 @@ struct TrainingAudioCoordinatorTests {
         session.controlWindowDidOpen()
 
         session.voiceCoach.beginPushToTalk(origin: .controlWindow)
+        session.voiceCoach.acceptPrivacyNotice()
         await speechClient.waitForStartCount(1)
         #expect(session.voiceCoach.isListening)
         #expect(session.voiceCoach.isCaptureReady)

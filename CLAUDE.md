@@ -237,6 +237,14 @@ Guard was removed from the scored sub-metrics. `Scoring/GuardCoach.swift` now ha
 
 `BodyCalibration` (`Models/BodyCalibration.swift`) holds one measurement per launch: forward reach per arm plus the guard pose. It is created in `BoxingCoachApp.init` and handed to both `ReactiveStrikeSession` and `TrainingFlowCoordinator`, so there is exactly one instance. **In-memory only, deliberately** — a persisted measurement would apply one person's arms to whoever put the headset on next.
 
+**There is one calibration implementation and one calibration screen.** `startCalibration()` and `startCompetitionCalibration()` both delegate to the same loop; the only difference is that Competition is user-paced (no deadline) while the gate keeps bounded retries. Competition previously cleared the calibration and then started the *normal drill loop*, which requires an already-measured reach — so it could never measure anything. Do not re-split these.
+
+`OrderedReachCalibration` sequences the run: guard → left reach → guard → right reach → complete. It exists because the sampler used to cue "left arm first" while accepting both hands concurrently, so a right-hand extension could complete the left stage. Right-arm movement during the left stage is discarded, and nothing is written to `BodyCalibration` until **both** arms produce a plausible result — a cancelled attempt cannot leave a half-measured body behind.
+
+`ReactiveStrikeSession` publishes `calibrationStage` and `calibrationLiveExtension` purely so the screen can render that sequence. Both are UI mirrors of the loop, never inputs to it. `Stage.activeSide`/`isMeasuring` live on the enum so the view can render per-arm rows from the published stage alone.
+
+`TrainingExperienceView.calibrationExperience(context:)` is that single screen, parameterised by `.gate` or `.competition` — chrome and follow-on action differ, the measurement does not. It shows a live `PunchExtensionMeter` for the arm being measured (and only that arm: a static bar on the waiting arm reads as "measured zero"), then the same `calibrationResultsCard` in both contexts. Competition used to have its own copy that reported no numbers at all, which is why a player could finish calibrating with nothing on screen to confirm it worked.
+
 Two rules here were each fixed after targets spawned at roughly two-thirds of arm's length:
 
 - **`ReachCalibration.settledForwardReach`** requires a *plateau*: the longest run of samples within `plateauTolerance` (1.5 cm) of the peak must span `plateauDuration` (0.30 s). The rule it replaced finalized 0.25 s after the fist first cleared guard and then took the 75th percentile — both halves measured the outbound ramp, and a punch needs ~0.3–0.5 s to reach lockout, so the window closed mid-flight. `robustForwardReach` survives only as the timeout fallback.

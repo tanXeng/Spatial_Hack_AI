@@ -22,9 +22,9 @@ struct TrainingExperienceView: View {
         case .aura(let technique, let stance):
             auraExperience(technique: technique, stance: stance)
         case .calibration:
-            calibrationExperience
+            calibrationExperience(context: .gate)
         case .competitionCalibration:
-            reachCalibrationExperience(backLabel: "Competition")
+            calibrationExperience(context: .competition)
         case .competition(_, let mode, let stance, _):
             reactiveExperience(
                 mode: mode == .combination ? .combination : .air,
@@ -35,39 +35,42 @@ struct TrainingExperienceView: View {
         }
     }
 
-    private func reachCalibrationExperience(backLabel: String) -> some View {
-        TrainingDetailScaffold(
-            backLabel: backLabel,
-            title: "Reach Calibration",
-            subtitle: "Measure both comfortable reaches",
-            controlsDisabled: controlsDisabled,
-            onBack: onChangeSelection
-        ) {
-            VStack(spacing: 16) {
-                TrainingStatusCard(message: reactiveStatusLine())
-                errorCards(engineError: session.errorMessage)
-                Button(session.phase == .finished ? "Calibrate Again" : "Start Calibration") {
-                    onStart()
-                }
-                .disabled(session.phase == .running || session.phase == .calibrating || controlsDisabled)
-                .buttonStyle(.borderedProminent)
-            }
+    /// Where a calibration run was entered from. The measurement itself is identical either way —
+    /// only the chrome and the follow-on action differ, which is why there is one screen and not
+    /// two. Competition previously had its own copy that reported no result at all.
+    private enum CalibrationContext {
+        /// The mandatory Anthropometry gate at launch.
+        case gate
+        /// Measuring on behalf of a Competition player.
+        case competition
+
+        var backLabel: String { self == .gate ? "Back to Features" : "Competition" }
+        var title: String { self == .gate ? "Anthropometry" : "Reach Calibration" }
+        var subtitle: String {
+            self == .gate
+                ? "Measure your reach and guard once for this session"
+                : "Measure both comfortable reaches for this player"
         }
     }
 
-    private var calibrationExperience: some View {
+    private func calibrationExperience(context: CalibrationContext) -> some View {
         TrainingDetailScaffold(
-            backLabel: "Back to Features",
-            title: "Anthropometry",
-            subtitle: "Measure your reach and guard once for this session",
+            backLabel: context.backLabel,
+            title: context.title,
+            subtitle: context.subtitle,
             controlsDisabled: controlsDisabled,
             // The first calibration of a launch is mandatory — there is nothing behind it to
-            // return to, and the feature menu is unusable without a measurement.
-            showsBack: calibration.isCalibrated,
+            // return to, and the feature menu is unusable without a measurement. Competition is
+            // always entered from somewhere, so its Back is never hidden.
+            showsBack: context == .competition || calibration.isCalibrated,
             onBack: onChangeSelection
         ) {
             VStack(spacing: 16) {
                 TrainingStatusCard(message: calibrationStatusLine)
+
+                if session.phase == .calibrating {
+                    calibrationProgressCard
+                }
 
                 if calibration.isCalibrated, let reach = calibration.measuredReach {
                     calibrationResultsCard(reach: reach)
@@ -75,27 +78,88 @@ struct TrainingExperienceView: View {
 
                 errorCards(engineError: session.errorMessage)
 
-                if calibration.isCalibrated {
-                    Button("Measure Again") {
-                        onStart()
-                    }
-                    .disabled(session.phase == .calibrating || controlsDisabled)
-                    .buttonStyle(.bordered)
-
-                    Button("Continue to Training") {
-                        onFinishCalibration()
-                    }
-                    .disabled(controlsDisabled)
-                    .buttonStyle(.borderedProminent)
-                } else {
-                    Button("Start Calibration") {
-                        onStart()
-                    }
-                    .disabled(session.phase == .calibrating || controlsDisabled)
-                    .buttonStyle(.borderedProminent)
-                }
+                calibrationActions(context: context)
             }
         }
+    }
+
+    @ViewBuilder
+    private func calibrationActions(context: CalibrationContext) -> some View {
+        let isMeasuring = session.phase == .calibrating
+
+        if calibration.isCalibrated {
+            Button("Measure Again") { onStart() }
+                .disabled(isMeasuring || controlsDisabled)
+                .buttonStyle(.bordered)
+
+            // The gate owns the "you are done, move on" step. From Competition the caller already
+            // knows where the player goes next, so Back is the only exit and adding a second
+            // forward button here would give two answers to the same question.
+            if context == .gate {
+                Button("Continue to Training") { onFinishCalibration() }
+                    .disabled(controlsDisabled)
+                    .buttonStyle(.borderedProminent)
+            }
+        } else {
+            Button("Start Calibration") { onStart() }
+                .disabled(isMeasuring || controlsDisabled)
+                .buttonStyle(.borderedProminent)
+        }
+    }
+
+    /// Live per-arm progress while measuring.
+    ///
+    /// `OrderedReachCalibration` measures the left arm to completion before it will accept a single
+    /// right-arm sample. Showing that ordering is the point: without it, a user whose right arm is
+    /// being deliberately ignored has no way to tell that from tracking having failed.
+    private var calibrationProgressCard: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            ForEach([BodySide.left, .right], id: \.rawValue) { side in
+                calibrationArmRow(side: side)
+            }
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private func calibrationArmRow(side: BodySide) -> some View {
+        let stage = session.calibrationStage
+        let measured = calibration.reaches[side]
+        let isActive = stage?.activeSide == side
+        let state: String
+        if let measured {
+            state = String(format: "%.0f cm", measured * 100)
+        } else if isActive {
+            state = stage?.isMeasuring == true ? "Hold full extension" : "Return to guard"
+        } else {
+            state = "Waiting"
+        }
+
+        return VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Label(
+                    "\(side.rawValue.capitalized) arm",
+                    systemImage: measured != nil
+                        ? "checkmark.circle.fill"
+                        : (isActive ? "circle.dotted" : "circle")
+                )
+                .foregroundStyle(measured != nil ? .primary : (isActive ? .primary : .secondary))
+                Spacer()
+                Text(state)
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            // Only the arm actually being measured gets a live meter; a static bar on the waiting
+            // arm would read as that arm having been measured at zero.
+            if isActive, measured == nil {
+                PunchExtensionMeter(value: session.calibrationLiveExtension)
+            }
+        }
+        .accessibilityElement(children: .combine)
+        .accessibilityLabel("\(side.rawValue.capitalized) arm")
+        .accessibilityValue(state)
     }
 
     private func calibrationResultsCard(reach: Float) -> some View {

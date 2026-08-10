@@ -36,4 +36,39 @@ final class OrderedReachCalibrationTests: XCTestCase {
         XCTAssertEqual(sequence.stage, .complete)
         XCTAssertNil(sequence.activeSide)
     }
+
+    /// The calibration screen renders per-arm progress from the published stage alone, so the
+    /// stage has to answer "which arm" and "guard or measuring" without the sequence in hand.
+    func testStageDescribesTheActiveArmAndWhetherItIsMeasuring() {
+        XCTAssertEqual(OrderedReachCalibration.Stage.awaitingGuard(.left).activeSide, .left)
+        XCTAssertFalse(OrderedReachCalibration.Stage.awaitingGuard(.left).isMeasuring)
+
+        XCTAssertEqual(OrderedReachCalibration.Stage.measuring(.right).activeSide, .right)
+        XCTAssertTrue(OrderedReachCalibration.Stage.measuring(.right).isMeasuring)
+
+        XCTAssertNil(OrderedReachCalibration.Stage.complete.activeSide)
+        XCTAssertFalse(OrderedReachCalibration.Stage.complete.isMeasuring)
+    }
+
+    /// Every stage the sequence can publish must name an arm except the terminal one — otherwise
+    /// the screen would show both arms as "Waiting" partway through a real measurement.
+    func testEveryNonTerminalStageNamesAnArm() {
+        var sequence = OrderedReachCalibration()
+        var seen: [OrderedReachCalibration.Stage] = [sequence.stage]
+
+        sequence.confirmGuard(for: .left)
+        seen.append(sequence.stage)
+        sequence.acceptSettledReach(0.64, for: .left)
+        seen.append(sequence.stage)
+        sequence.confirmGuard(for: .right)
+        seen.append(sequence.stage)
+        sequence.acceptSettledReach(0.69, for: .right)
+        seen.append(sequence.stage)
+
+        XCTAssertEqual(seen.count, 5)
+        for stage in seen.dropLast() {
+            XCTAssertNotNil(stage.activeSide, "\(stage) leaves the screen with no active arm")
+        }
+        XCTAssertEqual(seen.last, .complete)
+    }
 }

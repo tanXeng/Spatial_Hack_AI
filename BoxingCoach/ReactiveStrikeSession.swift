@@ -46,6 +46,19 @@ final class ReactiveStrikeSession {
     private(set) var competitionRequiresRecalibration = false
     private(set) var wasStoppedBeforeCompletion = false
 
+    /// Which arm calibration is on and whether it is waiting at guard or measuring — `nil` outside
+    /// a calibration run.
+    ///
+    /// `OrderedReachCalibration` already sequences this; publishing it lets the screen show real
+    /// per-arm progress instead of inferring it from a freeform feedback string, which is all the
+    /// UI previously had to work with.
+    private(set) var calibrationStage: OrderedReachCalibration.Stage?
+
+    /// The active arm's live forward reach in meters, as a fraction of what an average adult can
+    /// reach. Drives the extension meter so the user can see the hold building rather than
+    /// guessing why nothing has happened yet. Zero when no arm is extending.
+    private(set) var calibrationLiveExtension: Float = 0
+
     /// Whether the immersive space is actually on screen. The immersive scene owns this truth;
     /// a window-local copy goes stale if the system dismisses the space itself.
     private(set) var isImmersiveSpaceOpen = false
@@ -262,6 +275,8 @@ final class ReactiveStrikeSession {
         wasStoppedBeforeCompletion = false
         guardPositionsBody.removeAll()
         metrics.reset()
+        calibrationStage = .awaitingGuard(.left)
+        calibrationLiveExtension = 0
         phase = .calibrating
         lastFeedback = "Raise both hands into guard"
         errorMessage = nil
@@ -302,6 +317,8 @@ final class ReactiveStrikeSession {
     func resetForNewRound(keepingCompetitionConfiguration: Bool = false) {
         stopDrill()
         metrics.reset()
+        calibrationStage = nil
+        calibrationLiveExtension = 0
         phase = .idle
         currentTargetIndex = 0
         currentComboStepIndex = 0
@@ -455,6 +472,8 @@ final class ReactiveStrikeSession {
         guard !Task.isCancelled, phase == .calibrating else { return }
         calibration.store(reaches: measuredReaches, guardPositionsBody: guards)
         guardPositionsBody = guards
+        calibrationStage = .complete
+        calibrationLiveExtension = 0
         phase = .finished
 
         if let reach = calibration.measuredReach {
@@ -534,6 +553,7 @@ final class ReactiveStrikeSession {
         defer { targets.removeActiveTarget() }
 
         var sequence = OrderedReachCalibration()
+        calibrationStage = sequence.stage
         while let side = sequence.activeSide, phase == .calibrating, !Task.isCancelled {
             guard let guardPosition = guards[side] else { return nil }
             if side == .right {
@@ -542,6 +562,7 @@ final class ReactiveStrikeSession {
             guard await waitForCalibrationGuard(for: side, guardPosition: guardPosition),
                   sequence.confirmGuard(for: side)
             else { return nil }
+            calibrationStage = sequence.stage
 
             if side == .left {
                 lastFeedback = "Keep a relaxed closed fist, punch out, and hold — left arm first"
@@ -554,6 +575,8 @@ final class ReactiveStrikeSession {
             guard let reach = await measureSettledReach(for: side, guardPosition: guardPosition),
                   sequence.acceptSettledReach(reach, for: side)
             else { return nil }
+            calibrationStage = sequence.stage
+            calibrationLiveExtension = 0
         }
 
         guard let reaches = sequence.completedReaches else { return nil }
@@ -605,6 +628,9 @@ final class ReactiveStrikeSession {
                observation.timestamp > (lastProcessedTimestamp ?? -.infinity) {
                 lastProcessedTimestamp = observation.timestamp
                 let fistBody = frame.toBody(observation.fistPosition)
+                // Published every processed frame, not only for accepted samples, so the meter
+                // still moves while the fist is on its way out and has not yet cleared guard.
+                publishLiveExtension(fistBody.z)
                 if let candidate = ReachCalibration.candidateForwardReach(
                     guardPosition: guardPosition,
                     fistPosition: fistBody
@@ -627,6 +653,17 @@ final class ReactiveStrikeSession {
 
         guard !Task.isCancelled else { return nil }
         return ReachCalibration.robustForwardReach(from: acceptedSamples.map(\.forward))
+    }
+
+    /// Normalizes a body-space forward reach against average adult reach for the extension meter.
+    ///
+    /// Deliberately *not* normalized against the user's own measured reach: during calibration that
+    /// number does not exist yet, and once it did the meter would read full at whatever the user
+    /// happened to do, which tells them nothing about whether they are extending.
+    private func publishLiveExtension(_ forward: Float) {
+        guard forward.isFinite else { return }
+        let reference = max(BodyMeasurements.averageAdult.armReach, 0.01)
+        calibrationLiveExtension = min(max(forward / reference, 0), 1)
     }
 
     private func waitForGuardReturn(
@@ -1275,6 +1312,8 @@ final class ReactiveStrikeSession {
     private func failDrill(_ message: String) {
         targets.removeActiveTarget()
         clearAttemptState()
+        calibrationStage = nil
+        calibrationLiveExtension = 0
         if capturesCompetitionEvidence, competitionTrackingStatus == .complete {
             competitionTrackingStatus = .technicalFailure
         }

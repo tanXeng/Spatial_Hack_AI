@@ -5,17 +5,27 @@ nonisolated struct OrderedReachCalibration: Sendable {
         case awaitingGuard(BodySide)
         case measuring(BodySide)
         case complete
+
+        /// The arm this stage concerns, or `nil` once both are done. Lives here rather than only on
+        /// the sequence so the calibration screen can render per-arm progress from the published
+        /// stage alone.
+        var activeSide: BodySide? {
+            switch self {
+            case .awaitingGuard(let side), .measuring(let side): return side
+            case .complete: return nil
+            }
+        }
+
+        var isMeasuring: Bool {
+            if case .measuring = self { return true }
+            return false
+        }
     }
 
     private(set) var stage: Stage = .awaitingGuard(.left)
     private(set) var reaches: [BodySide: Float] = [:]
 
-    var activeSide: BodySide? {
-        switch stage {
-        case .awaitingGuard(let side), .measuring(let side): return side
-        case .complete: return nil
-        }
-    }
+    var activeSide: BodySide? { stage.activeSide }
 
     var completedReaches: [BodySide: Float]? {
         guard stage == .complete,

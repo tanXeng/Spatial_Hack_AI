@@ -173,3 +173,23 @@ nonisolated enum RuntimeRecoveryPolicy {
         )
     }
 }
+
+/// Tracking-only recovery projected into the immersive controls. Audio owns its dedicated
+/// Resume Audio control, and voice failures retain the visible controls without a blocking card.
+nonisolated enum ImmersiveRuntimeRecoveryPolicy {
+    static func presentation(
+        trackingState: TrackingRuntimeState,
+        trackingReason: TrackingRuntimeRejectionReason?,
+        trackingInstruction: TrackingRecoveryInstruction,
+        audioRequiresExplicitRecovery: Bool
+    ) -> RuntimeRecoveryPresentation? {
+        guard !audioRequiresExplicitRecovery else { return nil }
+        return RuntimeRecoveryPolicy.presentation(
+            trackingState: trackingState,
+            trackingReason: trackingReason,
+            trackingInstruction: trackingInstruction,
+            audioRequiresExplicitRecovery: audioRequiresExplicitRecovery,
+            voiceState: .ready
+        )
+    }
+}

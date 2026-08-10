@@ -132,6 +132,16 @@ struct BoxingCoachImmersiveView: View {
                             session.resumeAudio()
                         }
                     }
+                    if let immersiveRecoveryPresentation {
+                        RuntimeRecoveryCard(
+                            presentation: immersiveRecoveryPresentation,
+                            controlsDisabled: flow.controlsDisabled,
+                            action: immersiveRecoveryAction(
+                                for: immersiveRecoveryPresentation.action
+                            )
+                        )
+                        .frame(maxWidth: 320)
+                    }
                     audioPresetMenu
                     guidanceAnchorMenu
                     Text(session.voiceCoach.controlPresentation.visibleCaption)
@@ -241,6 +251,11 @@ struct BoxingCoachImmersiveView: View {
             guard wasPaused != isPaused else { return }
             announceSemantic(isPaused ? .trackingPaused : .trackingRecovered)
         }
+        .onChange(of: immersiveRecoveryPresentation?.action) { oldAction, newAction in
+            guard oldAction != newAction,
+                  let presentation = immersiveRecoveryPresentation else { return }
+            announce("\(presentation.title). \(presentation.message)")
+        }
         .onDisappear {
             session.auraPunch.cycleDidComplete = nil
             if let voiceCommandRegistrationID {
@@ -331,9 +346,33 @@ struct BoxingCoachImmersiveView: View {
 
     private var audioControlVisibility: ImmersiveAudioControlVisibility {
         ImmersiveAudioControlVisibility(
-            allowsVoiceCoaching: showsVoiceCoach,
+            allowsVoiceCoaching: showsVoiceCoach && immersiveRecoveryPresentation == nil,
             requiresExplicitRecovery: session.audioCoordinator.presentation.requiresExplicitRecovery
         )
+    }
+
+    private var immersiveRecoveryPresentation: RuntimeRecoveryPresentation? {
+        ImmersiveRuntimeRecoveryPolicy.presentation(
+            trackingState: session.hands.runtimeState,
+            trackingReason: session.hands.rejectionReason,
+            trackingInstruction: session.hands.recoveryInstruction,
+            audioRequiresExplicitRecovery: session.audioCoordinator.presentation.requiresExplicitRecovery
+        )
+    }
+
+    private func immersiveRecoveryAction(
+        for action: RuntimeRecoveryAction
+    ) -> (() -> Void)? {
+        switch action {
+        case .reviewTrackingPermission, .retryTracking:
+            return {
+                Task { await session.hands.retry() }
+            }
+        case .returnToSetup:
+            return endTraining
+        case .resumeAudio, .waitForTracking, .useVisibleControls:
+            return nil
+        }
     }
 
     private var audioPresetMenu: some View {

@@ -150,4 +150,42 @@ struct RuntimeRecoveryTests {
             voiceState: .ready
         ) == nil)
     }
+
+    @Test("Terminal tracking failure stays actionable inside immersion")
+    func immersiveTrackingRecoveryRemainsActionable() throws {
+        let presentation = try #require(ImmersiveRuntimeRecoveryPolicy.presentation(
+            trackingState: .failed,
+            trackingReason: .providerStopped,
+            trackingInstruction: .retryTracking,
+            audioRequiresExplicitRecovery: false
+        ))
+
+        #expect(presentation.action == .retryTracking)
+        #expect(presentation.primaryActionLabel == "Retry Tracking")
+        #expect(presentation.freezesScoring)
+        #expect(presentation.retainsExitNavigation)
+    }
+
+    @Test("Transient tracking recovery has no destructive immersive action")
+    func immersiveTransientRecoveryWaits() throws {
+        let presentation = try #require(ImmersiveRuntimeRecoveryPolicy.presentation(
+            trackingState: .paused,
+            trackingReason: .reacquiring,
+            trackingInstruction: .keepHandsVisible,
+            audioRequiresExplicitRecovery: false
+        ))
+
+        #expect(presentation.action == .waitForTracking)
+        #expect(presentation.primaryActionLabel == nil)
+    }
+
+    @Test("Audio recovery remains the only immersive action when tracking also fails")
+    func immersiveAudioRecoveryHasPrecedence() {
+        #expect(ImmersiveRuntimeRecoveryPolicy.presentation(
+            trackingState: .failed,
+            trackingReason: .providerStopped,
+            trackingInstruction: .retryTracking,
+            audioRequiresExplicitRecovery: true
+        ) == nil)
+    }
 }

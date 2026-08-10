@@ -62,6 +62,10 @@ struct BoxingCoachRootView: View {
             minHeight: 520,
             maxHeight: .infinity
         )
+        .task {
+            session.musicPlayer.prepare()
+            session.musicPlayer.play()
+        }
         .onChange(of: flow.presentationError) { _, message in
             if let message { announce(message) }
         }

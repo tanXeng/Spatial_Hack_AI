@@ -75,11 +75,13 @@ drill that alternates hands each repetition. Its mirrored
 reference paths load beside the hip, drive diagonally inward, and peak at the body centreline.
 Legacy `left-uppercut` and `right-uppercut` identifiers resolve to this unified technique.
 
-Reactive Strike begins by capturing both guard positions and, when needed, measuring a stable
-outward extension from each arm. It uses the shorter comfortable reach so every target remains
-available to either hand. Calibration and target placement use the live head-derived body frame
-rather than world Z or a fixed room height, so the drill is invariant to where the user stands or
-faces. Air Mode and Combination Mode use body-relative target placement after reach calibration.
+Reactive Strike begins by capturing both guard positions, then measures a stable left-arm
+extension followed by a stable right-arm extension. Competition uses this exact ordered workflow
+instead of a separate calibration path. The completed bilateral result is saved to the player and
+also becomes the shared launch-wide calibration used by regular Reactive Strike, Combo, and Aura
+Punch. Targets use the shorter comfortable reach so every target remains available to either hand.
+Calibration and target placement use the live head-derived body frame rather than world Z or a
+fixed room height, so the drill is invariant to where the user stands or faces.
 
 Combination Mode adds five numbered combinations with Orthodox/Southpaw hand mapping. It shows
 one target at a time and accepts a step only after the required physical hand leaves guard with

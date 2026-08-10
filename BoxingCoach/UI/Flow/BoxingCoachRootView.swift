@@ -124,7 +124,10 @@ struct BoxingCoachRootView: View {
                     || oldPlayer?.reach != newPlayer?.reach
                     || oldPlayer?.calibrationVersion != newPlayer?.calibrationVersion
             else { return }
-            syncPlayerCalibration(newPlayer)
+            syncPlayerCalibration(
+                newPlayer,
+                clearingGuards: oldPlayer?.id != newPlayer?.id
+            )
         }
         .onAppear {
             flow.controlWindowDidAppear()
@@ -139,7 +142,7 @@ struct BoxingCoachRootView: View {
             // window must not replace it with whichever competition player happened to be used
             // previously.
             if !session.hasCalibratedReach, let player = competitionStore.currentPlayer {
-                syncPlayerCalibration(player)
+                syncPlayerCalibration(player, clearingGuards: true)
             }
             _ = await coachPreload
         }
@@ -336,9 +339,12 @@ struct BoxingCoachRootView: View {
         }
     }
 
-    private func syncPlayerCalibration(_ player: CompetitionPlayer?) {
+    private func syncPlayerCalibration(
+        _ player: CompetitionPlayer?,
+        clearingGuards: Bool = false
+    ) {
         let reach = player?.hasCurrentCalibration == true ? player?.reach : nil
-        session.applyPersistedCompetitionReach(reach)
+        session.applyPersistedCompetitionReach(reach, clearingGuards: clearingGuards)
     }
 
     private func openImmersive(_ id: String) async -> ImmersiveOpenOutcome {

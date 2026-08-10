@@ -3,6 +3,36 @@ import XCTest
 
 final class CompetitionDomainTests: XCTestCase {
     @MainActor
+    func testConfigureCompetitionImmediatelyUsesPassedReachForBothModes() throws {
+        let calibration = BodyCalibration.calibratedFixture
+        let session = ReactiveStrikeSession(calibration: calibration)
+        let reach = try XCTUnwrap(BilateralReach(left: 0.58, right: 0.72))
+
+        session.configureCompetition(mode: .reactiveStrike, stance: .orthodox, reach: reach)
+        XCTAssertEqual(session.reachProfile.forwardMax, 0.58, accuracy: 0.0001)
+        XCTAssertEqual(calibration.reaches, reach.bySide)
+
+        session.configureCompetition(mode: .combination, stance: .southpaw, reach: reach)
+        XCTAssertEqual(session.reachProfile.forwardMax, 0.58, accuracy: 0.0001)
+        XCTAssertEqual(calibration.measurements.armReach, 0.58, accuracy: 0.0001)
+    }
+
+    @MainActor
+    func testPlayerHandoffAppliesReachAndClearsLaunchLocalGuards() throws {
+        let calibration = BodyCalibration.calibratedFixture
+        let session = ReactiveStrikeSession(calibration: calibration)
+        let reach = try XCTUnwrap(BilateralReach(left: 0.61, right: 0.67))
+        XCTAssertFalse(calibration.guardPositionsBody.isEmpty)
+
+        session.applyPersistedCompetitionReach(reach, clearingGuards: true)
+
+        XCTAssertEqual(calibration.reaches, reach.bySide)
+        XCTAssertTrue(calibration.guardPositionsBody.isEmpty)
+        session.configure(mode: .air, combination: nil, stance: .orthodox)
+        XCTAssertEqual(session.reachProfile.forwardMax, 0.61, accuracy: 0.0001)
+    }
+
+    @MainActor
     func testCompetitionSessionUsesEightTargetsAndFixedFiveByFourCombo() throws {
         let session = ReactiveStrikeSession()
         let reach = try XCTUnwrap(BilateralReach(left: 0.64, right: 0.69))

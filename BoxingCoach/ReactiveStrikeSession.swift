@@ -148,6 +148,8 @@ final class ReactiveStrikeSession {
         stance: Stance,
         reach: BilateralReach
     ) {
+        let retainedGuards = calibration.guardPositionsBody
+        calibration.store(reaches: reach.bySide, guardPositionsBody: retainedGuards)
         let reactiveMode: ReactiveStrikeMode = mode == .combination ? .combination : .air
         configure(
             mode: reactiveMode,
@@ -155,12 +157,6 @@ final class ReactiveStrikeSession {
             stance: stance
         )
         capturesCompetitionEvidence = true
-        // A persisted competition reach replaces the launch measurement. Guard positions are left
-        // as captured: they belong to the live body frame, not to the stored player record.
-        calibration.store(
-            reaches: reach.bySide,
-            guardPositionsBody: calibration.guardPositionsBody
-        )
         comboRepeatCount = 5
         config.targetCount = CompetitionMode.reactiveStrike.totalSteps
         config.hitRadius = CompetitionScorer.targetRadius
@@ -174,12 +170,21 @@ final class ReactiveStrikeSession {
     /// Makes the active player's comfortable reach available to regular Reactive Strike and
     /// Combo setup as well as ranked runs. Passing nil prevents one player's measurement leaking
     /// into the next player's target placement.
-    func applyPersistedCompetitionReach(_ reach: BilateralReach?) {
+    func applyPersistedCompetitionReach(
+        _ reach: BilateralReach?,
+        clearingGuards: Bool = false
+    ) {
         guard phase != .running, phase != .calibrating else { return }
+        let retainedGuards: [BodySide: SIMD3<Float>] = clearingGuards
+            ? [:]
+            : calibration.guardPositionsBody
+        if clearingGuards {
+            guardPositionsBody.removeAll()
+        }
         if let reach {
             calibration.store(
                 reaches: reach.bySide,
-                guardPositionsBody: calibration.guardPositionsBody
+                guardPositionsBody: retainedGuards
             )
         } else {
             calibration.invalidate()

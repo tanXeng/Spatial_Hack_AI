@@ -297,6 +297,7 @@ final class CoachVoiceCoach {
     private var commandContextProvider: (@MainActor () -> VoiceCommandContext)?
     private var commandContextAtCapture: VoiceCommandContext?
     private var commandHandler: (@MainActor (String, VoiceCommandContext?) async -> CoachVoiceCommandResponse?)?
+    private(set) var activeCommandHandlerRegistrationID: UUID?
     private var responseAwaitingPlayback: CoachVoiceCaptureID?
     var onCaptureCycleEvent: ((CoachVoiceCyclePauseOwner.Event) -> Void)?
 
@@ -329,8 +330,29 @@ final class CoachVoiceCoach {
         contextProvider: (@MainActor () -> VoiceCommandContext)? = nil,
         _ handler: (@MainActor (String, VoiceCommandContext?) async -> CoachVoiceCommandResponse?)?
     ) {
+        activeCommandHandlerRegistrationID = handler == nil ? nil : UUID()
         commandContextProvider = contextProvider
         commandHandler = handler
+    }
+
+    @discardableResult
+    func registerCommandHandler(
+        contextProvider: (@MainActor () -> VoiceCommandContext)? = nil,
+        _ handler: @escaping @MainActor (String, VoiceCommandContext?) async
+            -> CoachVoiceCommandResponse?
+    ) -> UUID {
+        let registrationID = UUID()
+        activeCommandHandlerRegistrationID = registrationID
+        commandContextProvider = contextProvider
+        commandHandler = handler
+        return registrationID
+    }
+
+    func unregisterCommandHandler(_ registrationID: UUID) {
+        guard activeCommandHandlerRegistrationID == registrationID else { return }
+        activeCommandHandlerRegistrationID = nil
+        commandContextProvider = nil
+        commandHandler = nil
     }
 
     @discardableResult

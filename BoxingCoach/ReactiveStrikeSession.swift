@@ -224,6 +224,7 @@ final class ReactiveStrikeSession {
     private(set) var isTrackingPaused = false
     private(set) var trackingReadyToResume = false
     private(set) var isVoicePaused = false
+    private(set) var voiceCommandPauseIsPersistent = false
     private(set) var voicePauseInvalidationCount = 0
     private(set) var voiceResumeGeneration: UInt64 = 1
     private(set) var activeVoiceResumeGeneration: UInt64?
@@ -336,6 +337,11 @@ final class ReactiveStrikeSession {
             case .responseCompleted(let id), .responseCancelled(let id):
                 captureID = id
             default:
+                return
+            }
+            if voiceCommandPauseIsPersistent {
+                _ = reactiveVoicePauseOwner.observe(.freshGuardRecovered(captureID))
+                voiceCoach.confirmGuardRestored()
                 return
             }
             reactiveVoiceRecoveryTask?.cancel()
@@ -591,6 +597,7 @@ final class ReactiveStrikeSession {
         trackingReadyToResume = false
         trackingResumeRequested = false
         isVoicePaused = false
+        voiceCommandPauseIsPersistent = false
         phaseBeforeVoicePause = nil
 
         drillTask?.cancel()
@@ -620,6 +627,7 @@ final class ReactiveStrikeSession {
         trackingReadyToResume = false
         trackingResumeRequested = false
         isVoicePaused = false
+        voiceCommandPauseIsPersistent = false
         phaseBeforeVoicePause = nil
 
         let stoppedActiveDrill = phase == .running || phase == .calibrating
@@ -651,6 +659,7 @@ final class ReactiveStrikeSession {
         trackingReadyToResume = false
         trackingResumeRequested = false
         isVoicePaused = false
+        voiceCommandPauseIsPersistent = false
         phaseBeforeVoicePause = nil
         if !keepingCompetitionConfiguration {
             capturesCompetitionEvidence = false
@@ -701,6 +710,18 @@ final class ReactiveStrikeSession {
         clearAttemptState()
         lastFeedback = "Training paused · return both fists to guard to resume"
         return "Training paused."
+    }
+
+    func pauseForVoiceCommand() -> String? {
+        guard isVoicePaused else { return pauseForVoice() }
+        voiceCommandPauseIsPersistent = true
+        return "Training paused."
+    }
+
+    func requestVoiceResumeAfterResponse() -> String? {
+        guard isVoicePaused else { return nil }
+        voiceCommandPauseIsPersistent = false
+        return "Return both fists to guard to resume."
     }
 
     /// Resumes only from the same live session after tracking is running and both current fists
@@ -772,6 +793,7 @@ final class ReactiveStrikeSession {
               let pausedPhase,
               [.calibrating, .running].contains(pausedPhase) else { return nil }
         isVoicePaused = false
+        voiceCommandPauseIsPersistent = false
         isTrackingPaused = false
         trackingReadyToResume = false
         phaseBeforeVoicePause = nil

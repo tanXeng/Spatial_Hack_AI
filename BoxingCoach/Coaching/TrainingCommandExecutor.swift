@@ -430,7 +430,7 @@ final class TrainingSessionCommandTarget: TrainingCommandTarget {
             return session.auraPunch.pauseForVoice()
         case .experience(.reactive), .experience(.reachCalibration),
              .experience(.competitionCalibration):
-            return session.pauseForVoice()
+            return session.pauseForVoiceCommand()
         case .experience(.competition), .features, .reactiveSetup, .combinationSetup,
              .auraSetup, .auraTrackSetup:
             return nil
@@ -448,6 +448,9 @@ final class TrainingSessionCommandTarget: TrainingCommandTarget {
             )
         case .experience(.reactive), .experience(.reachCalibration),
              .experience(.competitionCalibration):
+            if session.voiceCoach.isRouting || session.voiceCoach.isGeneratingResponse {
+                return session.requestVoiceResumeAfterResponse()
+            }
             return await session.resumeAfterFreshGuard(
                 commandIsCurrent: { [flow] in
                     flow.commandGeneration == issuedGeneration

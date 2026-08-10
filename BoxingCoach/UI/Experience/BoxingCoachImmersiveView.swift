@@ -20,6 +20,7 @@ struct BoxingCoachImmersiveView: View {
     @Environment(CompetitionStore.self) private var competitionStore
     @Environment(\.dismissImmersiveSpace) private var dismissImmersiveSpace
     @Environment(\.openWindow) private var openWindow
+    @State private var voiceCommandRegistrationID: UUID?
 
     private let controlsAttachmentID = "TrainingControls"
     private let voiceCoachAttachmentID = "VoiceCoachControl"
@@ -204,7 +205,10 @@ struct BoxingCoachImmersiveView: View {
         }
         .onDisappear {
             session.auraPunch.cycleDidComplete = nil
-            session.voiceCoach.setCommandHandler(nil)
+            if let voiceCommandRegistrationID {
+                session.voiceCoach.unregisterCommandHandler(voiceCommandRegistrationID)
+                self.voiceCommandRegistrationID = nil
+            }
             // Idempotent whether closure was requested by the coordinator or by the system.
             session.detachSceneRoot()
             openWindow(id: BoxingCoachSceneID.controlWindow)
@@ -226,7 +230,7 @@ struct BoxingCoachImmersiveView: View {
     }
 
     private func bindVoiceCommands() {
-        session.voiceCoach.setCommandHandler(
+        voiceCommandRegistrationID = session.voiceCoach.registerCommandHandler(
             contextProvider: { [session, flow] in
                 flow.voiceCommandContext(session: session)
             }

@@ -12,6 +12,7 @@ struct BoxingCoachRootView: View {
     @Environment(\.supportsMultipleWindows) private var supportsMultipleWindows
     @Environment(\.dismissWindow) private var dismissWindow
     @AccessibilityFocusState private var landingActionFocused: LandingAction?
+    @State private var voiceCommandRegistrationID: UUID?
 
     private enum LandingAction: Hashable {
         case calibration
@@ -114,7 +115,10 @@ struct BoxingCoachRootView: View {
             }
         }
         .onDisappear {
-            session.voiceCoach.setCommandHandler(nil)
+            if let voiceCommandRegistrationID {
+                session.voiceCoach.unregisterCommandHandler(voiceCommandRegistrationID)
+                self.voiceCommandRegistrationID = nil
+            }
             flow.controlWindowDidDisappear()
             session.controlWindowDidClose()
         }
@@ -292,7 +296,7 @@ struct BoxingCoachRootView: View {
     }
 
     private func bindVoiceCommands() {
-        session.voiceCoach.setCommandHandler(
+        voiceCommandRegistrationID = session.voiceCoach.registerCommandHandler(
             contextProvider: { [session, flow] in
                 flow.voiceCommandContext(session: session)
             }

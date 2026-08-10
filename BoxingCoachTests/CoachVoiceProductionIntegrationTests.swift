@@ -125,6 +125,39 @@ struct CoachVoiceProductionIntegrationTests {
         #expect(lifecycle.activeCaptureID == nil)
     }
 
+    @Test("An older scene cannot clear a newer command registration")
+    func commandRegistrationIsOwnerTokened() {
+        let audio = ProductionVoiceAudioSystem()
+        let coordinator = TrainingAudioCoordinator(
+            backend: audio,
+            resources: audio,
+            decayWaiter: audio
+        )
+        let coach = CoachVoiceCoach(audioCoordinator: coordinator)
+        let older = coach.registerCommandHandler { _, _ in nil }
+        let newer = coach.registerCommandHandler { _, _ in nil }
+
+        coach.unregisterCommandHandler(older)
+        #expect(coach.activeCommandHandlerRegistrationID == newer)
+
+        coach.unregisterCommandHandler(newer)
+        #expect(coach.activeCommandHandlerRegistrationID == nil)
+    }
+
+    @Test("A pause command transfers the temporary capture pause into a persistent pause")
+    func pauseCommandPersistsAfterResponse() {
+        let session = ReactiveStrikeSession()
+        session.startDrill()
+        #expect(session.pauseForVoice() != nil)
+
+        #expect(session.pauseForVoiceCommand() == "Training paused.")
+        #expect(session.voiceCommandPauseIsPersistent)
+
+        #expect(session.requestVoiceResumeAfterResponse() == "Return both fists to guard to resume.")
+        #expect(!session.voiceCommandPauseIsPersistent)
+        #expect(session.isVoicePaused)
+    }
+
     @Test(
         "Aura learning stages map exhaustively to voice command states",
         arguments: [

@@ -7,7 +7,7 @@ struct FeatureSelectionView: View {
     var body: some View {
         VStack(spacing: 24) {
             VStack(spacing: 8) {
-                Text("Boxing Coach")
+                Text("BoxingVision")
                     .font(.largeTitle.bold())
                 Text("Choose a training feature")
                     .font(.subheadline)
@@ -155,7 +155,7 @@ struct AuraSetupView: View {
     var body: some View {
         TrainingDetailScaffold(
             backLabel: "Features",
-            title: "Aura Punch",
+            title: "GhostTrainer",
             subtitle: "Choose your stance and a punch to learn",
             controlsDisabled: controlsDisabled,
             onBack: onBack

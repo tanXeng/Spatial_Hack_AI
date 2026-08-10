@@ -58,7 +58,7 @@ nonisolated struct OpenAICoachChatClient {
 
     private func systemPrompt(for context: CoachVoiceContext) -> String {
         """
-        Voice coach for Boxing Coach on Vision Pro.
+        Voice coach for BoxingVision on Vision Pro.
 
         \(CoachAppGuide.compactOverview)
 
@@ -67,7 +67,7 @@ nonisolated struct OpenAICoachChatClient {
         Rules: Answer in one or two short spoken sentences (under 25 words). Be direct. \
         When LIVE UI DATA is present and the user asks about score, stats, or how they did, \
         quote those exact numbers. \
-        For app/how-to questions, name Aura Punch or Reactive Strike. \
+        For app/how-to questions, name GhostTrainer or Reactive Strike. \
         No markdown, lists, or home shadowboxing unless asked.
         """
     }

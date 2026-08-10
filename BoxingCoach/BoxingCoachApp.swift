@@ -17,7 +17,7 @@ struct BoxingCoachApp: App {
         // `Window` is intentionally single-instance. A named `WindowGroup` creates another
         // window each time `openWindow(id:)` is called, which stacked duplicate control layers
         // when both explicit and system-driven immersive cleanup restored the UI.
-        Window("Boxing Coach", id: BoxingCoachSceneID.controlWindow) {
+        Window("BoxingVision", id: BoxingCoachSceneID.controlWindow) {
             BoxingCoachRootView()
                 .environment(session)
                 .environment(flow)

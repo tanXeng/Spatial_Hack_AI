@@ -100,7 +100,7 @@ struct BoxingCoachImmersiveView: View {
         .onChange(of: session.auraPunch.phase) { _, phase in
             guard case .experience(.aura) = flow.route,
                   phase == .results else { return }
-            announce("Aura Punch scoring complete")
+            announce("GhostTrainer scoring complete")
             finishTraining()
         }
         .onChange(of: session.errorMessage) { _, message in

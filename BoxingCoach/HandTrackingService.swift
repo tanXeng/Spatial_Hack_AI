@@ -227,7 +227,7 @@ final class HandTrackingService {
                 try await session.run([handTracking, worldTracking])
             } else {
                 try await session.run([handTracking])
-                statusMessage = "World tracking unavailable — Aura Punch needs head tracking"
+                statusMessage = "World tracking unavailable — GhostTrainer needs head tracking"
             }
             guard generation == startGeneration else {
                 session.stop()

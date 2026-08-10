@@ -3,11 +3,11 @@ import Foundation
 /// Product knowledge injected into the live ChatGPT coach so answers reference this app.
 nonisolated enum CoachAppGuide {
     static let overview: String = """
-    Boxing Coach is an Apple Vision Pro app. Training happens in immersive space with hand tracking — \
+    BoxingVision is an Apple Vision Pro app. Training happens in immersive space with hand tracking — \
     not generic "at home" shadowboxing unless the user explicitly asks about off-headset practice.
 
     MAIN MODES (home screen):
-    • Aura Punch — follow a spatial hologram through a full punch path. Best for learning technique \
+    • GhostTrainer — follow a spatial hologram through a full punch path. Best for learning technique \
     (Jab, Cross, Hook, Uppercut). Pick technique + Orthodox/Southpaw, start training, raise guard until \
     tracking locks, then mirror the hologram: extend out, match peak extension, return along the path, \
     snap back to guard. Includes countdown, scored reps, and on-screen form feedback.
@@ -21,7 +21,7 @@ nonisolated enum CoachAppGuide {
     or punch power. Coach about what the app can see: guard height, extension path, elbow angle, retraction.
 
     HOW TO PRACTICE A JAB IN THIS APP:
-    1. Home → Aura Punch → Jab → choose stance → Start Training.
+    1. Home → GhostTrainer → Jab → choose stance → Start Training.
     2. In immersive space, raise guard until coaching audio plays.
     3. Follow the hologram's lead-hand straight punch: extend from guard, match extension, retract to guard.
     For reaction work: Reactive Strike → Air Mode or a combo that starts with a jab (e.g. Jab-Cross).
@@ -29,9 +29,9 @@ nonisolated enum CoachAppGuide {
 
     /// Shorter app summary for the live voice coach prompt (less latency + tokens).
     static let compactOverview: String = """
-    Boxing Coach on Vision Pro. Aura Punch: a 3D coach demos the punch, then a ghost hologram guides reps, \
+    BoxingVision on Vision Pro. GhostTrainer: a 3D coach demos the punch, then a ghost hologram guides reps, \
     then you throw solo. Techniques: Jab/Cross/Hook/Uppercut. Reactive Strike = hit orange targets \
-    (Air or Combination mode). Hold Ask Coach to talk. Jab: Home → Aura Punch → Jab → raise guard → follow hologram.
+    (Air or Combination mode). Hold Ask Coach to talk. Jab: Home → GhostTrainer → Jab → raise guard → follow hologram.
     """
 
     static func sessionContext(for context: CoachVoiceContext) -> String {
@@ -39,7 +39,7 @@ nonisolated enum CoachAppGuide {
 
         switch context.feature {
         case .auraPunch:
-            lines.append("Active mode: Aura Punch (hologram follow-along).")
+            lines.append("Active mode: GhostTrainer (hologram follow-along).")
             if let phase = context.auraPhase {
                 lines.append("Aura phase: \(phase.rawValue).")
             }

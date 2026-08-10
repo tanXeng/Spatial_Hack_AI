@@ -5,7 +5,7 @@ enum CoachMilestoneScripts {
     static func text(for milestone: CoachClipID) -> String? {
         switch milestone {
         case .welcome:
-            return "Welcome to Aura Punch. Raise your guard and follow the hologram."
+            return "Welcome to GhostTrainer. Raise your guard and follow the hologram."
         case .followOut:
             return "Extend your arm and follow the hologram out."
         case .matchExtension:

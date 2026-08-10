@@ -322,6 +322,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 000000000000000000000122 /* Secrets.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 9XWR944647;
@@ -330,7 +331,8 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "Boxing Coach uses hand tracking to detect when you punch virtual targets.";
+				INFOPLIST_KEY_CFBundleDisplayName = BoxingVision;
+				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "BoxingVision uses hand tracking to detect when you punch virtual targets.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice commands let you ask the coach questions during training.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech is converted to text on device to pick a coaching response.";
 				INFOPLIST_KEY_OPENAI_API_KEY = "$(OPENAI_API_KEY)";
@@ -387,6 +389,7 @@
 			isa = XCBuildConfiguration;
 			baseConfigurationReference = 000000000000000000000122 /* Secrets.xcconfig */;
 			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
 				CODE_SIGN_STYLE = Automatic;
 				CURRENT_PROJECT_VERSION = 1;
 				DEVELOPMENT_TEAM = 9XWR944647;
@@ -395,7 +398,8 @@
 				ENABLE_USER_SELECTED_FILES = readonly;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = Info.plist;
-				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "Boxing Coach uses hand tracking to detect when you punch virtual targets.";
+				INFOPLIST_KEY_CFBundleDisplayName = BoxingVision;
+				INFOPLIST_KEY_NSHandsTrackingUsageDescription = "BoxingVision uses hand tracking to detect when you punch virtual targets.";
 				INFOPLIST_KEY_NSMicrophoneUsageDescription = "Voice commands let you ask the coach questions during training.";
 				INFOPLIST_KEY_NSSpeechRecognitionUsageDescription = "Speech is converted to text on device to pick a coaching response.";
 				INFOPLIST_KEY_OPENAI_API_KEY = "$(OPENAI_API_KEY)";

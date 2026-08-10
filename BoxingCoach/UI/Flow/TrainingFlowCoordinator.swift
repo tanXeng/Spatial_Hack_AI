@@ -8,14 +8,14 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var title: String {
         switch self {
-        case .auraPunch: return "Aura Punch"
+        case .auraPunch: return "GhostTrainer"
         case .reactiveStrike: return "Reactive Strike"
         }
     }
 
     var subtitle: String {
         switch self {
-        case .auraPunch: return "Follow a spatial punch guide"
+        case .auraPunch: return "Follow the ghost trainer hologram"
         case .reactiveStrike: return "Hit floating targets on reaction"
         }
     }

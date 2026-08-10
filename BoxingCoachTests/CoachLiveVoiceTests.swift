@@ -20,7 +20,7 @@ final class CoachTTSCacheTests: XCTestCase {
     func testCacheRoundTrip() {
         let cache = CoachTTSCache()
         let sample = Data("fake-audio".utf8)
-        let text = "Welcome to Aura Punch. \(UUID().uuidString)"
+        let text = "Welcome to GhostTrainer. \(UUID().uuidString)"
         let voice = OpenAITTSClient.defaultVoice
 
         cache.store(sample, for: text, voice: voice)
@@ -83,7 +83,7 @@ final class OpenAICoachChatClientTests: XCTestCase {
         let json = """
         {
           "choices": [
-            { "message": { "content": "Go to Aura Punch and select Jab." } }
+            { "message": { "content": "Go to GhostTrainer and select Jab." } }
           ]
         }
         """.data(using: .utf8)!
@@ -110,7 +110,7 @@ final class OpenAICoachChatClientTests: XCTestCase {
         let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
         let messages = try XCTUnwrap(payload["messages"] as? [[String: Any]])
         let system = try XCTUnwrap(messages.first?["content"] as? String)
-        XCTAssertTrue(system.contains("Aura Punch"))
+        XCTAssertTrue(system.contains("GhostTrainer"))
         XCTAssertEqual(payload["model"] as? String, OpenAICoachChatClient.defaultModel)
     }
 }

@@ -10,8 +10,6 @@ protocol CoachAudioPlaying: AnyObject {
     func stop()
 }
 
-extension CoachAudioPlayer: CoachAudioPlaying {}
-
 /// The live Aura loop depends on accepted tracking observations, not on ARKit ownership. Keeping
 /// that boundary injectable lets the entire cycle run against a deterministic provider while the
 /// app continues to share one concrete `HandTrackingService` with Reactive Strike.

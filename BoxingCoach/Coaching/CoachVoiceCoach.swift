@@ -329,7 +329,11 @@ final class CoachVoiceCoach {
     }
 
     func toggleCapture(origin: TrainingAudioSceneOwner) {
-        isListening ? endPushToTalk() : beginPushToTalk(origin: origin)
+        if isListening {
+            endPushToTalk()
+        } else {
+            _ = beginPushToTalk(origin: origin)
+        }
     }
 
     func acceptPrivacyNotice() {

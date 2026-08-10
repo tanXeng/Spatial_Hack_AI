@@ -16,26 +16,7 @@ nonisolated enum CompetitionRepositoryError: LocalizedError, Equatable, Sendable
 }
 
 @MainActor
-protocol AthleteMemoryRepository: AnyObject {
-    func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws
-    func coachingCycle(id: UUID) async throws -> CoachingCycleSnapshot?
-}
-
-@MainActor
-extension AthleteMemoryRepository {
-    func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws {
-        _ = transaction
-        throw CompetitionRepositoryError.saveFailed("Coaching-cycle persistence is unavailable.")
-    }
-
-    func coachingCycle(id: UUID) async throws -> CoachingCycleSnapshot? {
-        _ = id
-        return nil
-    }
-}
-
-@MainActor
-protocol CompetitionRepository: AthleteMemoryRepository {
+protocol CompetitionRepository: AnyObject {
     func player(normalizedName: String) async throws -> CompetitionPlayer?
     func player(id: UUID) async throws -> CompetitionPlayer?
     func save(player: CompetitionPlayer) async throws
@@ -47,7 +28,22 @@ protocol CompetitionRepository: AthleteMemoryRepository {
     func save(skillMemory: AthleteSkillMemory) async throws
     func skillMemory(athleteID: UUID, techniqueID: String) async throws
         -> AthleteSkillMemory?
+    func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws
+    func coachingCycle(id: UUID) async throws -> CoachingCycleSnapshot?
     func reset() async throws
+}
+
+@MainActor
+extension CompetitionRepository {
+    func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws {
+        _ = transaction
+        throw CompetitionRepositoryError.saveFailed("Coaching-cycle persistence is unavailable.")
+    }
+
+    func coachingCycle(id: UUID) async throws -> CoachingCycleSnapshot? {
+        _ = id
+        return nil
+    }
 }
 
 @MainActor

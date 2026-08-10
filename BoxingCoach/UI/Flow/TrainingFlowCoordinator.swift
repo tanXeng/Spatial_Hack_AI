@@ -404,7 +404,7 @@ final class TrainingFlowCoordinator {
             case .calibrating, .running: return .baseline
             case .finished: return .results
             }
-        case .features, .reactiveSetup, .combinationSetup, .auraSetup:
+        case .features, .reactiveSetup, .combinationSetup, .auraTrackSetup, .auraSetup:
             return .idle
         }
     }

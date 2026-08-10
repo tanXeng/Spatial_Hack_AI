@@ -407,7 +407,7 @@ struct TrainingCommandExecutorTests {
         let flow = TrainingFlowCoordinator()
         let session = makeCommandSession()
         flow.navigate(
-            to: .experience(.aura(technique: .jab, stance: .orthodox))
+            to: .experience(.aura(track: .firstRound, technique: .jab, stance: .orthodox))
         )
         let originalGeneration = session.auraPunch.demoContinuationGeneration
         #expect(
@@ -764,10 +764,10 @@ struct TrainingCommandExecutorTests {
     func routeChangeInvalidatesPendingCommands() {
         let flow = TrainingFlowCoordinator()
         let initialGeneration = flow.commandGeneration
-        flow.navigate(to: .auraSetup)
+        flow.navigate(to: .auraSetup(.firstRound))
         let auraGeneration = flow.commandGeneration
         flow.navigate(
-            to: .experience(.aura(technique: .jab, stance: .orthodox))
+            to: .experience(.aura(track: .firstRound, technique: .jab, stance: .orthodox))
         )
         #expect(flow.requestEndConfirmation(issuedFor: flow.commandGeneration) != nil)
 
@@ -782,7 +782,7 @@ struct TrainingCommandExecutorTests {
     func staleEndRequestCannotMutateFlow() {
         let flow = TrainingFlowCoordinator()
         flow.navigate(
-            to: .experience(.aura(technique: .jab, stance: .orthodox))
+            to: .experience(.aura(track: .firstRound, technique: .jab, stance: .orthodox))
         )
         let staleGeneration = flow.commandGeneration
         flow.navigate(to: .features)

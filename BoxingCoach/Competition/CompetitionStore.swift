@@ -1,7 +1,9 @@
 import Foundation
 
 nonisolated enum CompetitionSheetRoute: Hashable, Identifiable, Sendable {
+    case welcome
     case nameEntry
+    case codeEntry
     case calibrationRequired
     case modes
     case stance
@@ -53,6 +55,7 @@ final class CompetitionStore {
     static let standaloneAuraNormalizedName = "boxcoach://standalone-aura"
 
     private(set) var sheetRoute: CompetitionSheetRoute?
+    private(set) var currentEvent: EventEdition?
     private(set) var currentPlayer: CompetitionPlayer?
     private(set) var latestSubmission: CompetitionSubmission?
     private(set) var reactiveStandings: [CompetitionStanding] = []
@@ -63,20 +66,30 @@ final class CompetitionStore {
     private(set) var errorMessage: String?
     private(set) var coachingCyclePersistenceScope: CoachingCyclePersistenceScope
     var nameDraft = ""
+    var codeDraft = ""
     var selectedStance: Stance = .orthodox
+    var selectedExperienceLevel: ExperienceLevel = .beginner
+
+    var currentTrainingTrack: TrainingTrack? {
+        guard let currentPlayer else { return nil }
+        return currentPlayer.experienceLevel == .beginner ? .firstRound : .technicalCamp
+    }
 
     private let repository: any CompetitionRepository
     private let now: () -> Date
+    private let postParticipantCommitRefresh: @MainActor () async throws -> Void
     private var didBootstrap = false
 
     init(
         repository: any CompetitionRepository,
         startupError: String? = nil,
         coachingCyclePersistenceScope: CoachingCyclePersistenceScope = .durable,
+        postParticipantCommitRefresh: @escaping @MainActor () async throws -> Void = {},
         now: @escaping () -> Date = Date.init
     ) {
         self.repository = repository
         self.now = now
+        self.postParticipantCommitRefresh = postParticipantCommitRefresh
         self.coachingCyclePersistenceScope = coachingCyclePersistenceScope
         errorMessage = startupError
     }
@@ -127,7 +140,15 @@ final class CompetitionStore {
 
     func bootstrap() async {
         guard !didBootstrap else { return }
-        didBootstrap = await reloadBoards()
+        do {
+            currentEvent = try await repository.activeEvent()
+            if currentEvent == nil {
+                currentEvent = try await repository.create(event: try makeEvent())
+            }
+            didBootstrap = await reloadBoards()
+        } catch {
+            present(error)
+        }
     }
 
     func open() {
@@ -136,8 +157,21 @@ final class CompetitionStore {
             selectedStance = currentPlayer.rememberedStance
             sheetRoute = currentPlayer.hasCurrentCalibration ? .modes : .calibrationRequired
         } else {
-            sheetRoute = .nameEntry
+            sheetRoute = .welcome
         }
+    }
+
+    func showWelcome() {
+        guard activeRun == nil else { return }
+        errorMessage = nil
+        sheetRoute = .welcome
+    }
+
+    func showCodeEntry() {
+        guard activeRun == nil else { return }
+        codeDraft = ""
+        errorMessage = nil
+        sheetRoute = .codeEntry
     }
 
     func dismiss() {
@@ -147,6 +181,18 @@ final class CompetitionStore {
     }
 
     func join(name rawName: String) async {
+        await createParticipant(
+            name: rawName,
+            experienceLevel: selectedExperienceLevel,
+            stance: selectedStance
+        )
+    }
+
+    func createParticipant(
+        name rawName: String,
+        experienceLevel: ExperienceLevel,
+        stance: Stance
+    ) async {
         guard !isLoading, !isSaving, activeRun == nil else {
             present(CompetitionStoreError.runAlreadyActive)
             return
@@ -155,30 +201,59 @@ final class CompetitionStore {
         defer { isLoading = false }
         do {
             let name = try CompetitionName.display(rawName)
-            let normalized = CompetitionName.normalized(name)
-            var player: CompetitionPlayer
-            if let existing = try await repository.player(normalizedName: normalized) {
-                player = existing
-                player.name = name
-                player.lastSeenAt = now()
-            } else {
-                let timestamp = now()
-                player = CompetitionPlayer(
-                    id: UUID(),
-                    name: name,
-                    normalizedName: normalized,
-                    rememberedStance: .orthodox,
-                    reach: nil,
-                    calibrationVersion: nil,
-                    calibratedAt: nil,
-                    createdAt: timestamp,
-                    lastSeenAt: timestamp
-                )
-            }
-            try await repository.save(player: player)
+            let event = try await requireActiveEvent()
+            let player = try await repository.createParticipant(
+                eventID: event.id,
+                displayName: name,
+                experienceLevel: experienceLevel,
+                stance: stance,
+                at: now()
+            )
             currentPlayer = player
             selectedStance = player.rememberedStance
+            selectedExperienceLevel = player.experienceLevel
             nameDraft = player.name
+            errorMessage = nil
+            sheetRoute = player.hasCurrentCalibration ? .modes : .calibrationRequired
+            do {
+                try await postParticipantCommitRefresh()
+            } catch {
+                errorMessage = "Profile saved. Some event details could not be refreshed."
+            }
+        } catch {
+            present(error)
+        }
+    }
+
+    func rejoin(code rawCode: String) async {
+        guard !isLoading, !isSaving, activeRun == nil else {
+            present(CompetitionStoreError.runAlreadyActive)
+            return
+        }
+        isLoading = true
+        defer { isLoading = false }
+        do {
+            let code = rawCode.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard code.count == 4,
+                  code.unicodeScalars.allSatisfy({ (48...57).contains($0.value) })
+            else {
+                throw CompetitionStoreError.wrapped("Enter the four-digit code shown on your profile.")
+            }
+            let event = try await requireActiveEvent()
+            guard var player = try await repository.participant(
+                eventID: event.id,
+                displayCode: code
+            ) else {
+                throw CompetitionStoreError.wrapped("No participant in this event has code \(code).")
+            }
+            player.lastSeenAt = now()
+            player = try await repository.saveParticipant(player)
+            currentPlayer = player
+            selectedStance = player.rememberedStance
+            selectedExperienceLevel = player.experienceLevel
+            nameDraft = player.name
+            codeDraft = code
+            latestSubmission = nil
             errorMessage = nil
             sheetRoute = player.hasCurrentCalibration ? .modes : .calibrationRequired
         } catch {
@@ -186,9 +261,21 @@ final class CompetitionStore {
         }
     }
 
+    func handoffToWelcome() async {
+        currentPlayer = nil
+        latestSubmission = nil
+        activeRun = nil
+        nameDraft = ""
+        codeDraft = ""
+        selectedStance = .orthodox
+        selectedExperienceLevel = .beginner
+        errorMessage = nil
+        sheetRoute = .welcome
+    }
+
     func showNameEntry() {
         guard activeRun == nil else { return }
-        nameDraft = currentPlayer?.name ?? ""
+        nameDraft = ""
         errorMessage = nil
         sheetRoute = .nameEntry
     }
@@ -284,8 +371,7 @@ final class CompetitionStore {
                 player.calibrationVersion = CompetitionPlayer.calibrationVersion
                 player.calibratedAt = now()
                 player.lastSeenAt = now()
-                try await repository.save(player: player)
-                currentPlayer = player
+                currentPlayer = try await repository.saveParticipant(player)
                 activeRun = nil
                 errorMessage = nil
                 sheetRoute = .modes
@@ -298,8 +384,7 @@ final class CompetitionStore {
                     player.reach = nil
                     player.calibrationVersion = nil
                     player.calibratedAt = nil
-                    try await repository.save(player: player)
-                    currentPlayer = player
+                    currentPlayer = try await repository.saveParticipant(player)
                     activeRun = nil
                     throw CompetitionStoreError.unsafeGuardClearance
                 }
@@ -343,10 +428,12 @@ final class CompetitionStore {
         do {
             try await repository.reset()
             currentPlayer = nil
+            currentEvent = nil
             latestSubmission = nil
             reactiveStandings = []
             combinationStandings = []
             nameDraft = ""
+            codeDraft = ""
             selectedStance = .orthodox
             errorMessage = nil
             sheetRoute = .nameEntry
@@ -506,8 +593,7 @@ final class CompetitionStore {
         isSaving = true
         defer { isSaving = false }
         do {
-            try await repository.save(player: player)
-            currentPlayer = player
+            currentPlayer = try await repository.saveParticipant(player)
             selectedStance = stance
             errorMessage = nil
             sheetRoute = nil
@@ -587,7 +673,12 @@ final class CompetitionStore {
         isLoading = true
         defer { isLoading = false }
         do {
-            let submissions = try await repository.submissions()
+            guard let eventID = currentEvent?.id else {
+                reactiveStandings = []
+                combinationStandings = []
+                return true
+            }
+            let submissions = try await repository.submissions(eventID: eventID)
             reactiveStandings = CompetitionLeaderboard.standings(
                 mode: .reactiveStrike,
                 submissions: submissions
@@ -606,5 +697,53 @@ final class CompetitionStore {
 
     private func present(_ error: Error) {
         errorMessage = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+    }
+
+    private func requireActiveEvent() async throws -> EventEdition {
+        if let currentEvent, currentEvent.isOpen { return currentEvent }
+        if let event = try await repository.activeEvent() {
+            currentEvent = event
+            return event
+        }
+        let event = try makeEvent()
+        let created = try await repository.create(event: event)
+        currentEvent = created
+        return created
+    }
+
+    private func makeEvent() throws -> EventEdition {
+        guard let event = EventEdition(
+            id: UUID(),
+            title: "Boxing Coach Event",
+            status: .open,
+            openedAt: now(),
+            closedAt: nil,
+            scoringVersion: CompetitionScorer.scoringVersion,
+            calibrationVersion: CompetitionPlayer.calibrationVersion
+        ) else { throw AthleteMemoryRepositoryError.invalidEvent }
+        return event
+    }
+}
+
+@MainActor
+enum ParticipantHandoffCoordinator {
+    nonisolated struct Presentation: Equatable, Sendable {
+        nonisolated enum Focus: Equatable, Sendable { case startTraining }
+        let announcement: String
+        let focus: Focus
+    }
+
+    static func perform(
+        store: CompetitionStore,
+        flow: TrainingFlowCoordinator,
+        session: ReactiveStrikeSession
+    ) async -> Presentation {
+        flow.participantDidChange(session: session)
+        flow.navigate(to: .features)
+        await store.handoffToWelcome()
+        return Presentation(
+            announcement: "Ready for the next boxer.",
+            focus: .startTraining
+        )
     }
 }

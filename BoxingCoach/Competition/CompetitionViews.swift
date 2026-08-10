@@ -6,11 +6,21 @@ struct CompetitionSheetView: View {
     @Environment(\.dismiss) private var dismiss
     @Environment(\.dynamicTypeSize) private var dynamicTypeSize
     let onStart: (TrainingSelection) -> Void
+    let onHandoff: () -> Void
+
+    init(
+        onStart: @escaping (TrainingSelection) -> Void,
+        onHandoff: @escaping () -> Void = {}
+    ) {
+        self.onStart = onStart
+        self.onHandoff = onHandoff
+    }
 
     @State private var confirmsReset = false
     @AccessibilityFocusState private var focus: FocusTarget?
 
     private enum FocusTarget: Hashable {
+        case startTraining
         case name
         case heading
         case leaderboard
@@ -49,7 +59,9 @@ struct CompetitionSheetView: View {
         .task(id: store.sheetRoute) {
             try? await Task.sleep(for: .milliseconds(120))
             switch store.sheetRoute {
+            case .welcome: focus = .startTraining
             case .nameEntry: focus = .name
+            case .codeEntry: focus = .name
             case .leaderboard: focus = .leaderboard
             default: focus = .heading
             }
@@ -57,7 +69,9 @@ struct CompetitionSheetView: View {
         .onChange(of: store.errorMessage) { _, message in
             guard let message else { return }
             AccessibilityNotification.Announcement(message).post()
-            focus = store.sheetRoute == .nameEntry ? .name : .heading
+            focus = store.sheetRoute == .nameEntry || store.sheetRoute == .codeEntry
+                ? .name
+                : .heading
         }
         .confirmationDialog(
             "Reset Competition?",
@@ -75,7 +89,9 @@ struct CompetitionSheetView: View {
 
     private var title: String {
         switch store.sheetRoute {
+        case .welcome: return "Boxing Coach Event"
         case .nameEntry: return "Join Competition"
+        case .codeEntry: return "Return to Event"
         case .calibrationRequired: return "Reach Calibration"
         case .modes: return "Choose a Board"
         case .stance: return "Combo Stance"
@@ -89,8 +105,12 @@ struct CompetitionSheetView: View {
     @ViewBuilder
     private var routeContent: some View {
         switch store.sheetRoute {
+        case .welcome:
+            welcome
         case .nameEntry:
             nameEntry
+        case .codeEntry:
+            codeEntry
         case .calibrationRequired:
             calibrationRequired
         case .modes:
@@ -110,11 +130,42 @@ struct CompetitionSheetView: View {
         }
     }
 
+    private var welcome: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            sheetHeading(
+                "Welcome, boxer",
+                detail: "Choose one action. Profiles and results stay private on this Vision Pro."
+            )
+
+            Button("Start Training", systemImage: "figure.boxing") {
+                store.showNameEntry()
+            }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.large)
+            .frame(maxWidth: .infinity, minHeight: TrainingAccessibility.minimumControlHitRegion)
+            .accessibilityFocused($focus, equals: .startTraining)
+
+            Button("Join Event Challenge", systemImage: "person.badge.key") {
+                store.showCodeEntry()
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .frame(maxWidth: .infinity, minHeight: TrainingAccessibility.minimumControlHitRegion)
+
+            Button("Leaderboard", systemImage: "trophy") {
+                store.showLeaderboard(.reactiveStrike)
+            }
+            .buttonStyle(.bordered)
+            .controlSize(.large)
+            .frame(maxWidth: .infinity, minHeight: TrainingAccessibility.minimumControlHitRegion)
+        }
+    }
+
     private var nameEntry: some View {
         VStack(alignment: .leading, spacing: 18) {
             sheetHeading(
-                "What should the leaderboard call you?",
-                detail: "Entering the same name reopens your saved reach and stance automatically."
+                "Create your private profile",
+                detail: "Duplicate names are welcome. Your four-digit event code is how you return to this profile."
             )
             @Bindable var bindableStore = store
             TextField("Player name", text: $bindableStore.nameDraft)
@@ -126,6 +177,20 @@ struct CompetitionSheetView: View {
                 .accessibilityFocused($focus, equals: .name)
                 .disabled(store.isLoading)
 
+            Picker("Coaching track", selection: Binding(
+                get: { store.selectedExperienceLevel },
+                set: { store.selectedExperienceLevel = $0 }
+            )) {
+                Text("First Round").tag(ExperienceLevel.beginner)
+                Text("Technical Camp").tag(ExperienceLevel.advanced)
+            }
+            .pickerStyle(.segmented)
+
+            Picker("Stance", selection: $bindableStore.selectedStance) {
+                ForEach(Stance.allCases) { stance in Text(stance.title).tag(stance) }
+            }
+            .pickerStyle(.segmented)
+
             Button("Continue", systemImage: "arrow.right") { join() }
                 .buttonStyle(.borderedProminent)
                 .controlSize(.large)
@@ -133,8 +198,36 @@ struct CompetitionSheetView: View {
                 .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
 
             if store.isLoading {
-                ProgressView("Finding player…")
+                ProgressView("Creating profile…")
             }
+
+            Button("Back") { store.showWelcome() }
+                .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
+        }
+    }
+
+    private var codeEntry: some View {
+        VStack(alignment: .leading, spacing: 18) {
+            sheetHeading(
+                "Return to your profile",
+                detail: "Enter the four-digit code shown when this event profile was created. It is a convenience code, not a password."
+            )
+            @Bindable var bindableStore = store
+            TextField("Four-digit event code", text: $bindableStore.codeDraft)
+                .textFieldStyle(.roundedBorder)
+                .submitLabel(.continue)
+                .onSubmit(rejoin)
+                .accessibilityFocused($focus, equals: .name)
+                .disabled(store.isLoading)
+
+            Button("Rejoin", systemImage: "arrow.right") { rejoin() }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
+                .disabled(store.isLoading)
+
+            Button("Back") { store.showWelcome() }
+                .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
         }
     }
 
@@ -150,6 +243,12 @@ struct CompetitionSheetView: View {
             Label("Guard position is recaptured before every run.", systemImage: "hand.raised.fill")
                 .font(.callout)
                 .foregroundStyle(.secondary)
+
+            if let handle = store.currentPlayer?.publicHandle {
+                Label("\(handle.displayName) · \(handle.displayCode)", systemImage: "person.text.rectangle")
+                    .font(.headline.monospacedDigit())
+                    .accessibilityLabel("\(handle.displayName), event code \(handle.displayCode)")
+            }
 
             TrainingSafetyPreflightCard()
 
@@ -170,7 +269,7 @@ struct CompetitionSheetView: View {
         VStack(alignment: .leading, spacing: 18) {
             sheetHeading(
                 "Welcome, \(store.currentPlayer?.name ?? "boxer")",
-                detail: "Choose either board. You can submit as many complete runs as you like; only your best result ranks."
+                detail: profileDetail
             )
 
             TrainingSafetyPreflightCard()
@@ -335,7 +434,17 @@ struct CompetitionSheetView: View {
 
             Button("Compete Again") { store.showModes() }
                 .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
+
+            Button("Next Boxer", systemImage: "person.2") { onHandoff() }
+                .frame(minHeight: TrainingAccessibility.minimumControlHitRegion)
         }
+    }
+
+    private var profileDetail: String {
+        let handle = store.currentPlayer?.publicHandle
+        let identity = handle.map { "\($0.displayName) · \($0.displayCode)" } ?? "Current boxer"
+        let track = store.currentTrainingTrack?.title ?? "First Round"
+        return "\(identity) · \(track). Choose either board; only your best complete result ranks."
     }
 
     private var resetMenu: some View {
@@ -361,7 +470,17 @@ struct CompetitionSheetView: View {
     }
 
     private func join() {
-        Task { await store.join(name: store.nameDraft) }
+        Task {
+            await store.createParticipant(
+                name: store.nameDraft,
+                experienceLevel: store.selectedExperienceLevel,
+                stance: store.selectedStance
+            )
+        }
+    }
+
+    private func rejoin() {
+        Task { await store.rejoin(code: store.codeDraft) }
     }
 }
 

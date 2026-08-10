@@ -17,11 +17,27 @@ nonisolated enum CompetitionRepositoryError: LocalizedError, Equatable, Sendable
 
 @MainActor
 protocol CompetitionRepository: AnyObject {
+    // Sole production persistence façade. Event selection, participant identity, competition
+    // results, and coaching memory share one actor-isolated repository/context.
+    func activeEvent() async throws -> EventEdition?
+    func create(event: EventEdition) async throws -> EventEdition
+    func closeEvent(id: UUID, at date: Date) async throws -> EventEdition
+    func participants(eventID: UUID) async throws -> [CompetitionPlayer]
+    func participant(eventID: UUID, displayCode: String) async throws -> CompetitionPlayer?
+    func createParticipant(
+        eventID: UUID,
+        displayName: String,
+        experienceLevel: ExperienceLevel,
+        stance: Stance,
+        at date: Date
+    ) async throws -> CompetitionPlayer
+    func saveParticipant(_ participant: CompetitionPlayer) async throws -> CompetitionPlayer
     func player(normalizedName: String) async throws -> CompetitionPlayer?
     func player(id: UUID) async throws -> CompetitionPlayer?
     func save(player: CompetitionPlayer) async throws
     func submit(_ submission: CompetitionSubmission) async throws -> CompetitionSubmission
     func submissions() async throws -> [CompetitionSubmission]
+    func submissions(eventID: UUID) async throws -> [CompetitionSubmission]
     func save(techniqueAttempts: [TechniqueAttemptSnapshot]) async throws
     func techniqueAttempts(athleteID: UUID, techniqueID: String) async throws
         -> [TechniqueAttemptSnapshot]
@@ -35,6 +51,54 @@ protocol CompetitionRepository: AnyObject {
 
 @MainActor
 extension CompetitionRepository {
+    func activeEvent() async throws -> EventEdition? { nil }
+
+    func create(event: EventEdition) async throws -> EventEdition {
+        _ = event
+        throw CompetitionRepositoryError.saveFailed("Event persistence is unavailable.")
+    }
+
+    func closeEvent(id: UUID, at date: Date) async throws -> EventEdition {
+        _ = id
+        _ = date
+        throw CompetitionRepositoryError.saveFailed("Event persistence is unavailable.")
+    }
+
+    func participants(eventID: UUID) async throws -> [CompetitionPlayer] {
+        _ = eventID
+        return []
+    }
+
+    func participant(eventID: UUID, displayCode: String) async throws -> CompetitionPlayer? {
+        _ = eventID
+        _ = displayCode
+        return nil
+    }
+
+    func createParticipant(
+        eventID: UUID,
+        displayName: String,
+        experienceLevel: ExperienceLevel,
+        stance: Stance,
+        at date: Date
+    ) async throws -> CompetitionPlayer {
+        _ = eventID
+        _ = displayName
+        _ = experienceLevel
+        _ = stance
+        _ = date
+        throw CompetitionRepositoryError.saveFailed("Event participant creation is unavailable.")
+    }
+
+    func saveParticipant(_ participant: CompetitionPlayer) async throws -> CompetitionPlayer {
+        try await save(player: participant)
+        return participant
+    }
+
+    func submissions(eventID: UUID) async throws -> [CompetitionSubmission] {
+        try await submissions().filter { $0.eventID == eventID }
+    }
+
     func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws {
         _ = transaction
         throw CompetitionRepositoryError.saveFailed("Coaching-cycle persistence is unavailable.")
@@ -48,11 +112,90 @@ extension CompetitionRepository {
 
 @MainActor
 final class InMemoryCompetitionRepository: CompetitionRepository {
+    private var events: [UUID: EventEdition] = [:]
     private var players: [UUID: CompetitionPlayer] = [:]
     private var values: [UUID: CompetitionSubmission] = [:]
     private var attemptValues: [UUID: TechniqueAttemptSnapshot] = [:]
     private var memoryValues: [String: AthleteSkillMemory] = [:]
     private var coachingCycleValues: [UUID: CoachingCycleSnapshot] = [:]
+
+    func activeEvent() async throws -> EventEdition? {
+        events.values.first(where: \.isOpen)
+    }
+
+    func create(event: EventEdition) async throws -> EventEdition {
+        if let existing = events[event.id] { return existing }
+        guard event.isOpen, events.values.allSatisfy({ !$0.isOpen }) else {
+            throw AthleteMemoryRepositoryError.activeEventExists
+        }
+        events[event.id] = event
+        return event
+    }
+
+    func closeEvent(id: UUID, at date: Date) async throws -> EventEdition {
+        guard let event = events[id] else { throw AthleteMemoryRepositoryError.eventNotFound }
+        if !event.isOpen { return event }
+        guard let closed = event.closing(at: date) else {
+            throw AthleteMemoryRepositoryError.invalidEvent
+        }
+        events[id] = closed
+        return closed
+    }
+
+    func participants(eventID: UUID) async throws -> [CompetitionPlayer] {
+        players.values
+            .filter { $0.eventID == eventID }
+            .sorted { ($0.publicHandle?.displayCode ?? "") < ($1.publicHandle?.displayCode ?? "") }
+    }
+
+    func participant(eventID: UUID, displayCode: String) async throws -> CompetitionPlayer? {
+        players.values.first {
+            $0.eventID == eventID && $0.publicHandle?.displayCode == displayCode
+        }
+    }
+
+    func createParticipant(
+        eventID: UUID,
+        displayName: String,
+        experienceLevel: ExperienceLevel,
+        stance: Stance,
+        at date: Date
+    ) async throws -> CompetitionPlayer {
+        guard let event = events[eventID] else {
+            throw AthleteMemoryRepositoryError.eventNotFound
+        }
+        guard event.isOpen else { throw AthleteMemoryRepositoryError.eventClosed }
+        let name = try CompetitionName.display(displayName)
+        guard let handle = ParticipantPublicHandle.allocating(
+            eventID: eventID,
+            displayName: name,
+            against: players.values.compactMap(\.publicHandle)
+        ) else { throw AthleteMemoryRepositoryError.duplicateDisplayCode }
+        let participant = CompetitionPlayer(
+            id: UUID(), name: name, normalizedName: CompetitionName.normalized(name),
+            rememberedStance: stance, reach: nil, calibrationVersion: nil,
+            calibratedAt: nil, createdAt: date, lastSeenAt: date,
+            experienceLevel: experienceLevel, publicHandle: handle
+        )
+        players[participant.id] = participant
+        return participant
+    }
+
+    func saveParticipant(_ participant: CompetitionPlayer) async throws -> CompetitionPlayer {
+        guard let eventID = participant.eventID,
+              let event = events[eventID]
+        else { throw AthleteMemoryRepositoryError.eventNotFound }
+        guard event.isOpen else { throw AthleteMemoryRepositoryError.eventClosed }
+        if players.values.contains(where: {
+            $0.id != participant.id
+                && $0.eventID == eventID
+                && $0.publicHandle?.displayCode == participant.publicHandle?.displayCode
+        }) {
+            throw AthleteMemoryRepositoryError.duplicateDisplayCode
+        }
+        players[participant.id] = participant
+        return participant
+    }
 
     func player(normalizedName: String) async throws -> CompetitionPlayer? {
         players.values.first { $0.normalizedName == normalizedName }
@@ -60,17 +203,35 @@ final class InMemoryCompetitionRepository: CompetitionRepository {
 
     func player(id: UUID) async throws -> CompetitionPlayer? { players[id] }
 
-    func save(player: CompetitionPlayer) async throws { players[player.id] = player }
+    func save(player: CompetitionPlayer) async throws {
+        if player.eventID != nil {
+            _ = try await saveParticipant(player)
+        } else {
+            players[player.id] = player
+        }
+    }
 
     func submit(_ submission: CompetitionSubmission) async throws -> CompetitionSubmission {
         if let existing = values[submission.id] { return existing }
         guard players[submission.playerID] != nil else { throw CompetitionRepositoryError.playerNotFound }
+        if let eventID = submission.eventID {
+            guard let event = events[eventID] else {
+                throw AthleteMemoryRepositoryError.eventNotFound
+            }
+            guard event.isOpen else { throw AthleteMemoryRepositoryError.eventClosed }
+        }
         values[submission.id] = submission
         return submission
     }
 
     func submissions() async throws -> [CompetitionSubmission] {
         values.values.sorted { $0.endedAt > $1.endedAt }
+    }
+
+    func submissions(eventID: UUID) async throws -> [CompetitionSubmission] {
+        values.values
+            .filter { $0.eventID == eventID }
+            .sorted { $0.endedAt > $1.endedAt }
     }
 
     func save(techniqueAttempts: [TechniqueAttemptSnapshot]) async throws {
@@ -141,6 +302,7 @@ final class InMemoryCompetitionRepository: CompetitionRepository {
     }
 
     func reset() async throws {
+        events.removeAll()
         players.removeAll()
         values.removeAll()
         attemptValues.removeAll()
@@ -377,6 +539,108 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
         context = Self.makeContext(container: container)
     }
 
+    func activeEvent() async throws -> EventEdition? {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>())
+            .compactMap(\.snapshot)
+            .first(where: \.isOpen)
+    }
+
+    func create(event: EventEdition) async throws -> EventEdition {
+        let records = try context.fetch(FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>())
+        if let existing = records.first(where: { $0.id == event.id })?.snapshot {
+            return existing
+        }
+        guard event.isOpen,
+              !records.compactMap(\.snapshot).contains(where: \.isOpen)
+        else { throw AthleteMemoryRepositoryError.activeEventExists }
+        context.insert(CompetitionSchemaV3.EventEditionRecord(event))
+        try saveContext()
+        return event
+    }
+
+    func closeEvent(id: UUID, at date: Date) async throws -> EventEdition {
+        let records = try context.fetch(FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>())
+        guard let record = records.first(where: { $0.id == id }),
+              let event = record.snapshot else {
+            throw AthleteMemoryRepositoryError.eventNotFound
+        }
+        if !event.isOpen { return event }
+        guard let closed = event.closing(at: date) else {
+            throw AthleteMemoryRepositoryError.invalidEvent
+        }
+        record.statusRawValue = closed.status.rawValue
+        record.closedAt = closed.closedAt
+        try saveContext()
+        return closed
+    }
+
+    func participants(eventID: UUID) async throws -> [CompetitionPlayer] {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>())
+            .filter { $0.eventID == eventID }
+            .map(\.snapshot)
+            .sorted { ($0.publicHandle?.displayCode ?? "") < ($1.publicHandle?.displayCode ?? "") }
+    }
+
+    func participant(eventID: UUID, displayCode: String) async throws -> CompetitionPlayer? {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>())
+            .first { $0.eventID == eventID && $0.publicDisplayCode == displayCode }?
+            .snapshot
+    }
+
+    func createParticipant(
+        eventID: UUID,
+        displayName: String,
+        experienceLevel: ExperienceLevel,
+        stance: Stance,
+        at date: Date
+    ) async throws -> CompetitionPlayer {
+        guard let event = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>()
+        ).first(where: { $0.id == eventID })?.snapshot else {
+            throw AthleteMemoryRepositoryError.eventNotFound
+        }
+        guard event.isOpen else { throw AthleteMemoryRepositoryError.eventClosed }
+        let name = try CompetitionName.display(displayName)
+        let records = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>()
+        )
+        guard let handle = ParticipantPublicHandle.allocating(
+            eventID: eventID,
+            displayName: name,
+            against: records.map(\.snapshot).compactMap(\.publicHandle)
+        ) else { throw AthleteMemoryRepositoryError.duplicateDisplayCode }
+        let participant = CompetitionPlayer(
+            id: UUID(), name: name, normalizedName: CompetitionName.normalized(name),
+            rememberedStance: stance, reach: nil, calibrationVersion: nil,
+            calibratedAt: nil, createdAt: date, lastSeenAt: date,
+            experienceLevel: experienceLevel, publicHandle: handle
+        )
+        context.insert(CompetitionSchemaV3.CompetitionPlayerRecord(participant))
+        try saveContext()
+        return participant
+    }
+
+    func saveParticipant(_ participant: CompetitionPlayer) async throws -> CompetitionPlayer {
+        guard let eventID = participant.eventID,
+              let event = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>()
+              ).first(where: { $0.id == eventID })?.snapshot
+        else { throw AthleteMemoryRepositoryError.eventNotFound }
+        guard event.isOpen else { throw AthleteMemoryRepositoryError.eventClosed }
+        do {
+            let saved = try SwiftDataParticipantPersistence.upsert(
+                participant,
+                in: context,
+                afterProfileMutation: afterParticipantProfileMutation
+            )
+            try saveContext()
+            return saved
+        } catch {
+            rollbackContext()
+            throw error
+        }
+    }
+
     func player(normalizedName: String) async throws -> CompetitionPlayer? {
         try context.fetch(FetchDescriptor<CompetitionSchemaV3.CompetitionPlayerRecord>())
             .first { $0.normalizedName == normalizedName }?.snapshot
@@ -387,6 +651,10 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
     }
 
     func save(player: CompetitionPlayer) async throws {
+        if player.eventID != nil {
+            _ = try await saveParticipant(player)
+            return
+        }
         do {
             _ = try SwiftDataParticipantPersistence.upsert(
                 player,
@@ -405,6 +673,14 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
         guard try playerRecord(id: submission.playerID) != nil else {
             throw CompetitionRepositoryError.playerNotFound
         }
+        if let eventID = submission.eventID {
+            guard let event = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>()
+            ).first(where: { $0.id == eventID })?.snapshot else {
+                throw AthleteMemoryRepositoryError.eventNotFound
+            }
+            guard event.isOpen else { throw AthleteMemoryRepositoryError.eventClosed }
+        }
         context.insert(CompetitionSchemaV3.CompetitionSubmissionRecord(submission))
         try saveContext()
         return submission
@@ -413,6 +689,13 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
     func submissions() async throws -> [CompetitionSubmission] {
         try context.fetch(FetchDescriptor<CompetitionSchemaV3.CompetitionSubmissionRecord>())
             .compactMap(\.snapshot)
+            .sorted { $0.endedAt > $1.endedAt }
+    }
+
+    func submissions(eventID: UUID) async throws -> [CompetitionSubmission] {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.CompetitionSubmissionRecord>())
+            .compactMap(\.snapshot)
+            .filter { $0.eventID == eventID }
             .sorted { $0.endedAt > $1.endedAt }
     }
 
@@ -541,6 +824,9 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
         try context.delete(model: CompetitionSchemaV3.TechniqueAttemptRecord.self)
         try context.delete(model: CompetitionSchemaV3.CompetitionSubmissionRecord.self)
         try context.delete(model: CompetitionSchemaV3.CompetitionPlayerRecord.self)
+        try context.delete(model: CompetitionSchemaV3.EventAwardRecord.self)
+        try context.delete(model: CompetitionSchemaV3.PendingTrainingRunRecord.self)
+        try context.delete(model: CompetitionSchemaV3.EventEditionRecord.self)
         try saveContext()
     }
 
@@ -579,7 +865,7 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
 enum CompetitionLiveRepositoryFactory {
     static func makeLiveRepository(
         container: ModelContainer
-    ) -> any CompetitionRepository {
+    ) -> SwiftDataCompetitionRepository {
         SwiftDataCompetitionRepository(container: container)
     }
 }

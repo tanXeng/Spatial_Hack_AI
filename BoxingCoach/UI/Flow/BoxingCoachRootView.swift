@@ -94,7 +94,8 @@ struct BoxingCoachRootView: View {
             else { return }
             if oldPlayer?.id != newPlayer?.id {
                 flow.participantDidChange(session: session)
-                if TrainingAccessibility.focus(after: .participantHandoff) == .joinCompetition {
+                if competitionStore.sheetRoute != .welcome,
+                   TrainingAccessibility.focus(after: .participantHandoff) == .joinCompetition {
                     landingActionFocused = .competition
                 }
             }
@@ -136,7 +137,10 @@ struct BoxingCoachRootView: View {
                 landingActionFocused = .competition
             }
         }) { _ in
-            CompetitionSheetView(onStart: startCompetition)
+            CompetitionSheetView(
+                onStart: startCompetition,
+                onHandoff: performParticipantHandoff
+            )
                 .environment(competitionStore)
         }
     }
@@ -257,6 +261,17 @@ struct BoxingCoachRootView: View {
                 competitionStore.cancelActiveRun(message: message)
                 flow.navigate(to: .features)
             }
+        }
+    }
+
+    private func performParticipantHandoff() {
+        Task {
+            let presentation = await ParticipantHandoffCoordinator.perform(
+                store: competitionStore,
+                flow: flow,
+                session: session
+            )
+            AccessibilityNotification.Announcement(presentation.announcement).post()
         }
     }
 

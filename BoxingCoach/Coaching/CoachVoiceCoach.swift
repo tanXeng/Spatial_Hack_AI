@@ -30,19 +30,13 @@ final class CoachVoiceCoach {
         self.context = context
     }
 
-    /// Request permissions and pre-warm the capture audio session when immersion opens.
+    /// Request permissions when immersion opens. Voice capture session is configured
+    /// on-demand in beginPushToTalk to avoid interrupting background music playback.
     func prepare() {
         prepareTask?.cancel()
         prepareTask = Task { [weak self] in
             guard let self else { return }
             permissionsGranted = await speechClient.requestPermissions()
-            guard permissionsGranted, !Task.isCancelled else { return }
-            do {
-                try audioPlayer.prepareForVoiceCapture()
-                isSessionWarm = true
-            } catch {
-                lastError = error.localizedDescription
-            }
         }
     }
 

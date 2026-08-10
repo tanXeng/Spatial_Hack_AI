@@ -163,16 +163,13 @@ final class CoachMusicPlayer {
               let type = AVAudioSession.InterruptionType(rawValue: typeValue)
         else { return }
 
-        if type == .ended {
-            guard let optionsValue = notification.userInfo?[AVAudioSessionInterruptionOptionKey] as? UInt else { return }
-            if AVAudioSession.InterruptionOptions(rawValue: optionsValue).contains(.shouldResume), isPlaying {
-                if usingBundledTracks {
-                    queuePlayer?.play()
-                } else {
-                    player?.play()
-                }
-                Self.logger.debug("Music resumed after interruption")
+        if type == .ended, isPlaying {
+            if usingBundledTracks {
+                queuePlayer?.play()
+            } else {
+                player?.play()
             }
+            Self.logger.debug("Music resumed after interruption")
         }
     }
 

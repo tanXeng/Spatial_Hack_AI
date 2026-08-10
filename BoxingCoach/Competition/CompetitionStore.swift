@@ -49,6 +49,9 @@ nonisolated enum CompetitionStoreError: LocalizedError, Equatable, Sendable {
 @Observable
 @MainActor
 final class CompetitionStore {
+    /// Reserved persistence key outside the user-enterable competition-name alphabet.
+    static let standaloneAuraNormalizedName = "boxcoach://standalone-aura"
+
     private(set) var sheetRoute: CompetitionSheetRoute?
     private(set) var currentPlayer: CompetitionPlayer?
     private(set) var latestSubmission: CompetitionSubmission?
@@ -372,39 +375,32 @@ final class CompetitionStore {
     }
 
     /// Gives standalone Aura a durable, non-identifying participant instead of silently dropping
-    /// its proof on a fresh launch. The participant is published only after the cycle transaction
-    /// succeeds, so visible "saved" state always has a matching durable record.
+    /// its proof. This identity is deliberately separate from `currentPlayer`: a person entering
+    /// Aura after a competition participant must never append coaching evidence to that participant.
     @discardableResult
     func persistStandaloneCoachingCycle(
         _ result: CoachingCycleResult,
         fittedReach: BilateralReach
     ) async throws -> CoachingCyclePersistenceScope {
         let localName = "Local Athlete"
-        let normalizedName = CompetitionName.normalized(localName)
+        let normalizedName = Self.standaloneAuraNormalizedName
         let timestamp = now()
-        let player: CompetitionPlayer
-        if let currentPlayer {
-            player = currentPlayer
-        } else {
-            player = try await repository.player(normalizedName: normalizedName) ?? CompetitionPlayer(
-                id: UUID(),
-                name: localName,
-                normalizedName: normalizedName,
-                rememberedStance: result.stance,
-                reach: nil,
-                calibrationVersion: nil,
-                calibratedAt: nil,
-                createdAt: timestamp,
-                lastSeenAt: timestamp
-            )
-        }
-        let persisted = try await persistCoachingCycle(
+        let player = try await repository.player(normalizedName: normalizedName) ?? CompetitionPlayer(
+            id: UUID(),
+            name: localName,
+            normalizedName: normalizedName,
+            rememberedStance: result.stance,
+            reach: nil,
+            calibrationVersion: nil,
+            calibratedAt: nil,
+            createdAt: timestamp,
+            lastSeenAt: timestamp
+        )
+        _ = try await persistCoachingCycle(
             result,
             fittedReach: fittedReach,
             for: player
         )
-        currentPlayer = persisted
-        selectedStance = persisted.rememberedStance
         return coachingCyclePersistenceScope
     }
 

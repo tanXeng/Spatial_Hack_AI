@@ -68,7 +68,12 @@ struct CoachingCycleReviewRound3Tests {
 
         try await store.persistStandaloneCoachingCycle(result, fittedReach: reach)
 
-        let participant = try #require(store.currentPlayer)
+        #expect(store.currentPlayer == nil)
+        let participant = try #require(
+            try await repository.player(
+                normalizedName: CompetitionStore.standaloneAuraNormalizedName
+            )
+        )
         #expect(participant.name == "Local Athlete")
         #expect(participant.reach == reach)
         let saved = try #require(try await repository.coachingCycle(id: result.id))
@@ -78,6 +83,35 @@ struct CoachingCycleReviewRound3Tests {
             athleteID: participant.id,
             techniqueID: Technique.jab.id
         ).count == 6)
+
+        let competitionRepository = InMemoryCompetitionRepository()
+        let competitionStore = CompetitionStore(
+            repository: competitionRepository,
+            now: { Date(timeIntervalSince1970: 500) }
+        )
+        await competitionStore.join(name: "Blue Corner")
+        let competitionParticipant = try #require(competitionStore.currentPlayer)
+
+        try await competitionStore.persistStandaloneCoachingCycle(
+            result,
+            fittedReach: reach
+        )
+
+        #expect(competitionStore.currentPlayer?.id == competitionParticipant.id)
+        let localParticipant = try #require(
+            try await competitionRepository.player(
+                normalizedName: CompetitionStore.standaloneAuraNormalizedName
+            )
+        )
+        #expect(localParticipant.id != competitionParticipant.id)
+        #expect(try await competitionRepository.techniqueAttempts(
+            athleteID: localParticipant.id,
+            techniqueID: Technique.jab.id
+        ).count == 6)
+        #expect(try await competitionRepository.techniqueAttempts(
+            athleteID: competitionParticipant.id,
+            techniqueID: Technique.jab.id
+        ).isEmpty)
     }
 
     @Test("Completing transfer does not claim durable proof before persistence")

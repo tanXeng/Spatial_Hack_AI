@@ -23,7 +23,7 @@ struct CoachingCycleReviewRound4Tests {
 
         #expect(receipt == .sessionOnly)
         #expect(try await firstSession.coachingCycle(id: completed.result.id) != nil)
-        #expect(store.currentPlayer?.name == "Local Athlete")
+        #expect(store.currentPlayer == nil)
 
         let relaunchedSession = InMemoryCompetitionRepository()
         let relaunched = CompetitionStore.live(

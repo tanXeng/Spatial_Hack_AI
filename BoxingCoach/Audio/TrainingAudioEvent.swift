@@ -190,6 +190,9 @@ nonisolated enum TrainingAudioSystemEventMapper {
 nonisolated enum TrainingAudioEvent: Equatable, Sendable {
     case sceneDidAttach(TrainingAudioSceneOwner)
     case experienceDidEnter(TrainingAudioStage)
+    case roundDidStart
+    case unrankedResultDidFinalize
+    case competitionResultDidPersist(rank: Int, isWinner: Bool)
     case targetDidAppear(position: SIMD3<Float>)
     case validatedImpact(position: SIMD3<Float>, quality: TrainingImpactQuality)
     case rejectedImpact(position: SIMD3<Float>, reason: String)

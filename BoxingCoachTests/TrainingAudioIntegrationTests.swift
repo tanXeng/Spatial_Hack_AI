@@ -78,33 +78,196 @@ struct TrainingAudioIntegrationTests {
         #expect(backend.playedResources.contains(.cleanImpact1))
     }
 
-    @Test("Stage transitions drive bells, improvement, crowd, and winner celebration once")
-    func semanticStagesOwnRingAccents() async {
+    @Test("Window ambience migrates to the immersive body field without double playback")
+    func windowAmbienceMigratesToSpatialSceneOnce() async {
+        let backend = IntegrationRecordingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: IntegrationAudioResources(available: [.gymAmbience])
+        )
+        let worldRoot = Entity()
+        let bodyAnchor = Entity()
+
+        await coordinator.handle(.sceneDidAttach(.controlWindow))
+
+        #expect(backend.activePlayback(for: .gymAmbience)?.rendering == .fallback)
+
+        coordinator.attachSpatialScene(worldRoot: worldRoot, bodyAnchor: bodyAnchor)
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
+        coordinator.attachSpatialScene(worldRoot: worldRoot, bodyAnchor: bodyAnchor)
+
+        #expect(backend.activePlaybacks(for: .gymAmbience).count == 1)
+        #expect(backend.activePlayback(for: .gymAmbience)?.rendering == .spatial)
+        #expect(backend.playedResources.filter { $0 == .gymAmbience }.count == 2)
+    }
+
+    @Test("Spatial teardown clears ownership so the next immersive scene restarts every pool")
+    func spatialTeardownClearsCoordinatorPlaybackOwnership() async {
         let backend = IntegrationRecordingAudioBackend()
         let coordinator = makeCoordinator(
             backend: backend,
             resources: IntegrationAudioResources(available: [
+                .gymAmbience,
                 .competitionCrowd,
-                .startBell,
-                .endBell,
-                .improvementSting,
-                .winnerSwell
+                .cleanImpact1,
+                .startBell
             ])
+        )
+        let firstWorldRoot = Entity()
+        let firstBodyAnchor = Entity()
+        let target = SIMD3<Float>(0.18, 1.12, -0.72)
+
+        coordinator.attachSpatialScene(
+            worldRoot: firstWorldRoot,
+            bodyAnchor: firstBodyAnchor
+        )
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
+        await coordinator.handle(.experienceDidEnter(.compete))
+        await coordinator.handle(.targetDidAppear(position: target))
+        await coordinator.handle(.validatedImpact(position: target, quality: .clean))
+        await coordinator.handle(.roundDidStart)
+        await coordinator.handle(.sceneDidAttach(.controlWindow))
+
+        #expect(coordinator.activeImpactVoiceCount == 1)
+        #expect(backend.playedResources.filter { $0 == .startBell }.count == 1)
+        #expect(backend.activePlayback(for: .gymAmbience)?.rendering == .spatial)
+        #expect(backend.activePlayback(for: .competitionCrowd)?.rendering == .spatial)
+
+        coordinator.detachSpatialScene()
+        await coordinator.handle(.sceneDidDetach(.immersiveSpace))
+
+        #expect(coordinator.activeImpactVoiceCount == 0)
+        #expect(backend.activePlaybacks.isEmpty)
+
+        let secondWorldRoot = Entity()
+        let secondBodyAnchor = Entity()
+        coordinator.attachSpatialScene(
+            worldRoot: secondWorldRoot,
+            bodyAnchor: secondBodyAnchor
+        )
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
+
+        #expect(backend.activePlaybacks(for: .gymAmbience).count == 1)
+        #expect(backend.activePlaybacks(for: .competitionCrowd).count == 1)
+        #expect(backend.playedResources.filter { $0 == .gymAmbience }.count == 2)
+        #expect(backend.playedResources.filter { $0 == .competitionCrowd }.count == 2)
+
+        await coordinator.handle(.targetDidAppear(position: target))
+        await coordinator.handle(.validatedImpact(position: target, quality: .clean))
+        await coordinator.handle(.roundDidStart)
+
+        #expect(coordinator.activeImpactVoiceCount == 1)
+        #expect(backend.activePlaybacks(for: .cleanImpact1).count == 1)
+        #expect(backend.playedResources.filter { $0 == .startBell }.count == 2)
+    }
+
+    @Test("Stage selection stays silent until the calibrated round explicitly starts")
+    func semanticRoundStartOwnsTheStartBell() async {
+        let backend = IntegrationRecordingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: IntegrationAudioResources(available: [.startBell])
         )
 
         await coordinator.handle(.sceneDidAttach(.immersiveSpace))
         await coordinator.handle(.experienceDidEnter(.compete))
-        await coordinator.handle(.experienceDidEnter(.compete))
-        await coordinator.handle(.experienceDidEnter(.celebrate))
-        await coordinator.handle(.experienceDidEnter(.celebrate))
+
+        #expect(backend.playedResources.contains(.startBell) == false)
+
+        await coordinator.handle(.roundDidStart)
+        await coordinator.handle(.roundDidStart)
 
         #expect(backend.playedResources.filter { $0 == .startBell }.count == 1)
+        #expect(coordinator.presentation.caption == "Competition round started.")
+        #expect(coordinator.presentation.symbolName == "bell.fill")
+    }
+
+    @Test("Persisted rank controls winner audio and keeps a visible nonwinner result")
+    func persistedCompetitionResultOwnsWinnerAccent() async {
+        let nonwinnerBackend = IntegrationRecordingAudioBackend()
+        let nonwinnerCoordinator = makeCoordinator(
+            backend: nonwinnerBackend,
+            resources: IntegrationAudioResources(available: [.endBell, .winnerSwell])
+        )
+
+        await nonwinnerCoordinator.handle(.sceneDidAttach(.controlWindow))
+        await nonwinnerCoordinator.handle(.experienceDidEnter(.celebrate))
+        await nonwinnerCoordinator.handle(.competitionResultDidPersist(rank: 3, isWinner: false))
+        await nonwinnerCoordinator.handle(.competitionResultDidPersist(rank: 3, isWinner: false))
+
+        #expect(nonwinnerBackend.playedResources.filter { $0 == .endBell }.count == 1)
+        #expect(nonwinnerBackend.playedResources.contains(.winnerSwell) == false)
+        #expect(nonwinnerCoordinator.presentation.caption == "Rank 3 confirmed. Round complete.")
+        #expect(nonwinnerCoordinator.presentation.symbolName == "list.number")
+
+        let winnerBackend = IntegrationRecordingAudioBackend()
+        let winnerCoordinator = makeCoordinator(
+            backend: winnerBackend,
+            resources: IntegrationAudioResources(available: [.endBell, .winnerSwell])
+        )
+
+        await winnerCoordinator.handle(.sceneDidAttach(.controlWindow))
+        await winnerCoordinator.handle(.experienceDidEnter(.celebrate))
+        await winnerCoordinator.handle(.competitionResultDidPersist(rank: 1, isWinner: true))
+
+        #expect(winnerBackend.playedResources.filter { $0 == .endBell }.count == 1)
+        #expect(winnerBackend.playedResources.filter { $0 == .winnerSwell }.count == 1)
+        #expect(winnerCoordinator.presentation.caption == "Rank 1. Winner confirmed. Round complete.")
+        #expect(winnerCoordinator.presentation.symbolName == "trophy.fill")
+
+        let inconsistentBackend = IntegrationRecordingAudioBackend()
+        let inconsistentCoordinator = makeCoordinator(
+            backend: inconsistentBackend,
+            resources: IntegrationAudioResources(available: [.endBell, .winnerSwell])
+        )
+
+        await inconsistentCoordinator.handle(.sceneDidAttach(.controlWindow))
+        await inconsistentCoordinator.handle(.experienceDidEnter(.celebrate))
+        await inconsistentCoordinator.handle(.competitionResultDidPersist(rank: 2, isWinner: true))
+
+        #expect(inconsistentBackend.playedResources.contains(.winnerSwell) == false)
+        #expect(inconsistentCoordinator.presentation.caption == "Rank 2 confirmed. Round complete.")
+        #expect(inconsistentCoordinator.presentation.symbolName == "list.number")
+    }
+
+    @Test("A competition stage cannot claim a winner before standings persist")
+    func competitionCompletionWaitsForPersistedStanding() async {
+        let backend = IntegrationRecordingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: IntegrationAudioResources(available: [.endBell, .winnerSwell])
+        )
+
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
+        await coordinator.handle(.experienceDidEnter(.compete))
+        await coordinator.handle(.experienceDidEnter(.celebrate))
+
+        #expect(backend.playedResources.contains(.endBell) == false)
+        #expect(backend.playedResources.contains(.winnerSwell) == false)
+        #expect(coordinator.presentation.caption == TrainingAudioStage.celebrate.caption)
+    }
+
+    @Test("An unranked result owns its end bell and improvement accent once")
+    func unrankedResultOwnsCompletionAccents() async {
+        let backend = IntegrationRecordingAudioBackend()
+        let coordinator = makeCoordinator(
+            backend: backend,
+            resources: IntegrationAudioResources(available: [
+                .endBell,
+                .improvementSting,
+            ])
+        )
+
+        await coordinator.handle(.sceneDidAttach(.immersiveSpace))
+        await coordinator.handle(.experienceDidEnter(.baseline))
+        await coordinator.handle(.experienceDidEnter(.celebrate))
+        await coordinator.handle(.unrankedResultDidFinalize)
+        await coordinator.handle(.unrankedResultDidFinalize)
+
         #expect(backend.playedResources.filter { $0 == .endBell }.count == 1)
-        #expect(backend.playedResources.filter { $0 == .winnerSwell }.count == 1)
-        #expect(backend.playedResources.filter { $0 == .competitionCrowd }.count == 1)
-        #expect(backend.playedResources.contains(.improvementSting) == false)
-        #expect(coordinator.presentation.caption == "Winner confirmed. Round complete.")
-        #expect(coordinator.presentation.symbolName == "trophy.fill")
+        #expect(backend.playedResources.filter { $0 == .improvementSting }.count == 1)
+        #expect(coordinator.presentation.caption == "Training improvement complete.")
+        #expect(coordinator.presentation.symbolName == "chart.line.uptrend.xyaxis")
     }
 
     @Test(
@@ -177,30 +340,72 @@ struct TrainingAudioIntegrationTests {
 
 @MainActor
 private final class IntegrationRecordingAudioBackend: TrainingAudioBackend {
+    enum Rendering: Equatable {
+        case fallback
+        case spatial
+    }
+
+    struct Playback: Equatable {
+        let resource: TrainingAudioResourceID
+        let channel: TrainingAudioChannel
+        let rendering: Rendering
+    }
+
     var playbackDidFinish: ((TrainingAudioPlaybackHandle) -> Void)?
     var systemEventHandler: ((TrainingAudioSystemEvent) -> Void)?
     private(set) var playedResources: [TrainingAudioResourceID] = []
+    private(set) var activePlaybacks: [TrainingAudioPlaybackHandle: Playback] = [:]
+    private var spatialSceneAttached = false
     private var nextHandle = 1
 
     func attachScene() throws {}
     func detachScene() {}
-    func attachSpatialScene(worldRoot: Entity, bodyAnchor: Entity) {}
-    func detachSpatialScene() {}
+    func attachSpatialScene(worldRoot: Entity, bodyAnchor: Entity) {
+        spatialSceneAttached = true
+    }
+
+    func detachSpatialScene() {
+        spatialSceneAttached = false
+        activePlaybacks = activePlaybacks.filter { $0.value.rendering != .spatial }
+    }
     func apply(mix: TrainingAudioMix, fadeDuration: Duration) {}
 
     func play(_ request: TrainingAudioPlaybackRequest) -> TrainingAudioPlaybackHandle? {
         playedResources.append(request.resource)
-        defer { nextHandle += 1 }
-        return TrainingAudioPlaybackHandle(rawValue: nextHandle)
+        let handle = TrainingAudioPlaybackHandle(rawValue: nextHandle)
+        nextHandle += 1
+        let supportsSpatialPlayback = request.channel != .coach
+        activePlaybacks[handle] = Playback(
+            resource: request.resource,
+            channel: request.channel,
+            rendering: spatialSceneAttached && supportsSpatialPlayback ? .spatial : .fallback
+        )
+        return handle
     }
 
-    func stop(_ handle: TrainingAudioPlaybackHandle) {}
-    func stop(channels: Set<TrainingAudioChannel>) {}
-    func stopAll() {}
+    func stop(_ handle: TrainingAudioPlaybackHandle) {
+        activePlaybacks[handle] = nil
+    }
+
+    func stop(channels: Set<TrainingAudioChannel>) {
+        activePlaybacks = activePlaybacks.filter { !channels.contains($0.value.channel) }
+    }
+
+    func stopAll() {
+        activePlaybacks.removeAll()
+    }
     func beginVoiceCapture() throws {}
     func endVoiceCapture() {}
     func recoverPlaybackSession() throws {}
     func mediaServicesWereReset() throws {}
+
+    func activePlayback(for resource: TrainingAudioResourceID) -> Playback? {
+        activePlaybacks(for: resource).first
+    }
+
+    func activePlaybacks(for resource: TrainingAudioResourceID) -> [Playback] {
+        activePlaybacks.values.filter { $0.resource == resource }
+    }
 }
 
 @MainActor

@@ -234,9 +234,20 @@ struct BoxingCoachRootView: View {
     }
 
     private func completeCompetitionRunIfNeeded() async {
-        guard competitionStore.activeRun != nil else { return }
+        guard let completedRun = competitionStore.activeRun else { return }
         await competitionStore.reconcileCompletedRun(session: session)
         if competitionStore.activeRun == nil {
+            if case .ranked(let mode) = completedRun.kind,
+               let submission = competitionStore.latestSubmission,
+               submission.id == completedRun.id,
+               let standing = competitionStore.standings(for: mode).first(where: {
+                   $0.submission.id == submission.id
+               }) {
+                session.competitionResultDidPersist(
+                    rank: standing.rank,
+                    isWinner: standing.rank == 1
+                )
+            }
             let clock = ContinuousClock()
             let deadline = clock.now.advanced(by: .seconds(3))
             while flow.controlsDisabled, clock.now < deadline {

@@ -55,6 +55,9 @@ final class TrainingAudioCoordinator {
         category: "TrainingAudio"
     )
     private static let captureChannels: Set<TrainingAudioChannel> = [.coach, .impact, .status]
+    private static let spatialPlaybackChannels: Set<TrainingAudioChannel> = [
+        .ambience, .crowd, .impact, .status
+    ]
     private static let maximumImpactVoices = 4
     private static let maximumAccentVoices = 3
 
@@ -104,6 +107,11 @@ final class TrainingAudioCoordinator {
     private var activeCaptureOrigin: TrainingAudioSceneOwner?
     private var captureRevocationHandler: (@MainActor () -> Void)?
     private var rejectedImpactPresentedForTarget = false
+    private weak var spatialWorldRoot: Entity?
+    private weak var spatialBodyAnchor: Entity?
+    private var spatialSceneAttached = false
+    private var roundStartPresented = false
+    private var resultPresented = false
 
     private var sceneAttached: Bool { !attachedScenes.isEmpty }
 
@@ -145,11 +153,33 @@ final class TrainingAudioCoordinator {
     }
 
     func attachSpatialScene(worldRoot: Entity, bodyAnchor: Entity) {
+        if spatialSceneAttached,
+           spatialWorldRoot === worldRoot,
+           spatialBodyAnchor === bodyAnchor {
+            return
+        }
+        if spatialSceneAttached {
+            detachSpatialScene()
+        }
+        spatialWorldRoot = worldRoot
+        spatialBodyAnchor = bodyAnchor
+        spatialSceneAttached = true
         backend.attachSpatialScene(worldRoot: worldRoot, bodyAnchor: bodyAnchor)
+        rebindEnvironmentBedsToSpatialScene()
     }
 
     func detachSpatialScene() {
+        guard spatialSceneAttached else { return }
+        backend.stop(channels: Self.spatialPlaybackChannels)
+        clearPlaybackRecords(in: Self.spatialPlaybackChannels)
         backend.detachSpatialScene()
+        nextImpactVariant = 0
+        rejectedImpactPresentedForTarget = false
+        roundStartPresented = false
+        resultPresented = false
+        spatialSceneAttached = false
+        spatialWorldRoot = nil
+        spatialBodyAnchor = nil
     }
 
     @discardableResult
@@ -169,6 +199,12 @@ final class TrainingAudioCoordinator {
             return attachScene(owner)
         case let .experienceDidEnter(stage):
             return enter(stage)
+        case .roundDidStart:
+            return presentRoundStart()
+        case .unrankedResultDidFinalize:
+            return presentUnrankedResult()
+        case let .competitionResultDidPersist(rank, isWinner):
+            return presentCompetitionResult(rank: rank, isWinner: isWinner)
         case let .targetDidAppear(position):
             return targetAppeared(at: position)
         case let .validatedImpact(position, quality):
@@ -213,6 +249,8 @@ final class TrainingAudioCoordinator {
         presentation.requiresExplicitRecovery = false
         presentation.isCapturing = false
         presentation.isScoringFrozen = false
+        roundStartPresented = false
+        resultPresented = false
         applyCurrentMix()
 
         do {
@@ -252,7 +290,6 @@ final class TrainingAudioCoordinator {
 
         applyCurrentMix()
         startEnvironmentBedsIfNeeded()
-        playStageAccent(entering: stage, from: previousStage)
         return .handled
     }
 
@@ -698,6 +735,11 @@ final class TrainingAudioCoordinator {
         backend.stopAll()
         backend.detachScene()
         clearAllPlaybackRecords()
+        spatialSceneAttached = false
+        spatialWorldRoot = nil
+        spatialBodyAnchor = nil
+        roundStartPresented = false
+        resultPresented = false
         let preset = presentation.preset
         presentation = .detached
         presentation.preset = preset
@@ -705,6 +747,8 @@ final class TrainingAudioCoordinator {
     }
 
     private func prepareForTrainingStart() -> TrainingAudioEventOutcome {
+        roundStartPresented = false
+        resultPresented = false
         let coordinatorCaptureNeedsEnding = capturePreparation != nil || presentation.isCapturing
         let shouldRecoverDeferredVoiceResponse = presentation.requiresExplicitRecovery
             && pendingVoiceResponse != nil
@@ -855,45 +899,60 @@ final class TrainingAudioCoordinator {
         return sceneAttached ? .handled : .ignoredWhileDetached
     }
 
-    private func playStageAccent(
-        entering stage: TrainingAudioStage,
-        from previousStage: TrainingAudioStage
-    ) {
-        switch stage {
-        case .baseline, .compete:
+    private func presentRoundStart() -> TrainingAudioEventOutcome {
+        guard !roundStartPresented else { return .duplicateEvidence }
+        roundStartPresented = true
+        resultPresented = false
+        playAccentResource(
+            .startBell,
+            caption: presentation.stage == .compete
+                ? "Competition round started."
+                : "Round started.",
+            symbolName: "bell.fill"
+        )
+        return sceneAttached ? .handled : .ignoredWhileDetached
+    }
+
+    private func presentUnrankedResult() -> TrainingAudioEventOutcome {
+        guard !resultPresented else { return .duplicateEvidence }
+        resultPresented = true
+        roundStartPresented = false
+        playAccentResource(
+            .endBell,
+            caption: "Round complete.",
+            symbolName: "bell.fill"
+        )
+        playAccentResource(
+            .improvementSting,
+            caption: "Training improvement complete.",
+            symbolName: "chart.line.uptrend.xyaxis"
+        )
+        return sceneAttached ? .handled : .ignoredWhileDetached
+    }
+
+    private func presentCompetitionResult(
+        rank: Int,
+        isWinner: Bool
+    ) -> TrainingAudioEventOutcome {
+        guard !resultPresented else { return .duplicateEvidence }
+        resultPresented = true
+        roundStartPresented = false
+        let confirmedWinner = rank == 1 && isWinner
+        playAccentResource(
+            .endBell,
+            caption: confirmedWinner
+                ? "Rank 1. Winner confirmed. Round complete."
+                : "Rank \(rank) confirmed. Round complete.",
+            symbolName: confirmedWinner ? "trophy.fill" : "list.number"
+        )
+        if confirmedWinner {
             playAccentResource(
-                .startBell,
-                caption: stage == .compete ? "Competition round started." : "Round started.",
-                symbolName: "bell.fill"
+                .winnerSwell,
+                caption: "Rank 1. Winner confirmed. Round complete.",
+                symbolName: "trophy.fill"
             )
-        case .prove:
-            playAccentResource(
-                .improvementSting,
-                caption: "Improvement round ready.",
-                symbolName: "chart.line.uptrend.xyaxis"
-            )
-        case .celebrate:
-            playAccentResource(
-                .endBell,
-                caption: "Round complete.",
-                symbolName: "bell.fill"
-            )
-            if previousStage == .compete {
-                playAccentResource(
-                    .winnerSwell,
-                    caption: "Winner confirmed. Round complete.",
-                    symbolName: "trophy.fill"
-                )
-            } else {
-                playAccentResource(
-                    .improvementSting,
-                    caption: "Training improvement complete.",
-                    symbolName: "chart.line.uptrend.xyaxis"
-                )
-            }
-        case .fit, .learn, .correct, .transfer:
-            break
         }
+        return sceneAttached ? .handled : .ignoredWhileDetached
     }
 
     private func playAccentResource(
@@ -983,6 +1042,18 @@ final class TrainingAudioCoordinator {
                 )
             }
         }
+    }
+
+    private func rebindEnvironmentBedsToSpatialScene() {
+        if let ambience {
+            backend.stop(ambience.handle)
+            self.ambience = nil
+        }
+        if let crowd {
+            backend.stop(crowd.handle)
+            self.crowd = nil
+        }
+        startEnvironmentBedsIfNeeded()
     }
 
     private func impactResourceForNextVoice() -> TrainingAudioResourceID {

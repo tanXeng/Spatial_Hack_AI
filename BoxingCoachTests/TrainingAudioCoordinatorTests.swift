@@ -1029,7 +1029,10 @@ struct TrainingAudioCoordinatorTests {
         let backend = RecordingTrainingAudioBackend()
         let coordinator = makeCoordinator(
             backend: backend,
-            resources: StubTrainingAudioResources(available: [.coach(.guardUp)])
+            resources: StubTrainingAudioResources(available: [
+                .coach(.guardUp),
+                .startBell
+            ])
         )
         let session = ReactiveStrikeSession(
             feedbackGenerator: MockFeedbackGenerator(),
@@ -1043,6 +1046,7 @@ struct TrainingAudioCoordinatorTests {
         session.immersiveSpaceDidOpen()
         session.startDrill()
         #expect(coordinator.presentation.stage == .baseline)
+        #expect(backend.playedResources.contains(.startBell) == false)
         session.stopDrill()
         session.immersiveSpaceDidClose()
 

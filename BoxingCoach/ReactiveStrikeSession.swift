@@ -355,6 +355,13 @@ final class ReactiveStrikeSession {
         audioCoordinator.handleImmediately(.presetDidChange(preset))
     }
 
+    func competitionResultDidPersist(rank: Int, isWinner: Bool) {
+        audioCoordinator.handleImmediately(.competitionResultDidPersist(
+            rank: rank,
+            isWinner: isWinner
+        ))
+    }
+
     func configure(
         mode: ReactiveStrikeMode,
         combination: Combination?,
@@ -828,6 +835,7 @@ final class ReactiveStrikeSession {
         case .calibration:
             await runDrillLoop()
         case .readyToStart:
+            audioCoordinator.handleImmediately(.roundDidStart)
             if mode == .combination {
                 await runCombinationLoop()
             } else {
@@ -847,6 +855,10 @@ final class ReactiveStrikeSession {
         clearAttemptState()
         phase = .finished
         lastFeedback = summaryFeedback()
+        audioCoordinator.handleImmediately(.experienceDidEnter(.celebrate))
+        if !capturesCompetitionEvidence {
+            audioCoordinator.handleImmediately(.unrankedResultDidFinalize)
+        }
     }
 
     private func runDrillLoop() async {
@@ -929,6 +941,7 @@ final class ReactiveStrikeSession {
         }
 
         guard await beginRoundReadyDelay() else { return }
+        audioCoordinator.handleImmediately(.roundDidStart)
         if capturesCompetitionEvidence {
             competitionStartedAt = ProcessInfo.processInfo.systemUptime
             playCoachCue(.countdown, caption: "Get ready.")
@@ -952,6 +965,9 @@ final class ReactiveStrikeSession {
         phase = .finished
         lastFeedback = summaryFeedback()
         audioCoordinator.handleImmediately(.experienceDidEnter(.celebrate))
+        if !capturesCompetitionEvidence {
+            audioCoordinator.handleImmediately(.unrankedResultDidFinalize)
+        }
     }
 
     /// Commits the post-calibration execution cursor before the user-facing get-ready delay.

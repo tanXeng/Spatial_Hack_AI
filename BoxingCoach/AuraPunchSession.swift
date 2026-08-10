@@ -964,6 +964,7 @@ final class AuraPunchSession {
     private func runScoredTargetRound(solver: ArmPoseSolver) async {
         phase = .attempting
         audioCoordinator.handleImmediately(.experienceDidEnter(.baseline))
+        audioCoordinator.handleImmediately(.roundDidStart)
         currentScoredPunch = 0
         playCoachCue(.hitTarget, caption: "Hit each target.")
 
@@ -1351,6 +1352,7 @@ final class AuraPunchSession {
 
         if localFeedback.correctionCode != .trackingRecovery {
             audioCoordinator.handleImmediately(.experienceDidEnter(.celebrate))
+            audioCoordinator.handleImmediately(.unrankedResultDidFinalize)
             playCoachCue(
                 aggregated.overall >= 74 ? .resultsGood : .resultsNeedsWork,
                 kind: .result,

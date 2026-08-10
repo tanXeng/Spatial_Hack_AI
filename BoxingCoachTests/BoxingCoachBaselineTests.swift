@@ -1,4 +1,5 @@
 import XCTest
+import simd
 @testable import BoxingCoach
 
 final class BoxingCoachTechniqueTests: XCTestCase {
@@ -59,6 +60,17 @@ final class BoxingCoachTechniqueTests: XCTestCase {
         XCTAssertTrue(left.shouldEmphasize(guidedPeak))
     }
 
+    /// A user who drops their hand to the hip and never punches must score **zero** extension,
+    /// even though that load is radially further from the shoulder than a real uppercut finish.
+    /// This is the entire reason `PunchExtensionSemantics` measures ordered vertical rise for this
+    /// technique instead of peak radial reach.
+    ///
+    /// The trap is authored into the *attempt* here rather than borrowed from the reference. It
+    /// used to be taken from the reference's own guard→hip prefix, which worked only because the
+    /// authored finish sat unrealistically close to the user (radial 0.62 against the hip's 0.65).
+    /// Moving that finish out to a viewable target distance — see `PunchTargetGeometryTests` —
+    /// made the reference's finish the radially furthest point, as it should be. The semantics
+    /// still have to hold for a real attempt, so the fixture now carries the trap explicitly.
     func testUppercutExtensionRequiresAnOrderedRiseAfterTheHipLoad() throws {
         let reference = ReferencePunchLibrary.punch(
             for: .uppercut,
@@ -66,12 +78,26 @@ final class BoxingCoachTechniqueTests: XCTestCase {
             measurements: .averageAdult,
             side: .left
         )
-        let loadIndex = try XCTUnwrap(
-            reference.samples.indices.min(by: {
-                reference.samples[$0].fist.y < reference.samples[$1].fist.y
-            })
-        )
-        let loadOnlySamples = Array(reference.samples[...loadIndex])
+
+        // Guard, then a deep drop beside the hip, and nothing else. Radially this beats the
+        // reference's landing; vertically it never rises at all.
+        let elbow = SIMD3<Float>(0.20, -0.45, -0.05)
+        let guardHand = SIMD3<Float>(-0.18, -0.15, 0.23)
+        let loadOnlySamples: [MotionSample] = stride(from: 0.0, through: 0.20, by: 1.0 / 60.0)
+            .map { time in
+                let t = Float(time / 0.20)
+                return MotionSample(
+                    time: time,
+                    fist: simd_mix(
+                        SIMD3<Float>(0.15, 0.18, 0.30),
+                        SIMD3<Float>(0.05, -0.80, 0.18),
+                        SIMD3(repeating: t)
+                    ),
+                    elbow: elbow,
+                    guardHand: guardHand,
+                    isTracked: true
+                )
+            }
         let loadOnly = RecordedAttempt(
             samples: loadOnlySamples,
             trackedFraction: 1,

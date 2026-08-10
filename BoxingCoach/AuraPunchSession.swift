@@ -219,8 +219,7 @@ final class AuraPunchSession {
         loopTask = nil
         for recorder in recorders.values { recorder.cancel() }
         targets.removeActiveTarget()
-        coach.stop()
-        coach.isVisible = false
+        dismissCoach()
         demoArm?.isVisible = false
         mirrorArm?.isVisible = false
         currentScoredPunch = 0
@@ -348,7 +347,12 @@ final class AuraPunchSession {
         demoArm?.isVisible = false
         mirrorArm?.isVisible = false
 
-        coach.place(using: frame, measurements: measurements, reflected: resolved.reflected)
+        coach.place(
+            using: frame,
+            measurements: measurements,
+            demoSide: side,
+            reflected: resolved.reflected
+        )
         coach.isVisible = true
         coach.playIdle()
 
@@ -368,13 +372,21 @@ final class AuraPunchSession {
             try? await Task.sleep(for: .seconds(duration))
         }
         guard !Task.isCancelled else {
-            coach.isVisible = false
+            dismissCoach()
             return
         }
 
+        // Back to idle and *stay on screen*. He remains beside the user for the whole guided
+        // follow-along so there is still a full body to look at while the ghost leads the reps;
+        // `dismissCoach()` takes him away only once the user is punching on their own.
         coach.playIdle()
         try? await Task.sleep(for: .milliseconds(400))
+    }
 
+    /// Takes the coach away. Called when the guided phase ends and the user throws unaided —
+    /// keeping him around during the scored round would give them a second thing to watch at
+    /// exactly the moment they should be looking at their own target.
+    private func dismissCoach() {
         coach.stop()
         coach.isVisible = false
     }
@@ -662,6 +674,8 @@ final class AuraPunchSession {
 
     private func runCountdown() async {
         phase = .countdown
+        // The guided phase is over — from here the user throws unaided, so the coach steps away.
+        dismissCoach()
         coachAudio.play(id: .countdown)
         for count in [3, 2, 1] {
             if Task.isCancelled { return }

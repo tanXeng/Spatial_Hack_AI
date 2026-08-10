@@ -62,15 +62,31 @@ Merge decisions worth knowing, because both undid a duplicate that branch had in
 ### The coach character
 
 A rigged humanoid demonstrates the selected punch **once, at full speed, before** the ghost overlay
-starts. He is not part of the follow-along — the ghost's hold-until-matched loop is what teaches the
-motion; the coach is the "here is what it looks like" that precedes it. That ordering is why the
-clips do not need segmenting into out/hold/return the way the ghost's trajectory does.
+starts. He throws the clip only that once — the ghost's hold-until-matched loop is what teaches the
+motion — which is why the clips do not need segmenting into out/hold/return the way the ghost's
+trajectory does.
 
-**He faces the user and mirrors, like a gym mirror.** `CoachCharacterEntity.shouldReflect` reflects
-exactly when the clip's authored side matches the side the user is about to throw. That rule is what
-lets **four one-sided clips cover all eight** technique/side combinations: facing the user, an
-unreflected left-arm clip already reads on the user's right, so only the matching-side case needs
-flipping. Reflection is a negative X scale on the container, never on the loaded model.
+**He stays on screen after that demo, idling, for the whole guided follow-along**, and is dismissed
+by `dismissCoach()` at the top of `runCountdown` — the moment the user starts throwing unaided. The
+scored round is deliberately coach-free: a second body to watch is a distraction exactly when the
+user should be looking at their own target.
+
+**He stands beside the user, facing the same way**, like a partner on the next spot in a class —
+*not* facing them like a gym mirror. Three consequences, each load-bearing:
+
+- `place(using:measurements:demoSide:reflected:)` puts him on the side **opposite the demonstrating
+  arm** (`standoffDistance` 0.45 m ahead, `lateralOffset` 0.85 m across), so the working arm sits
+  between the two bodies instead of being hidden behind his torso. `facingYaw` is therefore `0`.
+- `shouldReflect` is `clipSide != requestedSide` — the **inverse** of the rule used while he faced
+  the user. Side by side his left arm is already on the same side of the world as the user's left,
+  so the common cases need no mirroring at all. Turning him around without inverting this puts
+  every demo on the wrong arm while still looking plausible in the simulator; that is what
+  `testReflectionHappensOnlyOnASideMismatch` guards.
+- Reflection is still a negative X scale on the container, never on the loaded model. A negative
+  scale reverses triangle winding, which with default back-face culling made the renderer discard
+  his outer surface and draw the **inside of his skull and torso**. `makeDoubleSided` fixes that at
+  load by setting `faceCulling = .none` on every material. Note `faceCulling` lives on each concrete
+  material type, not on the `Material` protocol, so that walk has to type-switch.
 
 `CoachCharacterEntity` **fails soft everywhere**. Missing asset, missing clip, or no body frame all
 skip the demo and fall through to the ghost unchanged. A missing model must never cost a demo.
@@ -277,14 +293,16 @@ Both targets use `PBXFileSystemSynchronizedRootGroup`, so **new files under `Box
 - [ ] **Scoring thresholds are hand-tuned from geometry, not calibrated** against real attempts (`ScoringThresholds`). Same for the reference trajectories, `GuardCoach.dropThreshold` (0.46), and `ReachCalibration`'s plateau constants.
 - [ ] **Calibration measures the arm chain only.** `shoulderWidth`, `eyeToShoulderDrop`, and `eyeToShoulderSetback` are still `averageAdult`, and the measured value is fist-forward-of-shoulder-line rather than true shoulder-to-fist. Good enough to place targets and normalize scoring; not a real anthropometric capture.
 - [ ] **Calibration has only been verified in the simulator and by unit test.** The plateau detector's tolerance and duration need a real device pass — a user who never quite holds still falls through to the old percentile rule and gets an under-measured volume.
-- [ ] **The coach's placement has never been seen on device.** Three constants in
-      `CoachCharacterEntity` are the tuning knobs: `standoffDistance` (1.6 m), `facingYaw` (a half
-      turn, assuming Mixamo faces -Z after Blender's Z-up → Y-up conversion), and the
-      `shoulderHeightFraction` used to find the floor from the shoulder-line body frame. If he
-      appears sunk into the floor, side-on, or behind the user, these are why.
-- [ ] **Mirroring renders with a negative scale**, which flips triangle winding. If the coach looks
-      inside-out or oddly lit, that is the cause — `shouldReflect` returning a constant `false`
-      disables it at the cost of the motion appearing on the user's opposite side.
+- [ ] **The coach's side-by-side placement needs a second device pass.** The first one produced all
+      three fixes now described above (inside-out rendering, facing, disappearing too early). The
+      remaining knobs in `CoachCharacterEntity` are `standoffDistance` (0.45 m), `lateralOffset`
+      (0.85 m), and `shoulderHeightFraction` (finds the floor from the shoulder-line body frame).
+      If he is sunk into the floor, clipping the user, or too far back to see without a full head
+      turn, those are why.
+- [ ] **Mirrored demos may still light oddly.** `makeDoubleSided` stops the renderer drawing his
+      interior, but a negative scale also inverts normals, so a reflected coach can shade
+      differently from an unreflected one. Only the side-mismatch cases mirror at all now (southpaw
+      jab, orthodox cross), so compare those two against a straight orthodox jab on device.
 - [ ] Coach clips are Tripo/Mixamo presets, so they do **not** match `ReferencePunchLibrary`, which
       is what the app actually scores against. The coach demonstrates one motion and the ghost grades
       another. Driving the coach's arm by IK from the reference trajectory is the fix.

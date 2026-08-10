@@ -24,38 +24,42 @@ final class CoachCharacterEntityTests: XCTestCase {
         }
     }
 
-    /// The coach faces the user, so his motion has to land on the same side the user is about to
-    /// throw. Reflecting exactly when the clip's own side matches the request is what lets four
-    /// one-sided clips cover all eight technique/side combinations.
+    /// The coach stands beside the user facing the same way, so a clip already authored on the
+    /// requested side needs no mirroring at all. Reflecting only on a side mismatch is what lets
+    /// four one-sided clips cover all eight technique/side combinations.
     func testMirroringPutsTheMotionOnTheUsersSide() throws {
-        // Jab is authored on the coach's left. An orthodox jab is the user's left, so it reflects.
+        // Jab is authored on the coach's left. An orthodox jab is the user's left, and side by side
+        // his left is already the user's left — so the most common case does not mirror at all.
         let leftJab = try XCTUnwrap(
             CoachCharacterEntity.resolveClip(technique: .jab, side: .left)
         )
         XCTAssertEqual(leftJab.clip, "jab_left")
-        XCTAssertTrue(leftJab.reflected)
+        XCTAssertFalse(leftJab.reflected)
 
-        // A southpaw jab is the user's right, which the unreflected left-arm clip already reads as.
+        // A southpaw jab is thrown with the right, so the left-arm clip has to be mirrored.
         let rightJab = try XCTUnwrap(
             CoachCharacterEntity.resolveClip(technique: .jab, side: .right)
         )
         XCTAssertEqual(rightJab.clip, "jab_left")
-        XCTAssertFalse(rightJab.reflected)
+        XCTAssertTrue(rightJab.reflected)
 
         // Cross is authored on the coach's right, so the reflection flips the other way.
         let rightCross = try XCTUnwrap(
             CoachCharacterEntity.resolveClip(technique: .cross, side: .right)
         )
         XCTAssertEqual(rightCross.clip, "cross_right")
-        XCTAssertTrue(rightCross.reflected)
+        XCTAssertFalse(rightCross.reflected)
 
         let leftCross = try XCTUnwrap(
             CoachCharacterEntity.resolveClip(technique: .cross, side: .left)
         )
-        XCTAssertFalse(leftCross.reflected)
+        XCTAssertTrue(leftCross.reflected)
     }
 
-    func testReflectionRuleIsSymmetric() {
+    /// Regression guard for the facing change: when the coach turned from facing the user to
+    /// standing beside them, this rule had to invert. A stale `==` here puts every demo on the
+    /// wrong arm while still looking perfectly plausible in the simulator.
+    func testReflectionHappensOnlyOnASideMismatch() {
         for clipSide in [BodySide.left, .right] {
             for requested in [BodySide.left, .right] {
                 XCTAssertEqual(
@@ -63,10 +67,51 @@ final class CoachCharacterEntityTests: XCTestCase {
                         clipSide: clipSide,
                         requestedSide: requested
                     ),
-                    clipSide == requested
+                    clipSide != requested,
+                    "\(clipSide.rawValue) clip for a \(requested.rawValue) punch"
                 )
             }
         }
+    }
+
+    // MARK: Placement
+
+    /// He must stand beside the user rather than in front of them, on the side that keeps the
+    /// demonstrating arm between the two bodies, with his feet on the floor.
+    func testCoachStandsBesideTheUserOnTheSideOppositeTheDemoArm() async throws {
+        let coach = CoachCharacterEntity()
+        let loaded = await coach.load()
+        XCTAssertTrue(loaded, "coach failed to load from the app bundle")
+
+        let measurements = BodyMeasurements.averageAdult
+        // Shoulder line at 1.4 m, facing +Z, so "right" is +X.
+        let frame = BodyFrame(
+            origin: SIMD3(0, 1.4, 0),
+            right: SIMD3(1, 0, 0),
+            up: SIMD3(0, 1, 0),
+            forward: SIMD3(0, 0, 1),
+            headPosition: SIMD3(0, 1.6, 0)
+        )
+
+        coach.place(using: frame, measurements: measurements, demoSide: .right, reflected: false)
+        let rightArmDemo = coach.worldPositionForTesting
+
+        coach.place(using: frame, measurements: measurements, demoSide: .left, reflected: false)
+        let leftArmDemo = coach.worldPositionForTesting
+
+        // Right-arm demo stands on the user's left, and vice versa.
+        XCTAssertLessThan(rightArmDemo.x, -0.5, "a right-arm demo belongs on the user's left")
+        XCTAssertGreaterThan(leftArmDemo.x, 0.5, "a left-arm demo belongs on the user's right")
+
+        // Beside, not in front: the lateral offset dominates the forward standoff.
+        XCTAssertGreaterThan(
+            abs(rightArmDemo.x),
+            rightArmDemo.z,
+            "the coach must be further to the side than he is ahead"
+        )
+
+        // Feet on the floor, derived from the shoulder-line origin rather than assumed at y = 0.
+        XCTAssertEqual(rightArmDemo.y, 1.4 - measurements.height * 0.83, accuracy: 0.05)
     }
 
     // MARK: Asset binding

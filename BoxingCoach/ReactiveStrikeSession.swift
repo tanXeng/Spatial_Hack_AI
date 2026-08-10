@@ -77,6 +77,7 @@ final class ReactiveStrikeSession {
     private var trackingResumeRequested = false
     private let liveVoice: CoachLiveVoiceService
     let voiceCoach: CoachVoiceCoach
+    let musicPlayer = CoachMusicPlayer()
 
     init() {
         let liveVoice = CoachLiveVoiceService()

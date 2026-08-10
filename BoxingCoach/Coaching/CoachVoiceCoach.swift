@@ -34,6 +34,8 @@ final class CoachVoiceCoach {
         self.context = context
     }
 
+    /// Request permissions when immersion opens. Voice capture session is configured
+    /// on-demand in beginPushToTalk to avoid interrupting background music playback.
     func prepare() {
         prepareTask?.cancel()
         prepareTask = Task { [weak self] in

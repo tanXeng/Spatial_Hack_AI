@@ -125,6 +125,11 @@ final class AuraPunchSession {
 
     private var loopTask: Task<Void, Never>?
 
+    /// Ticks the coach's placement while he is on screen. Separate from `loopTask` because it has
+    /// to keep running across the demo and the guided follow-along, which are sequential stages of
+    /// that one task.
+    private var coachFollowTask: Task<Void, Never>?
+
     /// Reused briefly when head tracking flickers mid-attempt so hand samples are not discarded.
     private var cachedBodyFrame: BodyFrame?
     private var cachedBodyFrameTime: TimeInterval = 0
@@ -170,6 +175,10 @@ final class AuraPunchSession {
     }
 
     func detach() {
+        // The follow task holds the coach; leaving it ticking against a detached scene root would
+        // keep a whole rigged model alive after the immersive space has gone.
+        coachFollowTask?.cancel()
+        coachFollowTask = nil
         targets.removeActiveTarget()
         demoArm?.removeFromScene()
         mirrorArm?.removeFromScene()
@@ -355,11 +364,12 @@ final class AuraPunchSession {
         )
         coach.isVisible = true
         coach.playIdle()
+        startCoachFollow(solver: solver, demoSide: side, reflected: resolved.reflected)
 
         let handLabel = technique.hand == .either ? " \(side.rawValue)" : ""
         setCoaching(
             headline: "WATCH THE COACH",
-            detail: "He throws the\(handLabel) \(technique.name.lowercased()) once — watch the whole motion",
+            detail: "He works the\(handLabel) \(technique.name.lowercased()) on repeat — watch the whole motion",
             status: "Watch the coach throw the\(handLabel) \(technique.name.lowercased())"
         )
 
@@ -368,25 +378,54 @@ final class AuraPunchSession {
         try? await Task.sleep(for: .milliseconds(600))
         guard !Task.isCancelled else { return }
 
-        if let duration = coach.play(clip: resolved.clip) {
-            try? await Task.sleep(for: .seconds(duration))
+        // One clean single rep to establish the shape, then straight onto a loop. He keeps working
+        // that punch for as long as he is on screen — through the whole guided follow-along —
+        // rather than throwing once and freezing.
+        let clipDuration = coach.play(clip: resolved.clip)
+        if let clipDuration {
+            try? await Task.sleep(for: .seconds(clipDuration))
         }
         guard !Task.isCancelled else {
             dismissCoach()
             return
         }
 
-        // Back to idle and *stay on screen*. He remains beside the user for the whole guided
-        // follow-along so there is still a full body to look at while the ghost leads the reps;
-        // `dismissCoach()` takes him away only once the user is punching on their own.
-        coach.playIdle()
-        try? await Task.sleep(for: .milliseconds(400))
+        coach.playLooping(clip: resolved.clip)
+
+        // Hold on the coach for one more cycle before the ghost takes over, so the user sees the
+        // punch at least twice and reads it as a repeating drill rather than a one-off.
+        try? await Task.sleep(for: .seconds(clipDuration ?? 1.0))
+    }
+
+    /// Keeps the coach oriented to the user for as long as he is on screen.
+    ///
+    /// Recomputed every frame rather than placed once: as the user turns, he orbits to hold the
+    /// same angle off their forward axis and rotates to face the same way they do, so he stays in
+    /// view instead of being left behind at a fixed spot in the room.
+    private func startCoachFollow(solver: ArmPoseSolver, demoSide: BodySide, reflected: Bool) {
+        coachFollowTask?.cancel()
+        coachFollowTask = Task { [weak self] in
+            while !Task.isCancelled {
+                guard let self else { return }
+                if let frame = self.currentBodyFrame(solver: solver) {
+                    self.coach.follow(
+                        using: frame,
+                        measurements: self.measurements,
+                        demoSide: demoSide,
+                        reflected: reflected
+                    )
+                }
+                try? await Task.sleep(for: self.frameInterval)
+            }
+        }
     }
 
     /// Takes the coach away. Called when the guided phase ends and the user throws unaided —
     /// keeping him around during the scored round would give them a second thing to watch at
     /// exactly the moment they should be looking at their own target.
     private func dismissCoach() {
+        coachFollowTask?.cancel()
+        coachFollowTask = nil
         coach.stop()
         coach.isVisible = false
     }

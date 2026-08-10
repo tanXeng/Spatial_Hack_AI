@@ -61,22 +61,36 @@ Merge decisions worth knowing, because both undid a duplicate that branch had in
 
 ### The coach character
 
-A rigged humanoid demonstrates the selected punch **once, at full speed, before** the ghost overlay
-starts. He throws the clip only that once — the ghost's hold-until-matched loop is what teaches the
-motion — which is why the clips do not need segmenting into out/hold/return the way the ghost's
-trajectory does.
+A rigged humanoid demonstrates the selected punch **on a loop** while the ghost overlay teaches it.
+`runCoachDemo` plays one clean single rep to establish the shape, then switches to
+`playLooping(clip:)` and he keeps working that same punch for as long as he is on screen. The clips
+start and end at guard, so repeating one reads as a boxer drilling a shot. The ghost's
+hold-until-matched loop is still what actually teaches the motion, which is why the clips do not
+need segmenting into out/hold/return the way the ghost's trajectory does.
 
-**He stays on screen after that demo, idling, for the whole guided follow-along**, and is dismissed
-by `dismissCoach()` at the top of `runCountdown` — the moment the user starts throwing unaided. The
+**He stays on screen through the whole guided follow-along**, still punching, and is dismissed by
+`dismissCoach()` at the top of `runCountdown` — the moment the user starts throwing unaided. The
 scored round is deliberately coach-free: a second body to watch is a distraction exactly when the
 user should be looking at their own target.
 
-**He stands beside the user, facing the same way**, like a partner on the next spot in a class —
-*not* facing them like a gym mirror. Three consequences, each load-bearing:
+**He stands off to one side, facing the same way**, like a partner on the next spot in a class —
+*not* facing them like a gym mirror. Four consequences, each load-bearing:
 
-- `place(using:measurements:demoSide:reflected:)` puts him on the side **opposite the demonstrating
-  arm** (`standoffDistance` 0.45 m ahead, `lateralOffset` 0.85 m across), so the working arm sits
-  between the two bodies instead of being hidden behind his torso. `facingYaw` is therefore `0`.
+- Placement is specified as **`viewingDistance` (1.9 m) and `viewingAngle` (24°)**, not as
+  independent forward/lateral offsets. That is deliberate: the offsets version put him at roughly
+  62° off axis, which is "beside the user" in the literal sense but only findable by turning your
+  head all the way to the side. An angle makes the thing that matters — *is he in view?* — the
+  thing the constant states. Keep it under ~30°, which is about the limit of comfortable binocular
+  attention. `testCoachStandsOffAxisButInsideTheForwardFieldOfView` pins the range.
+- He takes the side **opposite the demonstrating arm**, so the working arm sits between the two
+  bodies instead of being hidden behind his own torso. `facingYaw` is therefore `0`.
+- **He follows the user.** `follow(...)` is ticked every frame by `coachFollowTask` and recomputes
+  the target from the live `BodyFrame`, so as the user turns he orbits to hold the same angle off
+  their forward axis and rotates to keep facing where they face. Holding the *angle* rather than a
+  world spot is what keeps him in view whichever way the user ends up turning. Motion is smoothed
+  (`followSmoothing`) because `BodyFrame.forward` follows the head, and a human-sized model
+  tracking raw head yaw one-to-one is unpleasant to stand next to. Yaw interpolation goes the short
+  way round via `shortestAngleDelta` — lerping raw radians spins him a full turn at the ±π seam.
 - `shouldReflect` is `clipSide != requestedSide` — the **inverse** of the rule used while he faced
   the user. Side by side his left arm is already on the same side of the world as the user's left,
   so the common cases need no mirroring at all. Turning him around without inverting this puts
@@ -293,12 +307,17 @@ Both targets use `PBXFileSystemSynchronizedRootGroup`, so **new files under `Box
 - [ ] **Scoring thresholds are hand-tuned from geometry, not calibrated** against real attempts (`ScoringThresholds`). Same for the reference trajectories, `GuardCoach.dropThreshold` (0.46), and `ReachCalibration`'s plateau constants.
 - [ ] **Calibration measures the arm chain only.** `shoulderWidth`, `eyeToShoulderDrop`, and `eyeToShoulderSetback` are still `averageAdult`, and the measured value is fist-forward-of-shoulder-line rather than true shoulder-to-fist. Good enough to place targets and normalize scoring; not a real anthropometric capture.
 - [ ] **Calibration has only been verified in the simulator and by unit test.** The plateau detector's tolerance and duration need a real device pass — a user who never quite holds still falls through to the old percentile rule and gets an under-measured volume.
-- [ ] **The coach's side-by-side placement needs a second device pass.** The first one produced all
-      three fixes now described above (inside-out rendering, facing, disappearing too early). The
-      remaining knobs in `CoachCharacterEntity` are `standoffDistance` (0.45 m), `lateralOffset`
-      (0.85 m), and `shoulderHeightFraction` (finds the floor from the shoulder-line body frame).
-      If he is sunk into the floor, clipping the user, or too far back to see without a full head
-      turn, those are why.
+- [ ] **The coach's placement is now on its third device pass.** Round one produced the inside-out,
+      facing, and disappearing-too-early fixes; round two produced the looping punch, the move into
+      the forward field of view, and the follow behaviour. Remaining knobs in
+      `CoachCharacterEntity`: `viewingDistance` (1.9 m), `viewingAngle` (24°), `followSmoothing`
+      (0.08 per frame), and `shoulderHeightFraction` (finds the floor from the shoulder-line body
+      frame). If he is sunk into the floor, too close to crowd the user, or swims when the head
+      turns, those are why.
+- [ ] **`followSmoothing` has never been felt on device.** It is a fixed per-frame fraction tuned
+      against the session's ~90 Hz tick, so it is implicitly frame-rate dependent — if the loop
+      ever slows, he lags further behind. Too low reads as him sliding after the user; too high
+      reads as him jittering with every head twitch.
 - [ ] **Mirrored demos may still light oddly.** `makeDoubleSided` stops the renderer drawing his
       interior, but a negative scale also inverts normals, so a reflected coach can shade
       differently from an unreflected one. Only the side-mismatch cases mirror at all now (southpaw

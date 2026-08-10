@@ -76,9 +76,9 @@ final class CoachCharacterEntityTests: XCTestCase {
 
     // MARK: Placement
 
-    /// He must stand beside the user rather than in front of them, on the side that keeps the
-    /// demonstrating arm between the two bodies, with his feet on the floor.
-    func testCoachStandsBesideTheUserOnTheSideOppositeTheDemoArm() async throws {
+    /// He must stand off to one side — the side that keeps the demonstrating arm between the two
+    /// bodies — but still **inside the user's forward field of view**, with his feet on the floor.
+    func testCoachStandsOffAxisButInsideTheForwardFieldOfView() async throws {
         let coach = CoachCharacterEntity()
         let loaded = await coach.load()
         XCTAssertTrue(loaded, "coach failed to load from the app bundle")
@@ -100,18 +100,90 @@ final class CoachCharacterEntityTests: XCTestCase {
         let leftArmDemo = coach.worldPositionForTesting
 
         // Right-arm demo stands on the user's left, and vice versa.
-        XCTAssertLessThan(rightArmDemo.x, -0.5, "a right-arm demo belongs on the user's left")
-        XCTAssertGreaterThan(leftArmDemo.x, 0.5, "a left-arm demo belongs on the user's right")
+        XCTAssertLessThan(rightArmDemo.x, 0, "a right-arm demo belongs on the user's left")
+        XCTAssertGreaterThan(leftArmDemo.x, 0, "a left-arm demo belongs on the user's right")
 
-        // Beside, not in front: the lateral offset dominates the forward standoff.
-        XCTAssertGreaterThan(
-            abs(rightArmDemo.x),
-            rightArmDemo.z,
-            "the coach must be further to the side than he is ahead"
-        )
+        // The one that actually matters: he has to be findable without turning your head. An
+        // earlier version sat at ~62° off axis, which is only visible over your own shoulder.
+        for spot in [rightArmDemo, leftArmDemo] {
+            let offAxisAngle = atan2(abs(spot.x), spot.z) * 180 / .pi
+            XCTAssertLessThan(
+                offAxisAngle,
+                30,
+                "the coach must sit inside the forward field of view, not over the user's shoulder"
+            )
+            XCTAssertGreaterThan(
+                offAxisAngle,
+                10,
+                "…but far enough off axis to be beside the user rather than in their punching lane"
+            )
+            // Mostly ahead, and far enough away that a whole body fits in view.
+            XCTAssertGreaterThan(spot.z, 1.0)
+        }
 
         // Feet on the floor, derived from the shoulder-line origin rather than assumed at y = 0.
         XCTAssertEqual(rightArmDemo.y, 1.4 - measurements.height * 0.83, accuracy: 0.05)
+    }
+
+    /// Turning the user must carry the coach round with them, not leave him at a fixed world spot.
+    func testCoachFollowsTheUserAroundAndKeepsHisRelativeAngle() async throws {
+        let coach = CoachCharacterEntity()
+        let loaded = await coach.load()
+        XCTAssertTrue(loaded, "coach failed to load from the app bundle")
+
+        let measurements = BodyMeasurements.averageAdult
+        let facingForward = BodyFrame(
+            origin: SIMD3(0, 1.4, 0),
+            right: SIMD3(1, 0, 0),
+            up: SIMD3(0, 1, 0),
+            forward: SIMD3(0, 0, 1),
+            headPosition: SIMD3(0, 1.6, 0)
+        )
+        // Same user, now turned 90° to their right: forward is +X, right is -Z.
+        let turnedRight = BodyFrame(
+            origin: SIMD3(0, 1.4, 0),
+            right: SIMD3(0, 0, -1),
+            up: SIMD3(0, 1, 0),
+            forward: SIMD3(1, 0, 0),
+            headPosition: SIMD3(0, 1.6, 0)
+        )
+
+        coach.place(using: facingForward, measurements: measurements, demoSide: .right, reflected: false)
+        let before = coach.worldPositionForTesting
+
+        // Follow is smoothed, so drive it the way the session does rather than expecting one step
+        // to arrive. 200 ticks is a little over two seconds at the session's frame interval.
+        for _ in 0..<200 {
+            coach.follow(using: turnedRight, measurements: measurements, demoSide: .right, reflected: false)
+        }
+        let after = coach.worldPositionForTesting
+
+        XCTAssertGreaterThan(
+            simd_distance(before, after),
+            0.5,
+            "the coach stayed put when the user turned — he must orbit to stay in view"
+        )
+
+        // He should hold the same angle off the user's *new* forward axis, which is +X.
+        let offset = after - SIMD3(0, after.y, 0)
+        let offAxisAngle = atan2(abs(simd_dot(offset, SIMD3(0, 0, -1))), simd_dot(offset, SIMD3(1, 0, 0)))
+        XCTAssertEqual(offAxisAngle * 180 / .pi, 24, accuracy: 3)
+    }
+
+    /// Yaw interpolation has to take the short way round. Lerping raw radians across the ±π seam
+    /// spins the coach a full turn in place.
+    func testShortestAngleDeltaWrapsAcrossThePiSeam() {
+        let almostPi: Float = .pi - 0.1
+        let justPastPi: Float = -.pi + 0.1
+
+        let delta = CoachCharacterEntity.shortestAngleDelta(from: almostPi, to: justPastPi)
+        XCTAssertEqual(delta, 0.2, accuracy: 1e-4, "should step 0.2 rad forward, not ~6.1 back")
+
+        XCTAssertEqual(
+            CoachCharacterEntity.shortestAngleDelta(from: 0.3, to: 0.9),
+            0.6,
+            accuracy: 1e-5
+        )
     }
 
     // MARK: Asset binding

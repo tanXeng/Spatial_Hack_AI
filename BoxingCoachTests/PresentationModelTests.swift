@@ -4,6 +4,65 @@ import Testing
 
 @Suite("Judge and audience presentation model")
 struct PresentationModelTests {
+    struct PreflightCase: Sendable {
+        let selection: TrainingSelection
+        let actionLabel: String
+    }
+
+    @Test("Every immersive route has one truthful safe-space start action", arguments: [
+        PreflightCase(
+            selection: .aura(track: .firstRound, technique: .jab, stance: .orthodox),
+            actionLabel: "Start Rep"
+        ),
+        PreflightCase(
+            selection: .reactive(mode: .air, combination: nil, stance: .orthodox),
+            actionLabel: "Start Drill"
+        ),
+        PreflightCase(
+            selection: .reactive(
+                mode: .combination,
+                combination: .oneTwo,
+                stance: .southpaw
+            ),
+            actionLabel: "Start Drill"
+        ),
+        PreflightCase(selection: .reachCalibration, actionLabel: "Start Calibration"),
+        PreflightCase(
+            selection: .competitionCalibration(
+                playerID: UUID(uuidString: "38ACDD75-E6F9-4030-95DC-ED0910649BE3")!
+            ),
+            actionLabel: "Start Calibration"
+        ),
+        PreflightCase(
+            selection: .competition(
+                playerID: UUID(uuidString: "3CE4B654-3E13-48EB-95B9-C1217152F255")!,
+                mode: .reactiveStrike,
+                stance: .orthodox,
+                reach: BilateralReach(left: 0.62, right: 0.60)!
+            ),
+            actionLabel: "Start Ranked Round"
+        ),
+        PreflightCase(
+            selection: .competition(
+                playerID: UUID(uuidString: "E2C8254F-3A94-4A2E-AC46-F9FCE6636DE5")!,
+                mode: .combination,
+                stance: .southpaw,
+                reach: BilateralReach(left: 0.61, right: 0.59)!
+            ),
+            actionLabel: "Start Ranked Round"
+        ),
+    ])
+    func everyRouteHasSafePreflight(testCase: PreflightCase) {
+        let presentation = TrainingSafetyPreflightPolicy.presentation(for: testCase.selection)
+
+        #expect(presentation.stage == "SAFETY CHECK")
+        #expect(presentation.message.contains("arm’s reach"))
+        #expect(presentation.message.contains("passthrough"))
+        #expect(presentation.message.contains("stop anytime"))
+        #expect(presentation.primaryActionLabel == testCase.actionLabel)
+        #expect(presentation.primaryActionCount == 1)
+    }
+
     @Test(
         "Every judge stage keeps authored public copy and one optional compact metric",
         arguments: [

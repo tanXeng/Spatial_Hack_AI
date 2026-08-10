@@ -64,14 +64,16 @@ struct TrainingExperienceView: View {
         ) {
             VStack(spacing: 16) {
                 TrainingStatusCard(message: reactiveStatusLine)
+                safetyPreflightCard
                 recoveryCard
                 errorCards(engineError: session.errorMessage)
                 if !recoveryReplacesStartAction {
-                    Button(session.phase == .finished ? "Calibrate Again" : "Start Calibration") {
+                    Button(session.phase == .finished ? "Calibrate Again" : safetyPreflight.primaryActionLabel) {
                         onStart()
                     }
                     .disabled(session.phase == .running || session.phase == .calibrating || controlsDisabled)
                     .buttonStyle(.borderedProminent)
+                    .frame(minHeight: 60)
                     .accessibilityFocused($resultPrimaryActionFocused)
                 }
             }
@@ -99,6 +101,7 @@ struct TrainingExperienceView: View {
         ) {
             VStack(spacing: 16) {
                 TrainingStatusCard(message: reactiveStatusLine)
+                safetyPreflightCard
                 recoveryCard
 
                 if session.phase == .finished {
@@ -108,13 +111,14 @@ struct TrainingExperienceView: View {
                 errorCards(engineError: session.errorMessage)
 
                 if !recoveryReplacesStartAction {
-                    Button(session.phase == .finished ? "Try Again" : "Start Drill") {
+                    Button(session.phase == .finished ? "Try Again" : safetyPreflight.primaryActionLabel) {
                         onStart()
                     }
                     .disabled(
                         session.phase == .running || session.phase == .calibrating || controlsDisabled
                     )
                     .buttonStyle(.borderedProminent)
+                    .frame(minHeight: 60)
                     .accessibilityFocused($resultPrimaryActionFocused)
                 }
             }
@@ -137,6 +141,7 @@ struct TrainingExperienceView: View {
         ) {
             VStack(spacing: 16) {
                 TrainingStatusCard(message: auraStatusLine)
+                safetyPreflightCard
                 recoveryCard
 
                 if aura.phase == .attempting || aura.phase == .guiding {
@@ -175,14 +180,35 @@ struct TrainingExperienceView: View {
                 errorCards(engineError: aura.errorMessage)
 
                 if !recoveryReplacesStartAction {
-                    Button(aura.phase == .results ? "Try Again" : "Start Rep") {
+                    Button(aura.phase == .results ? "Try Again" : safetyPreflight.primaryActionLabel) {
                         onStart()
                     }
                     .disabled(aura.isRunning || controlsDisabled)
                     .buttonStyle(.borderedProminent)
+                    .frame(minHeight: 60)
                     .accessibilityFocused($resultPrimaryActionFocused)
                 }
             }
+        }
+    }
+
+    @ViewBuilder
+    private var safetyPreflightCard: some View {
+        if showsSafetyPreflight, recoveryPresentation == nil {
+            TrainingSafetyPreflightCard(message: safetyPreflight.message)
+        }
+    }
+
+    private var safetyPreflight: TrainingSafetyPreflightPresentation {
+        TrainingSafetyPreflightPolicy.presentation(for: selection)
+    }
+
+    private var showsSafetyPreflight: Bool {
+        switch selection {
+        case .aura:
+            return session.auraPunch.phase == .idle
+        case .reactive, .reachCalibration, .competitionCalibration, .competition:
+            return session.phase == .idle
         }
     }
 

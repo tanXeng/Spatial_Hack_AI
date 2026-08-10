@@ -3,6 +3,18 @@ import XCTest
 
 @MainActor
 final class TrainingFlowCoordinatorTests: XCTestCase {
+    func testLandingCalibrationShowsPreflightWithoutStartingImmersion() {
+        let flow = TrainingFlowCoordinator()
+        let session = ReactiveStrikeSession()
+
+        flow.showLandingCalibrationPreflight()
+
+        XCTAssertEqual(flow.route, .experience(.reachCalibration))
+        XCTAssertEqual(flow.transition, .idle)
+        XCTAssertEqual(session.phase, .idle)
+        XCTAssertFalse(session.isImmersiveSpaceOpen)
+    }
+
     func testAuraRequiresTrackSelectionBeforeTechniqueSelection() {
         let flow = TrainingFlowCoordinator()
 

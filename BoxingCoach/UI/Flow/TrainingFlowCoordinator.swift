@@ -132,6 +132,12 @@ final class TrainingFlowCoordinator {
         setRoute(route)
     }
 
+    /// Landing calibration always stops at the visible safety preflight. Only its explicit
+    /// Start Calibration action is allowed to open immersion and start the tracking engine.
+    func showLandingCalibrationPreflight() {
+        navigate(to: .experience(.reachCalibration))
+    }
+
     func chooseFeature(_ feature: TrainingFeature) {
         guard transition == .idle else { return }
         presentationError = nil

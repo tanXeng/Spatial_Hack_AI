@@ -151,12 +151,14 @@ struct CompetitionSheetView: View {
                 .font(.callout)
                 .foregroundStyle(.secondary)
 
+            TrainingSafetyPreflightCard()
+
             Button("Start Reach Calibration", systemImage: "ruler") {
                 if let selection = store.prepareCalibration() { onStart(selection) }
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .frame(minHeight: 44)
+            .frame(minHeight: 60)
             .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
 
             Button("Use a Different Player") { store.showNameEntry() }
@@ -171,6 +173,8 @@ struct CompetitionSheetView: View {
                 detail: "Choose either board. You can submit as many complete runs as you like; only your best result ranks."
             )
 
+            TrainingSafetyPreflightCard()
+
             ForEach(CompetitionMode.allCases) { mode in
                 Button {
                     Task {
@@ -180,6 +184,8 @@ struct CompetitionSheetView: View {
                     CompetitionModeRow(mode: mode)
                 }
                 .buttonStyle(.plain)
+                .frame(minHeight: 60)
+                .contentShape(Rectangle())
                 .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
                 .accessibilityElement(children: .ignore)
                 .accessibilityLabel("Compete in \(mode.title), \(mode.subtitle)")
@@ -207,7 +213,7 @@ struct CompetitionSheetView: View {
         Button("Recalibrate Reach", systemImage: "ruler") {
             if let selection = store.prepareCalibration() { onStart(selection) }
         }
-        .frame(minHeight: 44)
+        .frame(minHeight: 60)
         .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
         Button("Change Player", systemImage: "person.2") { store.showNameEntry() }
             .frame(minHeight: 44)
@@ -220,6 +226,8 @@ struct CompetitionSheetView: View {
                 "Choose your Combo stance",
                 detail: "Every run uses five repetitions of 1–2–3–2. Your choice is remembered for next time."
             )
+
+            TrainingSafetyPreflightCard()
 
             Picker("Stance", selection: Binding(
                 get: { store.selectedStance },
@@ -242,7 +250,7 @@ struct CompetitionSheetView: View {
             }
             .buttonStyle(.borderedProminent)
             .controlSize(.large)
-            .frame(minHeight: 44)
+            .frame(minHeight: 60)
             .disabled(store.isLoading || store.isSaving || store.activeRun != nil)
 
             Button("Back to Modes") { store.showModes() }

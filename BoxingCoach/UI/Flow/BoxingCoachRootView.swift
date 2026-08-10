@@ -211,9 +211,7 @@ struct BoxingCoachRootView: View {
     }
 
     private func openLandingCalibration() {
-        let selection = TrainingSelection.reachCalibration
-        flow.navigate(to: .experience(selection))
-        start(selection)
+        flow.showLandingCalibrationPreflight()
     }
 
     private func start(_ selection: TrainingSelection) {

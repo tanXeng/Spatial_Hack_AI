@@ -170,6 +170,38 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
         XCTAssertEqual(flow.route, .competitionResult)
     }
 
+    func testCompetitionCalibrationUsesDedicatedAtomicCalibrationWorkflow() async {
+        let calibration = BodyCalibration.calibratedFixture
+        let session = ReactiveStrikeSession(calibration: calibration)
+        let flow = TrainingFlowCoordinator(calibration: calibration)
+        let selection = TrainingSelection.competitionCalibration(playerID: UUID())
+        flow.navigate(to: .experience(selection))
+        flow.immersiveSceneDidBecomeReady(session: session)
+        var openCallCount = 0
+        var hideCallCount = 0
+
+        await flow.startExperience(
+            selection,
+            session: session,
+            supportsMultipleScenes: true,
+            openImmersive: { _ in
+                openCallCount += 1
+                return .opened
+            },
+            dismissImmersive: {},
+            hideControlWindow: { hideCallCount += 1 }
+        )
+
+        XCTAssertEqual(openCallCount, 0)
+        XCTAssertEqual(hideCallCount, 1)
+        XCTAssertEqual(session.phase, .calibrating)
+        XCTAssertTrue(
+            calibration.isCalibrated,
+            "A replacement must not erase the last complete result before both arms succeed"
+        )
+        session.stopDrill()
+    }
+
     func testReturningFromCombinationExperienceRestoresStanceWithoutDismissingImmersion() async {
         let flow = TrainingFlowCoordinator(calibration: .calibratedFixture)
         let session = ReactiveStrikeSession(calibration: .calibratedFixture)

@@ -77,7 +77,6 @@ final class ReactiveStrikeSession {
     private var fistPositionAtSpawn: SIMD3<Float>?
     private var fistPositionsAtSpawn: [BodySide: SIMD3<Float>] = [:]
     private var capturesCompetitionEvidence = false
-    private var calibrationOnly = false
     private var competitionStartedAt: TimeInterval?
     private var competitionPausedDuration: TimeInterval = 0
     private var trackingResumeRequested = false
@@ -131,7 +130,6 @@ final class ReactiveStrikeSession {
     ) {
         config = DrillConfig()
         capturesCompetitionEvidence = false
-        calibrationOnly = false
         self.mode = mode
         self.stance = stance
         if let combination {
@@ -143,28 +141,6 @@ final class ReactiveStrikeSession {
         } else {
             reachProfile = mode.reachProfile
         }
-    }
-
-    func configureCompetitionCalibration() {
-        configureReachCalibration(capturingCompetitionEvidence: true)
-    }
-
-    /// Runs reach setup without creating or looking up a competition player. The resulting
-    /// bilateral measurement is cached by the session and reused by regular Reactive Strike and
-    /// Combination runs.
-    func configureReachCalibration() {
-        configureReachCalibration(capturingCompetitionEvidence: false)
-    }
-
-    private func configureReachCalibration(capturingCompetitionEvidence: Bool) {
-        configure(mode: .air, combination: nil, stance: stance)
-        capturesCompetitionEvidence = capturingCompetitionEvidence
-        calibrationOnly = true
-        calibration.invalidate()
-        config.targetCount = CompetitionMode.reactiveStrike.totalSteps
-        config.hitRadius = CompetitionScorer.targetRadius
-        competitionRequiresRecalibration = false
-        wasStoppedBeforeCompletion = false
     }
 
     func configureCompetition(
@@ -179,7 +155,6 @@ final class ReactiveStrikeSession {
             stance: stance
         )
         capturesCompetitionEvidence = true
-        calibrationOnly = false
         // A persisted competition reach replaces the launch measurement. Guard positions are left
         // as captured: they belong to the live body frame, not to the stored player record.
         calibration.store(
@@ -259,14 +234,36 @@ final class ReactiveStrikeSession {
     /// Shares the drill's phase machine deliberately, so the immersive banner, the window status
     /// line, and the coordinator's readiness handling all work unchanged.
     func startCalibration() {
+        startCalibration(capturingCompetitionEvidence: false)
+    }
+
+    func startCompetitionCalibration() {
+        startCalibration(capturingCompetitionEvidence: true)
+    }
+
+    private func startCalibration(capturingCompetitionEvidence: Bool) {
         guard phase != .running, phase != .calibrating else { return }
 
+        configure(mode: .air, combination: nil, stance: stance)
+        self.capturesCompetitionEvidence = capturingCompetitionEvidence
+        config.targetCount = CompetitionMode.reactiveStrike.totalSteps
+        config.hitRadius = CompetitionScorer.targetRadius
+        competitionSteps.removeAll(keepingCapacity: true)
+        competitionTrackingStatus = .complete
+        competitionActiveElapsedTime = nil
+        competitionStartedAt = nil
+        competitionPausedDuration = 0
+        competitionRequiresRecalibration = false
+        wasStoppedBeforeCompletion = false
         guardPositionsBody.removeAll()
-        calibration.invalidate()
         metrics.reset()
         phase = .calibrating
         lastFeedback = "Raise both hands into guard"
         errorMessage = nil
+        isTrackingPaused = false
+        trackingReadyToResume = false
+        trackingResumeRequested = false
+        coachAudio.play(id: .guardUp)
 
         drillTask?.cancel()
         drillTask = Task { [weak self] in
@@ -318,7 +315,6 @@ final class ReactiveStrikeSession {
         trackingResumeRequested = false
         if !keepingCompetitionConfiguration {
             capturesCompetitionEvidence = false
-            calibrationOnly = false
         }
     }
 
@@ -379,7 +375,7 @@ final class ReactiveStrikeSession {
             ) else {
             // A ranked run must not silently fall back to an unsafe volume: flag it so Competition
             // routes the player back through calibration instead of scoring a bad round.
-            if capturesCompetitionEvidence, !calibrationOnly {
+            if capturesCompetitionEvidence {
                 competitionRequiresRecalibration = true
                 failDrill("Your saved reach no longer clears your current guard. Recalibrate before competing.")
                 return
@@ -388,15 +384,6 @@ final class ReactiveStrikeSession {
             return
         }
         reachProfile = guardedProfile
-
-        if calibrationOnly {
-            competitionTrackingStatus = .complete
-            phase = .finished
-            lastFeedback = "Reach calibrated"
-            coachAudio.play(id: .reachCalibrated)
-            return
-        }
-
 
         guard !Task.isCancelled, phase == .calibrating else { return }
         lastFeedback = "Return both hands to guard"
@@ -530,10 +517,6 @@ final class ReactiveStrikeSession {
         }
         guard let frame = initialFrame else { return nil }
 
-        phase = .calibrating
-        lastFeedback = "Keep a relaxed closed fist, punch out, and hold — left arm first"
-        coachAudio.play(id: .calibrateReach)
-
         // Cue at an average adult's reach, never at the profile's `forwardMax`. Air's 0.75 m far
         // edge is past most people's actual reach, so cueing there made users lean or lunge, which
         // moves the body frame origin and corrupts the very measurement being taken.
@@ -545,79 +528,100 @@ final class ReactiveStrikeSession {
 
         defer { targets.removeActiveTarget() }
 
-        // Longer than the old 9 s: a held plateau is being waited for, not just a passing sample.
-        // Competition calibration is user-paced and so runs without a deadline at all.
-        let deadline: Date? = capturesCompetitionEvidence ? nil : Date().addingTimeInterval(14)
-        var acceptedSamples: [BodySide: [ReachSample]] = [.left: [], .right: []]
-        var lastAcceptedTimestamp: [BodySide: TimeInterval] = [:]
-        var lastProcessedTimestamp: [BodySide: TimeInterval] = [:]
-        var measuredReaches: [BodySide: Float] = [:]
+        var sequence = OrderedReachCalibration()
+        while let side = sequence.activeSide, phase == .calibrating, !Task.isCancelled {
+            guard let guardPosition = guards[side] else { return nil }
+            if side == .right {
+                lastFeedback = "Return your right hand to guard"
+            }
+            guard await waitForCalibrationGuard(for: side, guardPosition: guardPosition),
+                  sequence.confirmGuard(for: side)
+            else { return nil }
+
+            if side == .left {
+                lastFeedback = "Keep a relaxed closed fist, punch out, and hold — left arm first"
+                coachAudio.play(id: .calibrateReach)
+            } else {
+                lastFeedback = "Keep your fist closed, then punch out and hold with your right arm"
+                coachAudio.play(id: .extendOtherArm)
+            }
+
+            guard let reach = await measureSettledReach(for: side, guardPosition: guardPosition),
+                  sequence.acceptSettledReach(reach, for: side)
+            else { return nil }
+        }
+
+        guard let reaches = sequence.completedReaches else { return nil }
+        lastFeedback = "Reach calibrated"
+        coachAudio.play(id: .reachCalibrated)
+        targets.flash(result: .hit)
+        try? await Task.sleep(for: .milliseconds(180))
+        return reaches
+    }
+
+    private func waitForCalibrationGuard(
+        for side: BodySide,
+        guardPosition: SIMD3<Float>
+    ) async -> Bool {
+        let deadline: Date? = capturesCompetitionEvidence ? nil : Date().addingTimeInterval(5)
+        var consecutiveFreshSamples = 0
+        var lastTimestamp: TimeInterval?
 
         while !Task.isCancelled, deadline.map({ Date() < $0 }) ?? true, phase == .calibrating {
-            if let liveFrame = currentBodyFrame() {
-                for side in [BodySide.left, .right] where measuredReaches[side] == nil {
-                    guard let guardPosition = guards[side],
-                          let observation = hands.observation(for: side),
-                          observation.timestamp > (lastProcessedTimestamp[side] ?? -.infinity)
-                    else { continue }
-                    lastProcessedTimestamp[side] = observation.timestamp
+            if let frame = currentBodyFrame(),
+               let observation = hands.observation(for: side),
+               observation.timestamp > (lastTimestamp ?? -.infinity) {
+                lastTimestamp = observation.timestamp
+                let isAtGuard = CombinationPunchValidator.isRetracted(
+                    fist: frame.toBody(observation.fistPosition),
+                    guardPosition: guardPosition,
+                    radius: CombinationPunchValidator.guardRadius
+                )
+                consecutiveFreshSamples = isAtGuard ? consecutiveFreshSamples + 1 : 0
+                if consecutiveFreshSamples >= 3 { return true }
+            }
+            try? await Task.sleep(for: .milliseconds(25))
+        }
+        return false
+    }
 
-                    let fistBody = liveFrame.toBody(observation.fistPosition)
-                    guard let candidate = ReachCalibration.candidateForwardReach(
-                        guardPosition: guardPosition,
-                        fistPosition: fistBody
-                    ) else { continue }
+    private func measureSettledReach(
+        for side: BodySide,
+        guardPosition: SIMD3<Float>
+    ) async -> Float? {
+        let deadline: Date? = capturesCompetitionEvidence ? nil : Date().addingTimeInterval(14)
+        var acceptedSamples: [ReachSample] = []
+        var lastAcceptedTimestamp: TimeInterval?
+        var lastProcessedTimestamp: TimeInterval?
 
-                    // Dropping back to guard between attempts starts a fresh measurement rather
-                    // than splicing two separate extensions into one plateau.
-                    if let previous = lastAcceptedTimestamp[side],
+        while !Task.isCancelled, deadline.map({ Date() < $0 }) ?? true, phase == .calibrating {
+            if let frame = currentBodyFrame(),
+               let observation = hands.observation(for: side),
+               observation.timestamp > (lastProcessedTimestamp ?? -.infinity) {
+                lastProcessedTimestamp = observation.timestamp
+                let fistBody = frame.toBody(observation.fistPosition)
+                if let candidate = ReachCalibration.candidateForwardReach(
+                    guardPosition: guardPosition,
+                    fistPosition: fistBody
+                ) {
+                    if let previous = lastAcceptedTimestamp,
                        observation.timestamp - previous > 0.5 {
-                        acceptedSamples[side] = []
+                        acceptedSamples.removeAll(keepingCapacity: true)
                     }
-                    acceptedSamples[side, default: []].append(
+                    acceptedSamples.append(
                         ReachSample(forward: candidate, time: observation.timestamp)
                     )
-                    lastAcceptedTimestamp[side] = observation.timestamp
-
-                    guard let settled = ReachCalibration.settledForwardReach(
-                        from: acceptedSamples[side, default: []]
-                    ) else { continue }
-
-                    measuredReaches[side] = settled
-                    if measuredReaches.count == 1 {
-                        lastFeedback = "Keep your fist closed, then punch out and hold with your \(side.opposite.rawValue) arm"
-                        coachAudio.play(id: .extendOtherArm)
-                    } else {
-                        lastFeedback = "Reach calibrated"
-                        coachAudio.play(id: .reachCalibrated)
+                    lastAcceptedTimestamp = observation.timestamp
+                    if let settled = ReachCalibration.settledForwardReach(from: acceptedSamples) {
+                        return settled
                     }
                 }
             }
-
-            if ReachCalibration.conservativeBilateralReach(measuredReaches) != nil {
-                targets.flash(result: .hit)
-                try? await Task.sleep(for: .milliseconds(180))
-                return measuredReaches
-            }
-
             try? await Task.sleep(for: .milliseconds(16))
         }
 
         guard !Task.isCancelled else { return nil }
-
-        // Timed out waiting for a clean hold. Fall back to the old percentile rule on whatever was
-        // captured: an under-measured drill still beats refusing to start one.
-        for side in [BodySide.left, .right] where measuredReaches[side] == nil {
-            if let fallback = ReachCalibration.robustForwardReach(
-                from: acceptedSamples[side, default: []].map(\.forward)
-            ) {
-                measuredReaches[side] = fallback
-            }
-        }
-
-        return ReachCalibration.conservativeBilateralReach(measuredReaches) != nil
-            ? measuredReaches
-            : nil
+        return ReachCalibration.robustForwardReach(from: acceptedSamples.map(\.forward))
     }
 
     private func waitForGuardReturn(

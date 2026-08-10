@@ -279,9 +279,7 @@ final class TrainingFlowCoordinator {
             session.startCalibration()
 
         case .competitionCalibration:
-            session.configureCompetitionCalibration()
-            session.resetForNewRound(keepingCompetitionConfiguration: true)
-            session.startDrill()
+            session.startCompetitionCalibration()
 
         case .competition(_, let mode, let stance, let reach):
             session.configureCompetition(mode: mode, stance: stance, reach: reach)

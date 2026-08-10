@@ -59,6 +59,16 @@ final class ReactiveStrikeSession {
     /// guessing why nothing has happened yet. Zero when no arm is extending.
     private(set) var calibrationLiveExtension: Float = 0
 
+    /// Arms settled *during the run in progress*, which is not the same thing as
+    /// `BodyCalibration.reaches`.
+    ///
+    /// The shared calibration is only written when both arms succeed, so on a re-measure it still
+    /// holds the previous run's numbers for the whole of this one. Reading it for per-arm progress
+    /// made every re-calibration open with both arms already ticked off at their old values and no
+    /// live meter — and re-measuring is the *normal* case in Competition, where the reach comes
+    /// pre-populated from the player record.
+    private(set) var calibrationMeasuredReaches: [BodySide: Float] = [:]
+
     /// Whether the immersive space is actually on screen. The immersive scene owns this truth;
     /// a window-local copy goes stale if the system dismisses the space itself.
     private(set) var isImmersiveSpaceOpen = false
@@ -273,6 +283,7 @@ final class ReactiveStrikeSession {
         metrics.reset()
         calibrationStage = .awaitingGuard(.left)
         calibrationLiveExtension = 0
+        calibrationMeasuredReaches.removeAll()
         phase = .calibrating
         lastFeedback = "Raise both hands into guard"
         errorMessage = nil
@@ -315,6 +326,7 @@ final class ReactiveStrikeSession {
         metrics.reset()
         calibrationStage = nil
         calibrationLiveExtension = 0
+        calibrationMeasuredReaches.removeAll()
         phase = .idle
         currentTargetIndex = 0
         currentComboStepIndex = 0
@@ -572,6 +584,7 @@ final class ReactiveStrikeSession {
                   sequence.acceptSettledReach(reach, for: side)
             else { return nil }
             calibrationStage = sequence.stage
+            calibrationMeasuredReaches = sequence.reaches
             calibrationLiveExtension = 0
         }
 
@@ -609,16 +622,35 @@ final class ReactiveStrikeSession {
         return false
     }
 
+    /// How long an arm gets to settle **once the user has actually started punching**.
+    ///
+    /// Timed from the first accepted sample rather than from entry, so waiting to begin never eats
+    /// into the measurement itself. This bound applies to Competition too — see below.
+    private static let activeMeasurementWindow: TimeInterval = 14
+
     private func measureSettledReach(
         for side: BodySide,
         guardPosition: SIMD3<Float>
     ) async -> Float? {
-        let deadline: Date? = capturesCompetitionEvidence ? nil : Date().addingTimeInterval(14)
+        // Waiting to *begin* is user-paced in Competition and bounded in standalone training.
+        let startDeadline: Date? = capturesCompetitionEvidence ? nil : Date().addingTimeInterval(14)
+        // Once punching begins, both paths get a bounded window. Competition previously had no
+        // deadline at all here, which made the `robustForwardReach` fallback below structurally
+        // unreachable: the loop could only exit by cancellation, and the very next line returns
+        // `nil` on cancellation. A ranked player who never quite held still therefore waited
+        // forever with no result and no error, where a training user got a usable estimate.
+        var activeDeadline: Date?
         var acceptedSamples: [ReachSample] = []
         var lastAcceptedTimestamp: TimeInterval?
         var lastProcessedTimestamp: TimeInterval?
 
-        while !Task.isCancelled, deadline.map({ Date() < $0 }) ?? true, phase == .calibrating {
+        while !Task.isCancelled, phase == .calibrating {
+            if let activeDeadline {
+                if Date() >= activeDeadline { break }
+            } else if let startDeadline, Date() >= startDeadline {
+                break
+            }
+
             if let frame = currentBodyFrame(),
                let observation = hands.observation(for: side),
                observation.timestamp > (lastProcessedTimestamp ?? -.infinity) {
@@ -639,6 +671,9 @@ final class ReactiveStrikeSession {
                         ReachSample(forward: candidate, time: observation.timestamp)
                     )
                     lastAcceptedTimestamp = observation.timestamp
+                    if activeDeadline == nil {
+                        activeDeadline = Date().addingTimeInterval(Self.activeMeasurementWindow)
+                    }
                     if let settled = ReachCalibration.settledForwardReach(from: acceptedSamples) {
                         return settled
                     }
@@ -1310,6 +1345,7 @@ final class ReactiveStrikeSession {
         clearAttemptState()
         calibrationStage = nil
         calibrationLiveExtension = 0
+        calibrationMeasuredReaches.removeAll()
         if capturesCompetitionEvidence, competitionTrackingStatus == .complete {
             competitionTrackingStatus = .technicalFailure
         }

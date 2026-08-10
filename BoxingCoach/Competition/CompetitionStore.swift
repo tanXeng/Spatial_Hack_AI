@@ -229,6 +229,36 @@ final class CompetitionStore {
         activeRun = nil
     }
 
+    /// Adopts a measurement taken outside Competition into the signed-in player's record.
+    ///
+    /// Anthropometry writes only the shared `BodyCalibration`, so recalibrating from the feature
+    /// menu used to leave the player's persisted reach stale. Starting a ranked run then passed
+    /// that stale reach to `configureCompetition`, which stores it back over the shared
+    /// calibration — silently discarding the measurement the user had just taken, and leaving the
+    /// old one in place for Aura Punch and regular Reactive Strike too.
+    ///
+    /// One body per launch is the documented architecture, so the fix is to propagate rather than
+    /// to let the two diverge. No-ops when a run owns the calibration (`reconcileCompletedRun`
+    /// handles that case) or when nothing actually changed.
+    func adoptStandaloneCalibration(_ reaches: [BodySide: Float]) async {
+        guard activeRun == nil, !isLoading, !isSaving else { return }
+        guard var player = currentPlayer else { return }
+        guard let reach = BilateralReach(reaches), reach != player.reach else { return }
+
+        isSaving = true
+        defer { isSaving = false }
+        do {
+            player.reach = reach
+            player.calibrationVersion = CompetitionPlayer.calibrationVersion
+            player.calibratedAt = now()
+            player.lastSeenAt = now()
+            try await repository.save(player: player)
+            currentPlayer = player
+        } catch {
+            present(error)
+        }
+    }
+
     func reconcileCompletedRun(session: ReactiveStrikeSession) async {
         guard let run = activeRun, !isSaving else { return }
         guard session.phase == .finished

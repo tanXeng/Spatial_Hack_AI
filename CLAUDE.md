@@ -260,7 +260,18 @@ Guard was removed from the scored sub-metrics. `Scoring/GuardCoach.swift` now ha
 
 `OrderedReachCalibration` sequences the run: guard → left reach → guard → right reach → complete. It exists because the sampler used to cue "left arm first" while accepting both hands concurrently, so a right-hand extension could complete the left stage. Right-arm movement during the left stage is discarded, and nothing is written to `BodyCalibration` until **both** arms produce a plausible result — a cancelled attempt cannot leave a half-measured body behind.
 
-`ReactiveStrikeSession` publishes `calibrationStage` and `calibrationLiveExtension` purely so the screen can render that sequence. Both are UI mirrors of the loop, never inputs to it. `Stage.activeSide`/`isMeasuring` live on the enum so the view can render per-arm rows from the published stage alone.
+`ReactiveStrikeSession` publishes `calibrationStage`, `calibrationLiveExtension` and `calibrationMeasuredReaches` purely so the screen can render that sequence. All three are UI mirrors of the loop, never inputs to it. `Stage.activeSide`/`isMeasuring` live on the enum so the view can render per-arm rows from the published stage alone.
+
+**Per-arm progress must come from `calibrationMeasuredReaches`, never from `BodyCalibration.reaches`.** The shared calibration is written only when both arms succeed, so throughout a *re*-measure it still holds the previous run's numbers. Reading it for the progress rows made every recalibration open with both arms already ticked off at stale values and no live meter — and recalibration is the normal case in Competition, where the reach arrives pre-populated from the player record. For the same reason the results card is hidden while `phase == .calibrating`.
+
+### Keeping the two layers in step
+
+Training and Competition run the *same* calibration code; `capturesCompetitionEvidence` changes only how patient it is. Two asymmetries were found by auditing them against each other, and both are now closed:
+
+- **The robust fallback has to stay reachable.** `measureSettledReach` falls back to `robustForwardReach` after a deadline. Competition's deadline was `nil`, so the loop could only exit by cancellation — and the next line returns `nil` on cancellation, making the fallback structurally dead for ranked players. The deadline is now split: waiting to *begin* is unbounded for Competition (user-paced) and bounded for training, while `activeMeasurementWindow` bounds both **once the first sample is accepted**. Timing from the first sample rather than from entry also means hesitating no longer eats the measurement window.
+- **A standalone re-measure must reach the signed-in player.** Anthropometry writes only `BodyCalibration`. Starting a ranked run passes the player's *persisted* reach to `configureCompetition`, which stores it back over the shared calibration — so recalibrating from the feature menu was silently discarded, and the stale value then leaked into Aura Punch and regular Reactive Strike. `CompetitionStore.adoptStandaloneCalibration` propagates it, and no-ops while a run owns the calibration or when nothing changed. One body per launch is the architecture; propagate rather than letting the two diverge.
+
+`CalibrationLayerParityTests` pins all of this.
 
 `TrainingExperienceView.calibrationExperience(context:)` is that single screen, parameterised by `.gate` or `.competition` — chrome and follow-on action differ, the measurement does not. It shows a live `PunchExtensionMeter` for the arm being measured (and only that arm: a static bar on the waiting arm reads as "measured zero"), then the same `calibrationResultsCard` in both contexts. Competition used to have its own copy that reported no numbers at all, which is why a player could finish calibrating with nothing on screen to confirm it worked.
 

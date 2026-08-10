@@ -72,7 +72,12 @@ struct TrainingExperienceView: View {
                     calibrationProgressCard
                 }
 
-                if calibration.isCalibrated, let reach = calibration.measuredReach {
+                // Only once the run is over. During a re-measure the shared calibration still
+                // holds the *previous* result, and showing it beside live progress reads as the
+                // new measurement having already landed.
+                if session.phase != .calibrating,
+                   calibration.isCalibrated,
+                   let reach = calibration.measuredReach {
                     calibrationResultsCard(reach: reach)
                 }
 
@@ -125,7 +130,9 @@ struct TrainingExperienceView: View {
 
     private func calibrationArmRow(side: BodySide) -> some View {
         let stage = session.calibrationStage
-        let measured = calibration.reaches[side]
+        // This run's result, not the shared calibration — that is only written when both arms
+        // succeed, so on a re-measure it still holds the previous run's numbers throughout.
+        let measured = session.calibrationMeasuredReaches[side]
         let isActive = stage?.activeSide == side
         let state: String
         if let measured {

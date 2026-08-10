@@ -135,6 +135,10 @@ struct BoxingCoachRootView: View {
             if !session.hasCalibratedReach, let player = competitionStore.currentPlayer {
                 syncPlayerCalibration(player, clearingGuards: true)
             }
+            // The other direction: a recalibration taken from the feature menu has to reach the
+            // signed-in player, or the next ranked run passes their stale reach back into the
+            // shared calibration and the new measurement is silently lost.
+            await competitionStore.adoptStandaloneCalibration(session.latestCalibratedReaches)
             _ = await coachPreload
         }
         .onDisappear {

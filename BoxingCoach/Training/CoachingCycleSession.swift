@@ -287,6 +287,11 @@ nonisolated struct CoachingCyclePresentation: Equatable, Sendable {
     let timer: String?
 }
 
+nonisolated struct CoachingCycleProgress: Equatable, Sendable {
+    let current: Int
+    let total: Int
+}
+
 /// Pure deterministic reducer for one complete fit-learn-prove-transfer cycle.
 ///
 /// The reducer accepts only immutable `TechniqueAttemptEvidence` that already crossed the Task 4
@@ -337,6 +342,30 @@ nonisolated struct CoachingCycleSession: Sendable {
         default: 0
         }
     }
+
+    var publicProgress: CoachingCycleProgress? {
+        switch stage {
+        case .guidedRehearsal:
+            CoachingCycleProgress(
+                current: min(guidedRehearsalsCompleted + 1, track.guidedRehearsalCount),
+                total: track.guidedRehearsalCount
+            )
+        case .baseline:
+            CoachingCycleProgress(
+                current: baselineAttempts.count,
+                total: Self.requiredAttempts
+            )
+        case .retest:
+            CoachingCycleProgress(
+                current: retestAttempts.count,
+                total: Self.requiredAttempts
+            )
+        default:
+            nil
+        }
+    }
+
+    var correctionFocus: SubMetricKind? { correctionPlan?.focus }
 
     var proofMeetsTarget: Bool {
         proofDisposition != .retry

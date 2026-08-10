@@ -23,6 +23,10 @@ nonisolated enum TrainingPublicInstruction: Equatable, Sendable {
     case clearSafeSpace
     case fitReach
     case followGuide
+    case watchPunch
+    case followOutbound
+    case meetTarget
+    case returnToGuard
     case controlledPunch
     case focus(SubMetricKind)
     case repeatPunch
@@ -31,6 +35,8 @@ nonisolated enum TrainingPublicInstruction: Equatable, Sendable {
     case roundComplete
     case recoverTracking
     case localCoachAvailable
+    case sessionOnlyResults
+    case recoverSystem
     case nextParticipant
 
     var text: String {
@@ -39,6 +45,10 @@ nonisolated enum TrainingPublicInstruction: Equatable, Sendable {
         case .clearSafeSpace: "Clear enough room to extend both arms."
         case .fitReach: "Measure both arms inside comfortable reach."
         case .followGuide: "Follow the cyan guide from guard to guard."
+        case .watchPunch: "Watch the complete fitted punch once."
+        case .followOutbound: "Follow the fitted fist path out from guard."
+        case .meetTarget: "Meet the target inside comfortable reach."
+        case .returnToGuard: "Return the fist on the same path to guard."
         case .controlledPunch: "Throw one controlled punch."
         case .focus(let metric): "Focus on \(metric.title.lowercased())."
         case .repeatPunch: "Repeat the same punch."
@@ -47,7 +57,21 @@ nonisolated enum TrainingPublicInstruction: Equatable, Sendable {
         case .roundComplete: "Round complete."
         case .recoverTracking: "Return both fists to guard."
         case .localCoachAvailable: "Measured local coaching remains available."
+        case .sessionOnlyResults: "Results are available for this session only."
+        case .recoverSystem: "Use the recovery action or return to the previous screen."
         case .nextParticipant: "The headset is ready for the next participant."
+        }
+    }
+}
+
+nonisolated enum TrainingCoachingSource: Equatable, Sendable {
+    case offline
+    case aiPhrasing
+
+    var text: String {
+        switch self {
+        case .offline: "Measured locally · Offline coach"
+        case .aiPhrasing: "Measured locally · AI phrasing"
         }
     }
 }
@@ -89,6 +113,7 @@ nonisolated struct TrainingPresentationState: Equatable, Sendable {
     let competitionScore: Int?
     let competitionRank: Int?
     let publicHandle: ParticipantPublicHandle?
+    let coachingSource: TrainingCoachingSource
 
     init?(
         stage: TrainingPresentationStage,
@@ -97,7 +122,8 @@ nonisolated struct TrainingPresentationState: Equatable, Sendable {
         progress: TrainingProgressPresentation? = nil,
         competitionScore: Int? = nil,
         competitionRank: Int? = nil,
-        publicHandle: ParticipantPublicHandle? = nil
+        publicHandle: ParticipantPublicHandle? = nil,
+        coachingSource: TrainingCoachingSource = .offline
     ) {
         guard competitionScore.map({ (0...100).contains($0) }) ?? true,
               competitionRank.map({ $0 > 0 }) ?? true
@@ -109,6 +135,7 @@ nonisolated struct TrainingPresentationState: Equatable, Sendable {
         self.competitionScore = competitionScore
         self.competitionRank = competitionRank
         self.publicHandle = publicHandle
+        self.coachingSource = coachingSource
     }
 
     var secondaryMetricCount: Int { proof == nil ? 0 : 1 }
@@ -127,6 +154,7 @@ nonisolated struct AudienceMirrorPresentation: Equatable, Sendable {
     let score: String?
     let rank: String?
     let publicIdentity: String?
+    let coachingSource: String
 
     fileprivate init(state: TrainingPresentationState) {
         stage = state.stage.rawValue
@@ -136,6 +164,7 @@ nonisolated struct AudienceMirrorPresentation: Equatable, Sendable {
         score = state.competitionScore.map { "\($0) points" }
         rank = state.competitionRank.map { "Rank \($0)" }
         publicIdentity = state.publicHandle?.displayValue
+        coachingSource = state.coachingSource.text
     }
 }
 
@@ -149,10 +178,14 @@ nonisolated enum TrainingPresentationContext: Sendable {
     case welcome
     case nextBoxer
     case coachOffline
+    case persistenceFallback
+    case recovery
     case aura(
         stage: LearningStage,
         trackingPaused: Bool,
         proof: TrainingProofPresentation?,
+        progress: TrainingProgressPresentation?,
+        focus: SubMetricKind?,
         aiPhrasingAvailable: Bool
     )
     case reactive(
@@ -175,7 +208,11 @@ nonisolated enum TrainingPresentationPolicy {
             return .nextBoxer
         case .coachOffline:
             return TrainingPresentationState(stage: .coachOffline, instruction: .localCoachAvailable)
-        case let .aura(stage, trackingPaused, proof, _):
+        case .persistenceFallback:
+            return TrainingPresentationState(stage: .coachOffline, instruction: .sessionOnlyResults)
+        case .recovery:
+            return TrainingPresentationState(stage: .safety, instruction: .recoverSystem)
+        case let .aura(stage, trackingPaused, proof, progress, focus, aiPhrasingAvailable):
             if trackingPaused {
                 return TrainingPresentationState(
                     stage: .trackingPaused,
@@ -186,13 +223,20 @@ nonisolated enum TrainingPresentationPolicy {
             switch stage {
             case .fit:
                 output = (.fit, .fitReach)
-            case .learnWatch, .learnOutbound, .learnLanding, .learnReturn,
-                 .guidedRehearsal:
+            case .learnWatch:
+                output = (.learn, .watchPunch)
+            case .learnOutbound:
+                output = (.learn, .followOutbound)
+            case .learnLanding:
+                output = (.learn, .meetTarget)
+            case .learnReturn:
+                output = (.learn, .returnToGuard)
+            case .guidedRehearsal:
                 output = (.learn, .followGuide)
             case .baseline:
                 output = (.baseline, .controlledPunch)
             case .correction, .correctiveDrill:
-                output = (.correct, .repeatPunch)
+                output = (.correct, focus.map(TrainingPublicInstruction.focus) ?? .repeatPunch)
             case .retest, .proof:
                 output = (.prove, .repeatPunch)
             case .transfer:
@@ -203,7 +247,9 @@ nonisolated enum TrainingPresentationPolicy {
             return TrainingPresentationState(
                 stage: output.0,
                 instruction: output.1,
-                proof: proof
+                proof: proof,
+                progress: progress,
+                coachingSource: aiPhrasingAvailable ? .aiPhrasing : .offline
             )
         case let .reactive(
             context,
@@ -255,8 +301,14 @@ nonisolated enum TrainingPresentationPolicy {
         session: ReactiveStrikeSession,
         competitionStore: CompetitionStore
     ) -> TrainingPresentationState {
+        if competitionStore.coachingCyclePersistenceScope == .sessionOnly {
+            return state(for: .persistenceFallback)!
+        }
+        if flow.presentationError != nil {
+            return state(for: .recovery)!
+        }
         guard case .experience(let selection) = flow.route else {
-            return state(for: .nextBoxer)!
+            return state(for: competitionStore.currentPlayer == nil ? .welcome : .nextBoxer)!
         }
         switch selection {
         case .aura:
@@ -271,6 +323,10 @@ nonisolated enum TrainingPresentationPolicy {
                 stage: session.auraPunch.learningStage,
                 trackingPaused: session.auraPunch.isTrackingPaused,
                 proof: proof,
+                progress: session.auraPunch.publicProgress.flatMap {
+                    TrainingProgressPresentation(current: $0.current, total: $0.total)
+                },
+                focus: session.auraPunch.correctionFocus,
                 aiPhrasingAvailable: CoachSecrets.relayEndpoint != nil
             ))!
         case .reactive(_, let combination, _):
@@ -278,7 +334,7 @@ nonisolated enum TrainingPresentationPolicy {
                 context: .standard(isCombination: combination != nil),
                 phase: session.phase,
                 trackingPaused: session.isTrackingPaused,
-                progress: nil,
+                progress: reactiveProgress(session),
                 score: nil,
                 rank: nil,
                 publicHandle: nil
@@ -288,7 +344,7 @@ nonisolated enum TrainingPresentationPolicy {
                 context: .reachCalibration,
                 phase: session.phase,
                 trackingPaused: session.isTrackingPaused,
-                progress: nil,
+                progress: reactiveProgress(session),
                 score: nil,
                 rank: nil,
                 publicHandle: nil
@@ -301,11 +357,19 @@ nonisolated enum TrainingPresentationPolicy {
                 progress: nil,
                 score: nil,
                 rank: nil,
-                publicHandle: competitionStore.currentPlayer?.publicHandle
+                publicHandle: competitionStore.audiencePublicHandle
             ))!
         case .competition(_, let mode, _, _):
-            let submission = competitionStore.latestSubmission.flatMap { submission in
-                submission.playerID == competitionStore.currentPlayer?.id ? submission : nil
+            let submission: CompetitionSubmission? = competitionStore.latestSubmission.flatMap { submission in
+                guard submission.playerID == competitionStore.currentPlayer?.id,
+                      submission.mode == mode else { return nil }
+                if let run = competitionStore.activeRun {
+                    guard run.id == submission.id,
+                          run.kind == .ranked(mode) else { return nil }
+                } else if competitionStore.sheetRoute != .result(submission.id) {
+                    return nil
+                }
+                return submission
             }
             let rank = submission.flatMap { submission in
                 competitionStore.standings(for: mode).first(where: {
@@ -316,11 +380,25 @@ nonisolated enum TrainingPresentationPolicy {
                 context: .competition(isCombination: mode == .combination),
                 phase: session.phase,
                 trackingPaused: session.isTrackingPaused,
-                progress: nil,
+                progress: reactiveProgress(session),
                 score: submission?.score,
                 rank: rank,
-                publicHandle: competitionStore.currentPlayer?.publicHandle
+                publicHandle: competitionStore.audiencePublicHandle
             ))!
         }
+    }
+
+    @MainActor
+    private static func reactiveProgress(
+        _ session: ReactiveStrikeSession
+    ) -> TrainingProgressPresentation? {
+        guard session.phase == .running else { return nil }
+        let total = session.mode == .combination
+            ? session.comboRepeatCount
+            : session.config.targetCount
+        return TrainingProgressPresentation(
+            current: min(session.currentTargetIndex + 1, total),
+            total: total
+        )
     }
 }

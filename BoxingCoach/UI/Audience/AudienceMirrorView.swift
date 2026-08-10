@@ -44,6 +44,10 @@ struct AudienceMirrorView: View {
                 .foregroundStyle(.white)
                 .fixedSize(horizontal: false, vertical: true)
 
+            Text(presentation.coachingSource)
+                .font(.headline)
+                .foregroundStyle(.white.opacity(0.76))
+
             if let progress = presentation.progress {
                 publicMetric("Progress", progress)
             }
@@ -59,10 +63,10 @@ struct AudienceMirrorView: View {
             Spacer(minLength: 0)
 
             if let identity = presentation.publicIdentity {
-                Label(identity, systemImage: "person.crop.circle.badge.checkmark")
+                Label(identity, systemImage: "person.crop.circle")
                     .font(.title2.bold())
                     .foregroundStyle(.white)
-                    .accessibilityLabel("Event-local participant (identity)")
+                    .accessibilityLabel("Event-local participant \(identity)")
             } else {
                 Text("No private profile, transcript, or motion data is shown.")
                     .font(.headline)

@@ -25,6 +25,8 @@ struct AudienceMirrorPresenterTests {
                 stage: stage,
                 trackingPaused: false,
                 proof: nil,
+                progress: nil,
+                focus: nil,
                 aiPhrasingAvailable: false
             )
         ))

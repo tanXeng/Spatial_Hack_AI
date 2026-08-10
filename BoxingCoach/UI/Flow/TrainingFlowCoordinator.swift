@@ -67,6 +67,7 @@ enum TrainingFlowRoute: Hashable, Sendable {
     case auraTrackSetup
     case auraSetup(TrainingTrack)
     case experience(TrainingSelection)
+    case recoveredAuraResult(UUID)
 }
 
 enum TrainingFlowTransition: String, Sendable {
@@ -130,6 +131,11 @@ final class TrainingFlowCoordinator {
         guard transition == .idle else { return }
         presentationError = nil
         setRoute(route)
+    }
+
+    func presentRecoveredAuraResult(id: UUID) {
+        guard transition == .idle else { return }
+        setRoute(.recoveredAuraResult(id))
     }
 
     /// Landing calibration always stops at the visible safety preflight. Only its explicit
@@ -216,7 +222,10 @@ final class TrainingFlowCoordinator {
         supportsMultipleScenes: Bool,
         openImmersive: (String) async -> ImmersiveOpenOutcome,
         dismissImmersive: () async -> Void,
-        hideControlWindow: () -> Void
+        hideControlWindow: () -> Void,
+        reservePersistence: (TrainingSelection) async throws -> UUID? = { _ in nil },
+        activatePersistence: (UUID) async throws -> Void = { _ in },
+        abortPersistence: (UUID) async -> Void = { _ in }
     ) async {
         guard transition == .idle,
               route == .experience(selection) else { return }
@@ -224,7 +233,17 @@ final class TrainingFlowCoordinator {
         presentationError = nil
         transition = .openingImmersion
 
+        let persistenceRunID: UUID?
+        do {
+            persistenceRunID = try await reservePersistence(selection)
+        } catch {
+            presentationError = error.localizedDescription
+            transition = .idle
+            return
+        }
+
         guard supportsMultipleScenes else {
+            if let persistenceRunID { await abortPersistence(persistenceRunID) }
             presentationError = "Multiple scenes are disabled. Enable multiple-scene support to start training."
             transition = .idle
             return
@@ -236,11 +255,13 @@ final class TrainingFlowCoordinator {
             case .opened:
                 break
             case .cancelled:
+                if let persistenceRunID { await abortPersistence(persistenceRunID) }
                 immersiveState = .closed
                 presentationError = "Immersive space cancelled."
                 transition = .idle
                 return
             case .failed(let message):
+                if let persistenceRunID { await abortPersistence(persistenceRunID) }
                 immersiveState = .closed
                 presentationError = message
                 transition = .idle
@@ -249,6 +270,7 @@ final class TrainingFlowCoordinator {
         }
 
         guard await waitForSceneReadiness() else {
+            if let persistenceRunID { await abortPersistence(persistenceRunID) }
             presentationError = "The training space opened but did not become ready. Close it and try again."
             transition = .closingImmersion
             immersiveState = .closing
@@ -256,6 +278,21 @@ final class TrainingFlowCoordinator {
             finalizeImmersiveClosure(session: session)
             transition = .idle
             return
+        }
+
+        if let persistenceRunID {
+            do {
+                try await activatePersistence(persistenceRunID)
+            } catch {
+                await abortPersistence(persistenceRunID)
+                presentationError = error.localizedDescription
+                transition = .closingImmersion
+                immersiveState = .closing
+                await dismissImmersive()
+                finalizeImmersiveClosure(session: session)
+                transition = .idle
+                return
+            }
         }
 
         // Apply the committed selection only after the scene is usable. A failed retry therefore
@@ -274,6 +311,9 @@ final class TrainingFlowCoordinator {
             session.auraPunch.technique = technique
             session.auraPunch.stance = stance
             session.auraPunch.reset()
+            if let persistenceRunID {
+                session.auraPunch.preparePersistenceRun(id: persistenceRunID)
+            }
             session.auraPunch.persistedReach = BilateralReach(session.latestCalibratedReaches)
             session.auraPunch.start()
 
@@ -438,7 +478,8 @@ final class TrainingFlowCoordinator {
             case .calibrating, .running: return .baseline
             case .finished: return .results
             }
-        case .features, .reactiveSetup, .combinationSetup, .auraTrackSetup, .auraSetup:
+        case .features, .reactiveSetup, .combinationSetup, .auraTrackSetup, .auraSetup,
+             .recoveredAuraResult:
             return .idle
         }
     }

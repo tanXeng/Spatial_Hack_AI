@@ -121,6 +121,7 @@ final class AuraPunchSession {
     var cycleDidComplete: (
         (CoachingCycleResult, BilateralReach) async throws -> CoachingCyclePersistenceScope
     )?
+    var cycleWillComplete: ((UUID) -> Void)?
 
     /// Anthropometry will populate this later; until then every user gets average proportions.
     var measurements: BodyMeasurements = .averageAdult
@@ -192,6 +193,7 @@ final class AuraPunchSession {
     /// Live reach fraction during the attempt, for the UI's punch meter.
     private(set) var liveReach: Float = 0
     private(set) var coachingCycle: CoachingCycleSession
+    private(set) var persistenceRunID: UUID?
 
     var learningStage: LearningStage { coachingCycle.stage }
     var cyclePresentation: CoachingCyclePresentation { coachingCycle.presentation }
@@ -355,6 +357,7 @@ final class AuraPunchSession {
         scoredRoundScores.removeAll(keepingCapacity: true)
         guidedRepetitions = track.guidedRehearsalCount
         coachingCycle = CoachingCycleSession(
+            id: persistenceRunID ?? UUID(),
             track: track,
             technique: technique,
             stance: stance
@@ -379,6 +382,13 @@ final class AuraPunchSession {
         loopTask = Task { [weak self] in
             await self?.runSession()
         }
+    }
+
+    /// Installs the already-durable reservation identity immediately before the engine starts.
+    /// The completed coaching result therefore has the same identity as its crash-recovery row.
+    func preparePersistenceRun(id: UUID) {
+        guard phase == .idle || phase == .results else { return }
+        persistenceRunID = id
     }
 
     func stop(
@@ -440,6 +450,7 @@ final class AuraPunchSession {
             technique: technique,
             stance: stance
         )
+        persistenceRunID = nil
         pathOverlay.clear()
         errorMessage = nil
         statusMessage = "Ready"
@@ -818,6 +829,7 @@ final class AuraPunchSession {
             fail("Athlete memory is unavailable, so this proof was not saved.")
             return
         }
+        cycleWillComplete?(result.id)
         let persistenceScope: CoachingCyclePersistenceScope
         do {
             persistenceScope = try await cycleDidComplete(result, reach)

@@ -1,6 +1,21 @@
 import Foundation
 import SwiftData
 
+private nonisolated func stableAttemptOrder(
+    _ lhs: TechniqueAttemptSnapshot,
+    _ rhs: TechniqueAttemptSnapshot
+) -> Bool {
+    if lhs.completedAt != rhs.completedAt { return lhs.completedAt < rhs.completedAt }
+    if lhs.coachingCycleID == rhs.coachingCycleID, lhs.stage != rhs.stage {
+        return lhs.stage == .baseline
+    }
+    if lhs.coachingCycleID == rhs.coachingCycleID,
+       lhs.cycleOrdinal != rhs.cycleOrdinal {
+        return (lhs.cycleOrdinal ?? .max) < (rhs.cycleOrdinal ?? .max)
+    }
+    return lhs.id.uuidString < rhs.id.uuidString
+}
+
 nonisolated enum CompetitionRepositoryError: LocalizedError, Equatable, Sendable {
     case playerNotFound
     case invalidSubmission
@@ -46,11 +61,30 @@ protocol CompetitionRepository: AnyObject {
         -> AthleteSkillMemory?
     func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws
     func coachingCycle(id: UUID) async throws -> CoachingCycleSnapshot?
+    func reserveTrainingRun(
+        _ run: PendingTrainingRun,
+        descriptor: DurableTrainingRunDescriptor
+    ) async throws -> TrainingRunSnapshot
+    func trainingRunDescriptor(id: UUID) async throws -> DurableTrainingRunDescriptor?
+    func isAuraResultDeliveryAcknowledged(runID: UUID) async throws -> Bool
+    func acknowledgeAuraResultDelivery(runID: UUID, at date: Date) async throws
+    func trainingRun(id: UUID) async throws -> TrainingRunSnapshot?
+    func trainingRuns() async throws -> [TrainingRunSnapshot]
+    func activateTrainingRun(id: UUID, at date: Date) async throws -> TrainingRunSnapshot
+    func stageCoachingCycle(
+        runID: UUID,
+        transaction: CoachingCycleMemoryTransaction
+    ) async throws -> TrainingRunSnapshot
+    func commitCoachingCycle(runID: UUID, at date: Date) async throws -> TrainingRunSnapshot
+    func abortTrainingRun(id: UUID, at date: Date) async throws -> TrainingRunSnapshot
     func reset() async throws
 }
 
 @MainActor
 extension CompetitionRepository {
+    func reserveTrainingRun(_ run: PendingTrainingRun) async throws -> TrainingRunSnapshot {
+        try await reserveTrainingRun(run, descriptor: .legacy(runID: run.id))
+    }
     func activeEvent() async throws -> EventEdition? { nil }
 
     func create(event: EventEdition) async throws -> EventEdition {
@@ -108,6 +142,65 @@ extension CompetitionRepository {
         _ = id
         return nil
     }
+
+    func reserveTrainingRun(
+        _ run: PendingTrainingRun,
+        descriptor: DurableTrainingRunDescriptor
+    ) async throws -> TrainingRunSnapshot {
+        _ = run
+        _ = descriptor
+        throw CompetitionRepositoryError.saveFailed("Training-run persistence is unavailable.")
+    }
+
+    func trainingRunDescriptor(id: UUID) async throws -> DurableTrainingRunDescriptor? {
+        _ = id
+        return nil
+    }
+
+    func isAuraResultDeliveryAcknowledged(runID: UUID) async throws -> Bool {
+        _ = runID
+        return false
+    }
+
+    func acknowledgeAuraResultDelivery(runID: UUID, at date: Date) async throws {
+        _ = runID
+        _ = date
+        throw CompetitionRepositoryError.saveFailed("Result acknowledgement persistence is unavailable.")
+    }
+
+    func trainingRun(id: UUID) async throws -> TrainingRunSnapshot? {
+        _ = id
+        return nil
+    }
+
+    func trainingRuns() async throws -> [TrainingRunSnapshot] { [] }
+
+    func activateTrainingRun(id: UUID, at date: Date) async throws -> TrainingRunSnapshot {
+        _ = id
+        _ = date
+        throw CompetitionRepositoryError.saveFailed("Training-run persistence is unavailable.")
+    }
+
+    func stageCoachingCycle(
+        runID: UUID,
+        transaction: CoachingCycleMemoryTransaction
+    ) async throws -> TrainingRunSnapshot {
+        _ = runID
+        _ = transaction
+        throw CompetitionRepositoryError.saveFailed("Training-run persistence is unavailable.")
+    }
+
+    func commitCoachingCycle(runID: UUID, at date: Date) async throws -> TrainingRunSnapshot {
+        _ = runID
+        _ = date
+        throw CompetitionRepositoryError.saveFailed("Training-run persistence is unavailable.")
+    }
+
+    func abortTrainingRun(id: UUID, at date: Date) async throws -> TrainingRunSnapshot {
+        _ = id
+        _ = date
+        throw CompetitionRepositoryError.saveFailed("Training-run persistence is unavailable.")
+    }
 }
 
 @MainActor
@@ -118,6 +211,10 @@ final class InMemoryCompetitionRepository: CompetitionRepository {
     private var attemptValues: [UUID: TechniqueAttemptSnapshot] = [:]
     private var memoryValues: [String: AthleteSkillMemory] = [:]
     private var coachingCycleValues: [UUID: CoachingCycleSnapshot] = [:]
+    private var trainingRunValues: [UUID: TrainingRunSnapshot] = [:]
+    private var stagedCoachingCycles: [UUID: CoachingCycleMemoryTransaction] = [:]
+    private var trainingRunDescriptors: [UUID: DurableTrainingRunDescriptor] = [:]
+    private var acknowledgedAuraResultIDs: Set<UUID> = []
 
     func activeEvent() async throws -> EventEdition? {
         events.values.first(where: \.isOpen)
@@ -249,21 +346,20 @@ final class InMemoryCompetitionRepository: CompetitionRepository {
     ) async throws -> [TechniqueAttemptSnapshot] {
         attemptValues.values
             .filter { $0.athleteID == athleteID && $0.techniqueID == techniqueID }
-            .sorted { $0.completedAt < $1.completedAt }
+            .sorted(by: stableAttemptOrder)
     }
 
     func save(skillMemory: AthleteSkillMemory) async throws {
-        memoryValues[Self.memoryKey(
-            athleteID: skillMemory.athleteID,
-            techniqueID: skillMemory.techniqueID
-        )] = skillMemory
+        memoryValues[skillMemory.key.storageKey] = skillMemory
     }
 
     func skillMemory(
         athleteID: UUID,
         techniqueID: String
     ) async throws -> AthleteSkillMemory? {
-        memoryValues[Self.memoryKey(athleteID: athleteID, techniqueID: techniqueID)]
+        memoryValues.values
+            .filter { $0.athleteID == athleteID && $0.techniqueID == techniqueID }
+            .max { $0.updatedAt < $1.updatedAt }
     }
 
     func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws {
@@ -285,10 +381,7 @@ final class InMemoryCompetitionRepository: CompetitionRepository {
         var nextMemory = memoryValues
         var nextCycles = coachingCycleValues
         nextPlayers[transaction.player.id] = transaction.player
-        nextMemory[Self.memoryKey(
-            athleteID: transaction.skillMemory.athleteID,
-            techniqueID: transaction.skillMemory.techniqueID
-        )] = transaction.skillMemory
+        nextMemory[transaction.skillMemory.key.storageKey] = transaction.skillMemory
         nextCycles[transaction.cycle.id] = transaction.cycle
 
         attemptValues = nextAttempts
@@ -301,6 +394,144 @@ final class InMemoryCompetitionRepository: CompetitionRepository {
         coachingCycleValues[id]
     }
 
+    func reserveTrainingRun(
+        _ run: PendingTrainingRun,
+        descriptor: DurableTrainingRunDescriptor
+    ) async throws -> TrainingRunSnapshot {
+        guard descriptor.validates(run) else {
+            throw AthleteMemoryRepositoryError.runParticipantMismatch
+        }
+        if let existing = trainingRunValues[run.id] {
+            guard existing.athleteID == run.athleteID,
+                  existing.eventID == run.eventID,
+                  existing.techniqueID == run.techniqueID,
+                  existing.requestedAt == run.requestedAt
+            else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+            guard trainingRunDescriptors[run.id] == descriptor else {
+                throw AthleteMemoryRepositoryError.runParticipantMismatch
+            }
+            return existing
+        }
+        try validateTrainingRunOwner(run)
+        guard let snapshot = TrainingRunSnapshot(run) else {
+            throw AthleteMemoryRepositoryError.invalidRunTransition
+        }
+        trainingRunValues[run.id] = snapshot
+        trainingRunDescriptors[run.id] = descriptor
+        return snapshot
+    }
+
+    func trainingRunDescriptor(id: UUID) async throws -> DurableTrainingRunDescriptor? {
+        trainingRunDescriptors[id]
+    }
+
+    func isAuraResultDeliveryAcknowledged(runID: UUID) async throws -> Bool {
+        acknowledgedAuraResultIDs.contains(runID)
+    }
+
+    func acknowledgeAuraResultDelivery(runID: UUID, at date: Date) async throws {
+        guard date.timeIntervalSinceReferenceDate.isFinite,
+              trainingRunDescriptors[runID]?.kind == .auraCoaching,
+              trainingRunValues[runID]?.status == .committed
+        else { throw AthleteMemoryRepositoryError.invalidRunTransition }
+        acknowledgedAuraResultIDs.insert(runID)
+    }
+
+    func trainingRun(id: UUID) async throws -> TrainingRunSnapshot? { trainingRunValues[id] }
+
+    func trainingRuns() async throws -> [TrainingRunSnapshot] {
+        trainingRunValues.values.sorted { $0.requestedAt < $1.requestedAt }
+    }
+
+    func activateTrainingRun(id: UUID, at date: Date) async throws -> TrainingRunSnapshot {
+        guard let existing = trainingRunValues[id] else {
+            throw AthleteMemoryRepositoryError.runNotFound
+        }
+        if existing.status == .active { return existing }
+        guard let active = existing.starting(at: date) else {
+            throw AthleteMemoryRepositoryError.invalidRunTransition
+        }
+        trainingRunValues[id] = active
+        return active
+    }
+
+    func stageCoachingCycle(
+        runID: UUID,
+        transaction: CoachingCycleMemoryTransaction
+    ) async throws -> TrainingRunSnapshot {
+        guard transaction.cycle.id == runID,
+              let existing = trainingRunValues[runID]
+        else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+        try validateCoachingTransaction(transaction, for: existing, requiresOpenEvent: true)
+        if existing.status == .completedAwaitingCommit || existing.status == .committed {
+            guard stagedCoachingCycles[runID] == transaction else {
+                throw AthleteMemoryRepositoryError.runParticipantMismatch
+            }
+            return existing
+        }
+        guard let completed = existing.completing(with: transaction.cycle) else {
+            throw AthleteMemoryRepositoryError.runParticipantMismatch
+        }
+        stagedCoachingCycles[runID] = transaction
+        trainingRunValues[runID] = completed
+        return completed
+    }
+
+    func commitCoachingCycle(runID: UUID, at date: Date) async throws -> TrainingRunSnapshot {
+        guard let run = trainingRunValues[runID],
+              let transaction = stagedCoachingCycles[runID]
+        else { throw AthleteMemoryRepositoryError.runNotFound }
+        try validateCoachingTransaction(transaction, for: run, requiresOpenEvent: false)
+        let committed: TrainingRunSnapshot
+        if run.status == .committed {
+            committed = run
+        } else {
+            guard let transitioned = run.committing(at: date) else {
+                throw AthleteMemoryRepositoryError.invalidRunTransition
+            }
+            committed = transitioned
+        }
+
+        var nextAttempts = attemptValues
+        for attempt in transaction.legacyAttempts {
+            if let existing = nextAttempts[attempt.id], existing != attempt {
+                throw AthleteMemoryRepositoryError.attemptParticipantMismatch
+            }
+            nextAttempts[attempt.id] = attempt
+        }
+        var nextPlayers = players
+        var nextMemory = memoryValues
+        var nextCycles = coachingCycleValues
+        var nextRuns = trainingRunValues
+        if let existingCycle = nextCycles[runID], existingCycle != transaction.cycle {
+            throw AthleteMemoryRepositoryError.runParticipantMismatch
+        }
+        nextPlayers[transaction.player.id] = transaction.player
+        nextMemory[transaction.skillMemory.key.storageKey] = transaction.skillMemory
+        nextCycles[runID] = transaction.cycle
+        nextRuns[runID] = committed
+
+        attemptValues = nextAttempts
+        players = nextPlayers
+        memoryValues = nextMemory
+        coachingCycleValues = nextCycles
+        trainingRunValues = nextRuns
+        return committed
+    }
+
+    func abortTrainingRun(id: UUID, at date: Date) async throws -> TrainingRunSnapshot {
+        guard let existing = trainingRunValues[id] else {
+            throw AthleteMemoryRepositoryError.runNotFound
+        }
+        if existing.status == .aborted { return existing }
+        guard let aborted = existing.aborting(at: date) else {
+            throw AthleteMemoryRepositoryError.invalidRunTransition
+        }
+        trainingRunValues[id] = aborted
+        stagedCoachingCycles.removeValue(forKey: id)
+        return aborted
+    }
+
     func reset() async throws {
         events.removeAll()
         players.removeAll()
@@ -308,11 +539,61 @@ final class InMemoryCompetitionRepository: CompetitionRepository {
         attemptValues.removeAll()
         memoryValues.removeAll()
         coachingCycleValues.removeAll()
+        trainingRunValues.removeAll()
+        stagedCoachingCycles.removeAll()
+        trainingRunDescriptors.removeAll()
+        acknowledgedAuraResultIDs.removeAll()
     }
 
-    private static func memoryKey(athleteID: UUID, techniqueID: String) -> String {
-        "\(athleteID.uuidString.lowercased())|\(techniqueID)"
+    private func validateTrainingRunOwner(_ run: PendingTrainingRun) throws {
+        guard let participant = players[run.athleteID],
+              participant.eventID == run.eventID
+        else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+        if let eventID = run.eventID {
+            guard let event = events[eventID] else {
+                throw AthleteMemoryRepositoryError.eventNotFound
+            }
+            guard event.isOpen else { throw AthleteMemoryRepositoryError.eventClosed }
+        }
     }
+
+    private func validateCoachingTransaction(
+        _ transaction: CoachingCycleMemoryTransaction,
+        for run: TrainingRunSnapshot,
+        requiresOpenEvent: Bool
+    ) throws {
+        guard transaction.cycle.id == run.id,
+              transaction.cycle.athleteID == run.athleteID,
+              transaction.cycle.eventID == run.eventID,
+              transaction.cycle.techniqueID == run.techniqueID,
+              let participant = players[run.athleteID],
+              participant.eventID == run.eventID,
+              participant.name == transaction.player.name,
+              participant.normalizedName == transaction.player.normalizedName,
+              participant.experienceLevel == transaction.player.experienceLevel,
+              participant.publicHandle == transaction.player.publicHandle,
+              transaction.player.reach == transaction.cycle.fittedReach,
+              transaction.player.rememberedStance == transaction.cycle.stance,
+              transaction.legacyAttempts.allSatisfy({
+                  $0.calibrationVersion == transaction.player.calibrationVersion
+              })
+        else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+        guard let descriptor = trainingRunDescriptors[run.id] else {
+            throw AthleteMemoryRepositoryError.corruptData
+        }
+        guard descriptor.kind == .auraCoaching,
+              descriptor.track?.id == transaction.cycle.trackID,
+              descriptor.techniqueID == transaction.cycle.techniqueID,
+              descriptor.stance == transaction.cycle.stance
+        else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+        if requiresOpenEvent, let eventID = run.eventID {
+            guard let event = events[eventID] else {
+                throw AthleteMemoryRepositoryError.eventNotFound
+            }
+            guard event.isOpen else { throw AthleteMemoryRepositoryError.eventClosed }
+        }
+    }
+
 }
 
 @Model
@@ -432,7 +713,12 @@ enum CompetitionSchemaV1: VersionedSchema {
 
 enum CompetitionMigrationPlan: SchemaMigrationPlan {
     static var schemas: [any VersionedSchema.Type] {
-        [CompetitionSchemaV1.self, CompetitionSchemaV2.self, CompetitionSchemaV3.self]
+        [
+            CompetitionSchemaV1.self,
+            CompetitionSchemaV2.self,
+            CompetitionSchemaV3.self,
+            CompetitionSchemaV4.self,
+        ]
     }
 
     static var stages: [MigrationStage] {
@@ -452,6 +738,14 @@ enum CompetitionMigrationPlan: SchemaMigrationPlan {
                 didMigrate: { context in
                     try CompetitionMemoryV3Migration.migrate(context)
                 }
+            ),
+            .custom(
+                fromVersion: CompetitionSchemaV3.self,
+                toVersion: CompetitionSchemaV4.self,
+                willMigrate: nil,
+                didMigrate: { context in
+                    try CompetitionRunV4Migration.migrate(context)
+                }
             )
         ]
     }
@@ -462,12 +756,12 @@ enum CompetitionModelContainer {
     private static let legacyConfigurationName = "BoxingCoachCompetitionV1"
 
     static func make(inMemory: Bool) throws -> ModelContainer {
-        let schema = Schema(versionedSchema: CompetitionSchemaV3.self)
+        let schema = Schema(versionedSchema: CompetitionSchemaV4.self)
         return try make(schema: schema, configuration: configuration(inMemory: inMemory))
     }
 
     static func configuration(inMemory: Bool) -> ModelConfiguration {
-        let schema = Schema(versionedSchema: CompetitionSchemaV3.self)
+        let schema = Schema(versionedSchema: CompetitionSchemaV4.self)
         if inMemory {
             return ModelConfiguration(
                 configurationName,
@@ -488,7 +782,7 @@ enum CompetitionModelContainer {
     }
 
     static func make(storeURL: URL, allowsSave: Bool = true) throws -> ModelContainer {
-        let schema = Schema(versionedSchema: CompetitionSchemaV3.self)
+        let schema = Schema(versionedSchema: CompetitionSchemaV4.self)
         let configuration = ModelConfiguration(
             configurationName,
             schema: schema,
@@ -529,13 +823,16 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
     let container: ModelContainer
     private var context: ModelContext
     private let afterParticipantProfileMutation: () throws -> Void
+    private let beforeSave: () throws -> Void
 
     init(
         container: ModelContainer,
-        afterParticipantProfileMutation: @escaping () throws -> Void = {}
+        afterParticipantProfileMutation: @escaping () throws -> Void = {},
+        beforeSave: @escaping () throws -> Void = {}
     ) {
         self.container = container
         self.afterParticipantProfileMutation = afterParticipantProfileMutation
+        self.beforeSave = beforeSave
         context = Self.makeContext(container: container)
     }
 
@@ -723,7 +1020,7 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
         try context.fetch(FetchDescriptor<CompetitionSchemaV3.TechniqueAttemptRecord>())
             .compactMap(\.snapshot)
             .filter { $0.athleteID == athleteID && $0.techniqueID == techniqueID }
-            .sorted { $0.completedAt < $1.completedAt }
+            .sorted(by: stableAttemptOrder)
     }
 
     func save(skillMemory: AthleteSkillMemory) async throws {
@@ -757,49 +1054,8 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
 
     func save(coachingCycle transaction: CoachingCycleMemoryTransaction) async throws {
         do {
-            let cycles = try context.fetch(
-                FetchDescriptor<CompetitionSchemaV3.CoachingCycleRecord>()
-            )
-            if let existing = cycles.first(where: { $0.id == transaction.cycle.id }) {
-                guard existing.snapshot == transaction.cycle else {
-                    throw CompetitionRepositoryError.invalidSubmission
-                }
-                return
-            }
-
-            if let existingPlayer = try playerRecord(id: transaction.player.id) {
-                existingPlayer.apply(transaction.player)
-            } else {
-                context.insert(CompetitionSchemaV3.CompetitionPlayerRecord(transaction.player))
-            }
-
-            let existingAttempts = try context.fetch(
-                FetchDescriptor<CompetitionSchemaV3.TechniqueAttemptRecord>()
-            )
-            let existingByID = Dictionary(uniqueKeysWithValues: existingAttempts.map { ($0.id, $0) })
-            for attempt in transaction.legacyAttempts {
-                if let record = existingByID[attempt.id] {
-                    guard record.snapshot == attempt else {
-                        throw CompetitionRepositoryError.invalidSubmission
-                    }
-                } else {
-                    context.insert(CompetitionSchemaV3.TechniqueAttemptRecord(attempt))
-                }
-            }
-
-            let memoryRecords = try context.fetch(
-                FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
-            )
-            if let existingMemory = memoryRecords.first(where: {
-                $0.athleteID == transaction.skillMemory.athleteID
-                    && $0.techniqueID == transaction.skillMemory.techniqueID
-            }) {
-                context.delete(existingMemory)
-            }
-            context.insert(try CompetitionSchemaV3.AthleteSkillMemoryRecord(
-                transaction.skillMemory
-            ))
-            context.insert(try CompetitionSchemaV3.CoachingCycleRecord(transaction.cycle))
+            let inserted = try applyCoachingCycle(transaction)
+            guard inserted else { return }
             try saveContext()
         } catch {
             context.rollback()
@@ -818,7 +1074,180 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
             .first { $0.id == id }?.snapshot
     }
 
+    func reserveTrainingRun(
+        _ run: PendingTrainingRun,
+        descriptor: DurableTrainingRunDescriptor
+    ) async throws -> TrainingRunSnapshot {
+        guard descriptor.validates(run) else {
+            throw AthleteMemoryRepositoryError.runParticipantMismatch
+        }
+        if let existing = try trainingRunRecord(id: run.id)?.runSnapshot {
+            guard existing.athleteID == run.athleteID,
+                  existing.eventID == run.eventID,
+                  existing.techniqueID == run.techniqueID,
+                  existing.requestedAt == run.requestedAt
+            else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+            guard try await trainingRunDescriptor(id: run.id) == descriptor else {
+                throw AthleteMemoryRepositoryError.runParticipantMismatch
+            }
+            return existing
+        }
+        try validateTrainingRunOwner(run)
+        let record = CompetitionSchemaV3.PendingTrainingRunRecord(run)
+        guard let snapshot = record.runSnapshot else {
+            throw AthleteMemoryRepositoryError.corruptData
+        }
+        context.insert(record)
+        context.insert(try CompetitionSchemaV4.TrainingRunDescriptorRecord(descriptor))
+        try saveContext()
+        return snapshot
+    }
+
+    func trainingRunDescriptor(id: UUID) async throws -> DurableTrainingRunDescriptor? {
+        guard let record = try descriptorRecord(runID: id) else { return nil }
+        guard let descriptor = record.descriptor else {
+            throw AthleteMemoryRepositoryError.corruptData
+        }
+        return descriptor
+    }
+
+    func isAuraResultDeliveryAcknowledged(runID: UUID) async throws -> Bool {
+        try descriptorRecord(runID: runID)?.resultAcknowledgedAt != nil
+    }
+
+    func acknowledgeAuraResultDelivery(runID: UUID, at date: Date) async throws {
+        guard date.timeIntervalSinceReferenceDate.isFinite,
+              let descriptor = try descriptorRecord(runID: runID),
+              descriptor.descriptor?.kind == .auraCoaching,
+              try trainingRunRecord(id: runID)?.runSnapshot?.status == .committed
+        else { throw AthleteMemoryRepositoryError.invalidRunTransition }
+        guard descriptor.resultAcknowledgedAt == nil else { return }
+        descriptor.resultAcknowledgedAt = date
+        try saveContext()
+    }
+
+    func trainingRun(id: UUID) async throws -> TrainingRunSnapshot? {
+        guard let record = try trainingRunRecord(id: id) else { return nil }
+        guard let snapshot = record.runSnapshot else {
+            throw AthleteMemoryRepositoryError.corruptData
+        }
+        return snapshot
+    }
+
+    func trainingRuns() async throws -> [TrainingRunSnapshot] {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.PendingTrainingRunRecord>())
+            .map { record in
+                guard let snapshot = record.runSnapshot else {
+                    throw AthleteMemoryRepositoryError.corruptData
+                }
+                return snapshot
+            }
+            .sorted { $0.requestedAt < $1.requestedAt }
+    }
+
+    func activateTrainingRun(id: UUID, at date: Date) async throws -> TrainingRunSnapshot {
+        guard let record = try trainingRunRecord(id: id),
+              let current = record.runSnapshot
+        else { throw AthleteMemoryRepositoryError.runNotFound }
+        if current.status == .active { return current }
+        guard let active = current.starting(at: date) else {
+            throw AthleteMemoryRepositoryError.invalidRunTransition
+        }
+        try record.apply(active)
+        try saveContext()
+        return active
+    }
+
+    func stageCoachingCycle(
+        runID: UUID,
+        transaction: CoachingCycleMemoryTransaction
+    ) async throws -> TrainingRunSnapshot {
+        guard transaction.cycle.id == runID,
+              let runRecord = try trainingRunRecord(id: runID),
+              let current = runRecord.runSnapshot
+        else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+        try validateCoachingTransaction(transaction, for: current, requiresOpenEvent: true)
+
+        if current.status == .completedAwaitingCommit || current.status == .committed {
+            guard let staged = try completionRecord(runID: runID)?.transaction,
+                  staged == transaction
+            else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+            return current
+        }
+        guard let completed = current.completing(with: transaction.cycle) else {
+            throw AthleteMemoryRepositoryError.runParticipantMismatch
+        }
+        do {
+            if let existing = try completionRecord(runID: runID) {
+                guard existing.transaction == transaction else {
+                    throw AthleteMemoryRepositoryError.runParticipantMismatch
+                }
+            } else {
+                context.insert(try CompetitionSchemaV4.CoachingRunCompletionRecord(
+                    runID: runID,
+                    transaction: transaction
+                ))
+            }
+            try runRecord.apply(completed)
+            try saveContext()
+            return completed
+        } catch {
+            rollbackContext()
+            throw error
+        }
+    }
+
+    func commitCoachingCycle(runID: UUID, at date: Date) async throws -> TrainingRunSnapshot {
+        guard let runRecord = try trainingRunRecord(id: runID),
+              let current = runRecord.runSnapshot,
+              let completion = try completionRecord(runID: runID),
+              let transaction = completion.transaction
+        else { throw AthleteMemoryRepositoryError.runNotFound }
+        try validateCoachingTransaction(transaction, for: current, requiresOpenEvent: false)
+        if current.status == .committed {
+            _ = try applyCoachingCycle(transaction)
+            try saveContext()
+            return current
+        }
+        guard let committed = current.committing(at: date) else {
+            throw AthleteMemoryRepositoryError.invalidRunTransition
+        }
+
+        do {
+            _ = try applyCoachingCycle(transaction)
+            try runRecord.apply(committed)
+            try saveContext()
+            return committed
+        } catch {
+            rollbackContext()
+            throw error
+        }
+    }
+
+    func abortTrainingRun(id: UUID, at date: Date) async throws -> TrainingRunSnapshot {
+        guard let record = try trainingRunRecord(id: id),
+              let current = record.runSnapshot
+        else { throw AthleteMemoryRepositoryError.runNotFound }
+        if current.status == .aborted { return current }
+        guard let aborted = current.aborting(at: date) else {
+            throw AthleteMemoryRepositoryError.invalidRunTransition
+        }
+        do {
+            try record.apply(aborted)
+            if let completion = try completionRecord(runID: id) {
+                context.delete(completion)
+            }
+            try saveContext()
+            return aborted
+        } catch {
+            rollbackContext()
+            throw error
+        }
+    }
+
     func reset() async throws {
+        try context.delete(model: CompetitionSchemaV4.CoachingRunCompletionRecord.self)
+        try context.delete(model: CompetitionSchemaV4.TrainingRunDescriptorRecord.self)
         try context.delete(model: CompetitionSchemaV3.CoachingCycleRecord.self)
         try context.delete(model: CompetitionSchemaV3.AthleteSkillMemoryRecord.self)
         try context.delete(model: CompetitionSchemaV3.TechniqueAttemptRecord.self)
@@ -840,8 +1269,140 @@ final class SwiftDataCompetitionRepository: CompetitionRepository {
             .first { $0.id == id }
     }
 
+    private func trainingRunRecord(
+        id: UUID
+    ) throws -> CompetitionSchemaV3.PendingTrainingRunRecord? {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV3.PendingTrainingRunRecord>())
+            .first { $0.id == id }
+    }
+
+    private func completionRecord(
+        runID: UUID
+    ) throws -> CompetitionSchemaV4.CoachingRunCompletionRecord? {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV4.CoachingRunCompletionRecord>())
+            .first { $0.runID == runID }
+    }
+
+    private func descriptorRecord(
+        runID: UUID
+    ) throws -> CompetitionSchemaV4.TrainingRunDescriptorRecord? {
+        try context.fetch(FetchDescriptor<CompetitionSchemaV4.TrainingRunDescriptorRecord>())
+            .first { $0.runID == runID }
+    }
+
+    private func validateTrainingRunOwner(_ run: PendingTrainingRun) throws {
+        guard let participant = try playerRecord(id: run.athleteID)?.snapshot,
+              participant.eventID == run.eventID
+        else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+        if let eventID = run.eventID {
+            guard let event = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>()
+            ).first(where: { $0.id == eventID })?.snapshot else {
+                throw AthleteMemoryRepositoryError.eventNotFound
+            }
+            guard event.isOpen else { throw AthleteMemoryRepositoryError.eventClosed }
+        }
+    }
+
+    private func validateCoachingTransaction(
+        _ transaction: CoachingCycleMemoryTransaction,
+        for run: TrainingRunSnapshot,
+        requiresOpenEvent: Bool
+    ) throws {
+        guard transaction.cycle.id == run.id,
+              transaction.cycle.athleteID == run.athleteID,
+              transaction.cycle.eventID == run.eventID,
+              transaction.cycle.techniqueID == run.techniqueID,
+              let participant = try playerRecord(id: run.athleteID)?.snapshot,
+              participant.eventID == run.eventID,
+              participant.name == transaction.player.name,
+              participant.normalizedName == transaction.player.normalizedName,
+              participant.experienceLevel == transaction.player.experienceLevel,
+              participant.publicHandle == transaction.player.publicHandle,
+              transaction.player.reach == transaction.cycle.fittedReach,
+              transaction.player.rememberedStance == transaction.cycle.stance,
+              transaction.legacyAttempts.allSatisfy({
+                  $0.calibrationVersion == transaction.player.calibrationVersion
+              })
+        else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+        guard let descriptor = try descriptorRecord(runID: run.id)?.descriptor else {
+            throw AthleteMemoryRepositoryError.corruptData
+        }
+        guard descriptor.kind == .auraCoaching,
+              descriptor.track?.id == transaction.cycle.trackID,
+              descriptor.techniqueID == transaction.cycle.techniqueID,
+              descriptor.stance == transaction.cycle.stance
+        else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+        if requiresOpenEvent, let eventID = run.eventID {
+            guard let event = try context.fetch(
+                FetchDescriptor<CompetitionSchemaV3.EventEditionRecord>()
+            ).first(where: { $0.id == eventID })?.snapshot else {
+                throw AthleteMemoryRepositoryError.eventNotFound
+            }
+            guard event.isOpen else { throw AthleteMemoryRepositoryError.eventClosed }
+        }
+    }
+
+    /// Applies every coaching-memory row to this context without saving. Its callers either save
+    /// once with the run transition or roll the entire context back.
+    @discardableResult
+    private func applyCoachingCycle(
+        _ transaction: CoachingCycleMemoryTransaction
+    ) throws -> Bool {
+        let cycles = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.CoachingCycleRecord>()
+        )
+        let existingCycle = cycles.first(where: { $0.id == transaction.cycle.id })
+        if let existing = existingCycle {
+            guard existing.snapshot == transaction.cycle else {
+                throw AthleteMemoryRepositoryError.runParticipantMismatch
+            }
+        }
+
+        if let existingPlayer = try playerRecord(id: transaction.player.id) {
+            guard existingPlayer.snapshot.eventID == transaction.player.eventID else {
+                throw AthleteMemoryRepositoryError.participantEventMismatch
+            }
+            existingPlayer.apply(transaction.player)
+        } else {
+            context.insert(CompetitionSchemaV3.CompetitionPlayerRecord(transaction.player))
+        }
+
+        let existingAttempts = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.TechniqueAttemptRecord>()
+        )
+        let existingByID = Dictionary(uniqueKeysWithValues: existingAttempts.map { ($0.id, $0) })
+        for attempt in transaction.legacyAttempts {
+            if let record = existingByID[attempt.id] {
+                guard record.snapshot == attempt else {
+                    throw AthleteMemoryRepositoryError.attemptParticipantMismatch
+                }
+            } else {
+                context.insert(CompetitionSchemaV3.TechniqueAttemptRecord(attempt))
+            }
+        }
+
+        let memoryRecords = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.AthleteSkillMemoryRecord>()
+        )
+        if let existingMemory = memoryRecords.first(where: {
+            $0.id == transaction.skillMemory.key.storageKey
+        }) {
+            try existingMemory.apply(transaction.skillMemory)
+        } else {
+            context.insert(try CompetitionSchemaV3.AthleteSkillMemoryRecord(
+                transaction.skillMemory
+            ))
+        }
+        if existingCycle == nil {
+            context.insert(try CompetitionSchemaV3.CoachingCycleRecord(transaction.cycle))
+        }
+        return true
+    }
+
     private func saveContext() throws {
         do {
+            try beforeSave()
             try context.save()
         } catch {
             rollbackContext()

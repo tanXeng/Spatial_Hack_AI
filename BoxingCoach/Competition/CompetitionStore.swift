@@ -33,6 +33,7 @@ nonisolated enum CompetitionStoreError: LocalizedError, Equatable, Sendable {
     case incompleteRun
     case unsafeGuardClearance
     case resetBlocked
+    case durableMemoryRequired
     case wrapped(String)
 
     var errorDescription: String? {
@@ -43,9 +44,27 @@ nonisolated enum CompetitionStoreError: LocalizedError, Equatable, Sendable {
         case .incompleteRun: return "That run was not complete, so no leaderboard result was saved."
         case .unsafeGuardClearance: return "Your saved reach no longer clears your current guard. Recalibrate before competing."
         case .resetBlocked: return "Finish the active run or save before resetting the competition."
+        case .durableMemoryRequired:
+            return "Aura proof needs durable athlete memory. Restore local storage, then try again."
         case .wrapped(let message): return message
         }
     }
+}
+
+struct RecoveredAuraResult: Equatable, Sendable {
+    let runID: UUID
+    let selection: TrainingSelection
+    let snapshot: CoachingCycleSnapshot
+}
+
+nonisolated enum CoachingCyclePersistenceOutcome: Equatable, Sendable {
+    case idle
+    case reserved(UUID)
+    case active(UUID)
+    case staged(UUID)
+    case committed(UUID)
+    case aborted(UUID)
+    case failed(String)
 }
 
 @Observable
@@ -65,6 +84,9 @@ final class CompetitionStore {
     private(set) var isSaving = false
     private(set) var errorMessage: String?
     private(set) var coachingCyclePersistenceScope: CoachingCyclePersistenceScope
+    private(set) var coachingCyclePersistenceOutcome: CoachingCyclePersistenceOutcome = .idle
+    private(set) var latestCoachingCycle: CoachingCycleSnapshot?
+    private(set) var recoveredAuraResult: RecoveredAuraResult?
     var nameDraft = ""
     var codeDraft = ""
     var selectedStance: Stance = .orthodox
@@ -79,6 +101,8 @@ final class CompetitionStore {
     private let now: () -> Date
     private let postParticipantCommitRefresh: @MainActor () async throws -> Void
     private var didBootstrap = false
+    private var activeAuraRunID: UUID?
+    private var completionOwnedAuraRunIDs: Set<UUID> = []
 
     init(
         repository: any CompetitionRepository,
@@ -145,6 +169,7 @@ final class CompetitionStore {
             if currentEvent == nil {
                 currentEvent = try await repository.create(event: try makeEvent())
             }
+            try await reconcileDurableCoachingRuns()
             didBootstrap = await reloadBoards()
         } catch {
             present(error)
@@ -264,7 +289,11 @@ final class CompetitionStore {
     func handoffToWelcome() async {
         currentPlayer = nil
         latestSubmission = nil
+        latestCoachingCycle = nil
+        recoveredAuraResult = nil
+        coachingCyclePersistenceOutcome = .idle
         activeRun = nil
+        activeAuraRunID = nil
         nameDraft = ""
         codeDraft = ""
         selectedStance = .orthodox
@@ -430,6 +459,10 @@ final class CompetitionStore {
             currentPlayer = nil
             currentEvent = nil
             latestSubmission = nil
+            activeAuraRunID = nil
+            latestCoachingCycle = nil
+            recoveredAuraResult = nil
+            coachingCyclePersistenceOutcome = .idle
             reactiveStandings = []
             combinationStandings = []
             nameDraft = ""
@@ -444,6 +477,166 @@ final class CompetitionStore {
 
     func standings(for mode: CompetitionMode) -> [CompetitionStanding] {
         mode == .reactiveStrike ? reactiveStandings : combinationStandings
+    }
+
+    func acknowledgeAuraResultDelivery(id: UUID) async {
+        do {
+            try await repository.acknowledgeAuraResultDelivery(runID: id, at: now())
+            if recoveredAuraResult?.runID == id { recoveredAuraResult = nil }
+        } catch {
+            coachingCyclePersistenceOutcome = .failed(error.localizedDescription)
+        }
+    }
+
+    @discardableResult
+    func reserveAuraRun(
+        _ selection: TrainingSelection,
+        id: UUID = UUID()
+    ) async throws -> UUID {
+        guard case .aura(_, let technique, _) = selection else {
+            throw AthleteMemoryRepositoryError.invalidRunTransition
+        }
+        guard coachingCyclePersistenceScope == .durable else {
+            throw CompetitionStoreError.durableMemoryRequired
+        }
+        if let activeAuraRunID,
+           let existing = try await repository.trainingRun(id: activeAuraRunID),
+           existing.status == .reserved || existing.status == .active
+        {
+            throw CompetitionStoreError.runAlreadyActive
+        }
+        let player = try await standaloneAuraParticipant(for: selection)
+        guard let pending = PendingTrainingRun(
+            id: id,
+            athleteID: player.id,
+            eventID: player.eventID,
+            techniqueID: technique.id,
+            requestedAt: now()
+        ) else { throw AthleteMemoryRepositoryError.invalidRunTransition }
+        guard case .aura(let track, _, let stance) = selection else {
+            throw AthleteMemoryRepositoryError.invalidRunTransition
+        }
+        let reserved = try await repository.reserveTrainingRun(
+            pending,
+            descriptor: .aura(
+                runID: id,
+                track: track,
+                technique: technique,
+                stance: stance
+            )
+        )
+        activeAuraRunID = reserved.id
+        latestCoachingCycle = nil
+        recoveredAuraResult = nil
+        coachingCyclePersistenceOutcome = .reserved(reserved.id)
+        return reserved.id
+    }
+
+    func activateAuraRun(id: UUID) async throws {
+        guard activeAuraRunID == id else {
+            throw AthleteMemoryRepositoryError.runParticipantMismatch
+        }
+        let active = try await repository.activateTrainingRun(id: id, at: now())
+        coachingCyclePersistenceOutcome = .active(active.id)
+    }
+
+    func abortAuraRun(id: UUID) async {
+        do {
+            let aborted = try await repository.abortTrainingRun(id: id, at: now())
+            coachingCyclePersistenceOutcome = .aborted(aborted.id)
+            if activeAuraRunID == id { activeAuraRunID = nil }
+        } catch {
+            coachingCyclePersistenceOutcome = .failed(error.localizedDescription)
+        }
+    }
+
+    func markAuraCompletionStarted(id: UUID) {
+        completionOwnedAuraRunIDs.insert(id)
+    }
+
+    func abortSceneOwnedAuraRunIfNeeded(id: UUID) async {
+        guard !completionOwnedAuraRunIDs.contains(id) else { return }
+        do {
+            guard let descriptor = try await repository.trainingRunDescriptor(id: id),
+                  descriptor.kind == .auraCoaching,
+                  let run = try await repository.trainingRun(id: id),
+                  run.status == .reserved || run.status == .active
+            else { return }
+            await abortAuraRun(id: id)
+        } catch {
+            coachingCyclePersistenceOutcome = .failed(error.localizedDescription)
+        }
+    }
+
+    func stageReservedAuraCoachingCycle(
+        _ result: CoachingCycleResult,
+        fittedReach: BilateralReach,
+        runID: UUID
+    ) async throws {
+        guard result.id == runID,
+              activeAuraRunID == runID,
+              let run = try await repository.trainingRun(id: runID),
+              let participant = try await repository.player(id: run.athleteID),
+              participant.id == run.athleteID,
+              participant.eventID == run.eventID,
+              result.technique.id == run.techniqueID
+        else { throw AthleteMemoryRepositoryError.runParticipantMismatch }
+        let transaction = try await makeCoachingCycleTransaction(
+            result,
+            fittedReach: fittedReach,
+            for: participant
+        )
+        _ = try await repository.stageCoachingCycle(runID: runID, transaction: transaction)
+        coachingCyclePersistenceOutcome = .staged(runID)
+    }
+
+    @discardableResult
+    func persistReservedAuraCoachingCycle(
+        _ result: CoachingCycleResult,
+        fittedReach: BilateralReach,
+        runID: UUID
+    ) async throws -> CoachingCyclePersistenceScope {
+        do {
+            try await stageReservedAuraCoachingCycle(
+                result,
+                fittedReach: fittedReach,
+                runID: runID
+            )
+            let staged = try await repository.trainingRun(id: runID)
+            let commitDate = max(now(), staged?.completedAt ?? now())
+            let committed = try await repository.commitCoachingCycle(
+                runID: runID,
+                at: commitDate
+            )
+            coachingCyclePersistenceOutcome = .committed(committed.id)
+            latestCoachingCycle = try await repository.coachingCycle(id: committed.id)
+            activeAuraRunID = committed.id
+            completionOwnedAuraRunIDs.remove(committed.id)
+            if currentPlayer?.id == committed.athleteID {
+                currentPlayer = try await repository.player(id: committed.athleteID)
+            }
+            return coachingCyclePersistenceScope
+        } catch {
+            if let run = try? await repository.trainingRun(id: runID),
+               run.status == .completedAwaitingCommit {
+                do {
+                    let committed = try await repository.commitCoachingCycle(
+                        runID: runID,
+                        at: max(now(), run.completedAt ?? now())
+                    )
+                    coachingCyclePersistenceOutcome = .committed(committed.id)
+                    latestCoachingCycle = try await repository.coachingCycle(id: committed.id)
+                    completionOwnedAuraRunIDs.remove(committed.id)
+                    return coachingCyclePersistenceScope
+                } catch {
+                    coachingCyclePersistenceOutcome = .failed(error.localizedDescription)
+                    throw error
+                }
+            }
+            completionOwnedAuraRunIDs.remove(runID)
+            coachingCyclePersistenceOutcome = .failed(error.localizedDescription)
+            throw error
+        }
     }
 
 
@@ -469,6 +662,13 @@ final class CompetitionStore {
         _ result: CoachingCycleResult,
         fittedReach: BilateralReach
     ) async throws -> CoachingCyclePersistenceScope {
+        if let activeAuraRunID {
+            return try await persistReservedAuraCoachingCycle(
+                result,
+                fittedReach: fittedReach,
+                runID: activeAuraRunID
+            )
+        }
         let localName = "Local Athlete"
         let normalizedName = Self.standaloneAuraNormalizedName
         let timestamp = now()
@@ -496,28 +696,80 @@ final class CompetitionStore {
         fittedReach: BilateralReach,
         for participant: CompetitionPlayer
     ) async throws -> CompetitionPlayer {
+        let transaction = try await makeCoachingCycleTransaction(
+            result,
+            fittedReach: fittedReach,
+            for: participant
+        )
+        try await repository.save(coachingCycle: transaction)
+        return transaction.player
+    }
+
+    private func makeCoachingCycleTransaction(
+        _ result: CoachingCycleResult,
+        fittedReach: BilateralReach,
+        for participant: CompetitionPlayer
+    ) async throws -> CoachingCycleMemoryTransaction {
         var player = participant
         player.rememberedStance = result.stance
-        let roundProof = result.proof
+        let baseline = result.proof.baseline.attempts
+        let retest = result.proof.retest.attempts
+        guard baseline.count == CoachingCycleSession.requiredAttempts,
+              retest.count == CoachingCycleSession.requiredAttempts
+        else { throw CompetitionStoreError.incompleteRun }
 
-        let admitted = roundProof.baseline.attempts + roundProof.retest.attempts
-        guard admitted.count == CoachingCycleSession.requiredAttempts * 2 else {
-            throw CompetitionStoreError.incompleteRun
-        }
-        let snapshots = try admitted.map { attempt -> TechniqueAttemptSnapshot in
+        let baselineIDs = baseline.map(\.evidence.identity.id)
+        let ordered = baseline.enumerated().map { ($0.offset, CoachingAttemptStage.baseline, $0.element) }
+            + retest.enumerated().map { ($0.offset, CoachingAttemptStage.retest, $0.element) }
+        let lastEvidenceTime = ordered.map { $0.2.evidence.punch.returnedAt }.max()
+            ?? result.completedAt.timeIntervalSinceReferenceDate
+        let snapshots = try ordered.map { index, stage, attempt -> TechniqueAttemptSnapshot in
             let evidence = attempt.evidence
+            let metricSnapshots = try evidence.score.metrics.map { metric -> TechniqueMetricSnapshot in
+                guard let quality = evidence.quality(for: metric.kind) else {
+                    throw LearningEvidenceRejectionReason.missingMetricQuality(metric.kind)
+                }
+                let provenance: TechniqueMetricProvenance = switch quality {
+                case .measured: .measured
+                case .inferred: .inferred
+                }
+                guard let snapshot = TechniqueMetricSnapshot(
+                    kind: metric.kind.rawValue,
+                    score: metric.score,
+                    provenance: provenance
+                ) else { throw CompetitionStoreError.incompleteRun }
+                return snapshot
+            }
             guard let scoringVersion = Int(exactly: evidence.identity.scoringVersion),
+                  let referenceVersion = Int(exactly: evidence.identity.referenceVersion),
                   let calibrationVersion = Int(exactly: evidence.identity.calibrationVersion),
                   let snapshot = TechniqueAttemptSnapshot(
                     id: evidence.identity.id,
                     athleteID: player.id,
-                    eventID: player.publicHandle?.eventID,
+                    eventID: player.eventID,
+                    coachingCycleID: result.id,
+                    stage: stage == .baseline ? .baseline : .retest,
+                    cycleOrdinal: index + 1,
                     techniqueID: result.technique.id,
+                    stance: result.stance,
                     score: evidence.score.overall,
+                    metrics: metricSnapshots,
+                    trackedFraction: evidence.score.trackedFraction,
+                    duration: evidence.score.duration,
+                    isValid: !evidence.score.wrongHand,
+                    wrongHand: evidence.score.wrongHand,
                     scoringVersion: scoringVersion,
+                    referenceVersion: referenceVersion,
                     calibrationVersion: calibrationVersion,
-                    startedAt: result.completedAt.addingTimeInterval(-evidence.score.duration),
-                    completedAt: result.completedAt,
+                    correctionCode: result.selectedProof.correctionCode.rawValue,
+                    baselineAttemptID: stage == .retest ? baselineIDs[index] : nil,
+                    startedAt: result.completedAt.addingTimeInterval(
+                        evidence.punch.returnedAt - lastEvidenceTime - evidence.score.duration
+                    ),
+                    completedAt: result.completedAt.addingTimeInterval(
+                        evidence.punch.returnedAt - lastEvidenceTime
+                    ),
+                    pastSelfTrace: stage == .retest ? Self.pastSelfTrace(from: attempt) : nil,
                     publicHandleSnapshot: player.publicHandle
                   )
             else { throw CompetitionStoreError.incompleteRun }
@@ -528,42 +780,152 @@ final class CompetitionStore {
             athleteID: player.id,
             techniqueID: result.technique.id
         )
-        var attemptsByID = Dictionary(uniqueKeysWithValues: existing.map { ($0.id, $0) })
+        guard let key = snapshots.first?.memoryKey else {
+            throw CompetitionStoreError.incompleteRun
+        }
+        var attemptsByID = Dictionary(uniqueKeysWithValues: existing
+            .filter { $0.memoryKey == key }
+            .map { ($0.id, $0) })
         for snapshot in snapshots {
             if let existing = attemptsByID[snapshot.id], existing != snapshot {
-                throw CompetitionStoreError.incompleteRun
+                throw AthleteMemoryRepositoryError.attemptParticipantMismatch
             }
             attemptsByID[snapshot.id] = snapshot
         }
-        let stored = attemptsByID.values.sorted { $0.completedAt < $1.completedAt }
-        let trace = roundProof.retest.attempts.last.flatMap(Self.pastSelfTrace)
+        let stored = attemptsByID.values.sorted {
+            if $0.completedAt != $1.completedAt { return $0.completedAt < $1.completedAt }
+            return $0.id.uuidString < $1.id.uuidString
+        }
         let updatedAt = max(now(), result.completedAt)
         guard let memory = AthleteSkillMemory(
             athleteID: player.id,
             techniqueID: result.technique.id,
             experienceLevel: player.experienceLevel,
             attempts: stored,
-            pastSelfTrace: trace,
+            pastSelfTrace: retest.last.flatMap(Self.pastSelfTrace),
             updatedAt: updatedAt
         ) else { throw CompetitionStoreError.incompleteRun }
         player.reach = fittedReach
         player.calibrationVersion = CompetitionPlayer.calibrationVersion
         player.calibratedAt = updatedAt
         player.lastSeenAt = updatedAt
-        let cycleSnapshot = try CoachingCycleSnapshot(
-            result: result,
-            athleteID: player.id,
-            eventID: player.publicHandle?.eventID,
-            fittedReach: fittedReach
-        )
-        let transaction = try CoachingCycleMemoryTransaction(
+        return try CoachingCycleMemoryTransaction(
             player: player,
             legacyAttempts: snapshots,
             skillMemory: memory,
-            cycle: cycleSnapshot
+            cycle: CoachingCycleSnapshot(
+                result: result,
+                athleteID: player.id,
+                eventID: player.eventID,
+                fittedReach: fittedReach
+            )
         )
-        try await repository.save(coachingCycle: transaction)
+    }
+
+    private func standaloneAuraParticipant(
+        for selection: TrainingSelection
+    ) async throws -> CompetitionPlayer {
+        guard case .aura(let track, _, let stance) = selection else {
+            throw AthleteMemoryRepositoryError.invalidRunTransition
+        }
+        let timestamp = now()
+        var player = try await repository.player(normalizedName: Self.standaloneAuraNormalizedName)
+            ?? CompetitionPlayer(
+                id: UUID(),
+                name: "Local Athlete",
+                normalizedName: Self.standaloneAuraNormalizedName,
+                rememberedStance: stance,
+                reach: nil,
+                calibrationVersion: nil,
+                calibratedAt: nil,
+                createdAt: timestamp,
+                lastSeenAt: timestamp,
+                experienceLevel: track == .firstRound ? .beginner : .advanced
+            )
+        player.rememberedStance = stance
+        player.lastSeenAt = timestamp
+        player = CompetitionPlayer(
+            id: player.id,
+            name: player.name,
+            normalizedName: player.normalizedName,
+            rememberedStance: player.rememberedStance,
+            reach: player.reach,
+            calibrationVersion: player.calibrationVersion,
+            calibratedAt: player.calibratedAt,
+            createdAt: player.createdAt,
+            lastSeenAt: player.lastSeenAt,
+            experienceLevel: track == .firstRound ? .beginner : .advanced,
+            publicHandle: player.publicHandle
+        )
+        try await repository.save(player: player)
         return player
+    }
+
+    private func reconcileDurableCoachingRuns() async throws {
+        for run in try await repository.trainingRuns() {
+            guard let descriptor = try await repository.trainingRunDescriptor(id: run.id) else {
+                throw AthleteMemoryRepositoryError.corruptData
+            }
+            guard descriptor.kind == .auraCoaching else {
+                // Ranked and explicitly migrated legacy reservations remain Task 6's ownership.
+                continue
+            }
+            switch run.status {
+            case .completedAwaitingCommit:
+                let commitDate = max(now(), run.completedAt ?? now())
+                let committed = try await repository.commitCoachingCycle(
+                    runID: run.id,
+                    at: commitDate
+                )
+                coachingCyclePersistenceOutcome = .committed(committed.id)
+                latestCoachingCycle = try await repository.coachingCycle(id: committed.id)
+                if !(try await repository.isAuraResultDeliveryAcknowledged(runID: run.id)) {
+                    recoveredAuraResult = try recoveredResult(
+                        descriptor: descriptor,
+                        snapshot: latestCoachingCycle
+                    )
+                }
+            case .reserved, .active:
+                let aborted = try await repository.abortTrainingRun(id: run.id, at: now())
+                coachingCyclePersistenceOutcome = .aborted(aborted.id)
+            case .committed:
+                guard let cycle = try await repository.coachingCycle(id: run.id) else {
+                    throw AthleteMemoryRepositoryError.corruptData
+                }
+                latestCoachingCycle = cycle
+                if !(try await repository.isAuraResultDeliveryAcknowledged(runID: run.id)) {
+                    recoveredAuraResult = try recoveredResult(
+                        descriptor: descriptor,
+                        snapshot: cycle
+                    )
+                }
+                coachingCyclePersistenceOutcome = .committed(run.id)
+            case .aborted:
+                break
+            }
+        }
+    }
+
+    private func recoveredResult(
+        descriptor: DurableTrainingRunDescriptor,
+        snapshot: CoachingCycleSnapshot?
+    ) throws -> RecoveredAuraResult {
+        guard descriptor.kind == .auraCoaching,
+              let track = descriptor.track,
+              let stance = descriptor.stance,
+              let techniqueID = descriptor.techniqueID,
+              let technique = Technique.technique(id: techniqueID),
+              let snapshot,
+              snapshot.id == descriptor.runID,
+              snapshot.trackID == track.id,
+              snapshot.techniqueID == technique.id,
+              snapshot.stance == stance
+        else { throw AthleteMemoryRepositoryError.corruptData }
+        return RecoveredAuraResult(
+            runID: descriptor.runID,
+            selection: .aura(track: track, technique: technique, stance: stance),
+            snapshot: snapshot
+        )
     }
 
     private func prepareRankedRun(

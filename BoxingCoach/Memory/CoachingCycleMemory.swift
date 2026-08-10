@@ -202,7 +202,14 @@ nonisolated struct CoachingCycleSnapshot: Identifiable, Codable, Hashable, Senda
 }
 
 /// All athlete-memory writes associated with cycle completion, committed once or not at all.
-nonisolated struct CoachingCycleMemoryTransaction: Sendable {
+nonisolated struct CoachingCycleMemoryTransaction: Codable, Hashable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case player
+        case legacyAttempts
+        case skillMemory
+        case cycle
+    }
+
     let player: CompetitionPlayer
     let legacyAttempts: [TechniqueAttemptSnapshot]
     let skillMemory: AthleteSkillMemory
@@ -214,18 +221,69 @@ nonisolated struct CoachingCycleMemoryTransaction: Sendable {
         skillMemory: AthleteSkillMemory,
         cycle: CoachingCycleSnapshot
     ) throws {
+        let cycleAttemptIDs = Set(cycle.attempts.map(\.id))
+        let legacyAttemptIDs = Set(legacyAttempts.map(\.id))
+        var memoryAttemptsByID: [UUID: TechniqueAttemptSnapshot] = [:]
+        var memoryAttemptIDsAreUnique = true
+        for attempt in skillMemory.attempts {
+            if memoryAttemptsByID.updateValue(attempt, forKey: attempt.id) != nil {
+                memoryAttemptIDsAreUnique = false
+            }
+        }
         guard player.id == cycle.athleteID,
+              player.eventID == cycle.eventID,
+              player.reach == cycle.fittedReach,
+              player.rememberedStance == cycle.stance,
               skillMemory.athleteID == cycle.athleteID,
               skillMemory.techniqueID == cycle.techniqueID,
-              Set(cycle.attempts.map(\.id)).count == 6,
+              skillMemory.key.eventID == cycle.eventID,
+              skillMemory.key.stance == cycle.stance,
+              memoryAttemptIDsAreUnique,
+              cycleAttemptIDs.count == CoachingCycleSession.requiredAttempts * 2,
+              legacyAttempts.count == CoachingCycleSession.requiredAttempts * 2,
+              legacyAttemptIDs == cycleAttemptIDs,
+              legacyAttempts.allSatisfy({ memoryAttemptsByID[$0.id] == $0 }),
+              skillMemory.pastSelfTrace.map({ trace in
+                  legacyAttemptIDs.contains(trace.attemptID)
+                      && memoryAttemptsByID[trace.attemptID]?.pastSelfTrace == trace
+              }) ?? true,
               cycle.attempts.allSatisfy({ $0.cycleID == cycle.id }),
               cycle.attempts.allSatisfy({ attempt in
                   cycle.attempts.contains { $0.id == attempt.proofPeerAttemptID }
+              }),
+              legacyAttempts.allSatisfy({ attempt in
+                  attempt.athleteID == cycle.athleteID
+                      && attempt.eventID == cycle.eventID
+                      && attempt.coachingCycleID == cycle.id
+                      && attempt.techniqueID == cycle.techniqueID
+                      && attempt.stance == cycle.stance
+                      && attempt.publicHandleSnapshot == player.publicHandle
+                      && attempt.calibrationVersion == player.calibrationVersion
+                      && attempt.isValid
+              }),
+              zip(cycle.attempts, legacyAttempts).allSatisfy({ detailed, legacy in
+                  detailed.id == legacy.id
+                      && detailed.stage.rawValue == legacy.stage.rawValue
+                      && detailed.ordinal == legacy.cycleOrdinal
+                      && detailed.overallScore == legacy.score
+                      && detailed.scoringVersion == UInt64(legacy.scoringVersion)
+                      && detailed.referenceVersion == UInt64(legacy.referenceVersion)
+                      && detailed.calibrationVersion == UInt64(legacy.calibrationVersion ?? 0)
               })
         else { throw LearningEvidenceRejectionReason.incompleteCycle }
         self.player = player
         self.legacyAttempts = legacyAttempts
         self.skillMemory = skillMemory
         self.cycle = cycle
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        try self.init(
+            player: values.decode(CompetitionPlayer.self, forKey: .player),
+            legacyAttempts: values.decode([TechniqueAttemptSnapshot].self, forKey: .legacyAttempts),
+            skillMemory: values.decode(AthleteSkillMemory.self, forKey: .skillMemory),
+            cycle: values.decode(CoachingCycleSnapshot.self, forKey: .cycle)
+        )
     }
 }

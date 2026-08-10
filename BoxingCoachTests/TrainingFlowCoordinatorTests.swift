@@ -157,4 +157,117 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
         flow.participantDidChange(session: session)
         XCTAssertGreaterThan(flow.commandGeneration, beforeHandoff)
     }
+
+    func testAuraReservationPrecedesOpenAndActivationFollowsSceneReadiness() async {
+        let flow = TrainingFlowCoordinator()
+        let session = ReactiveStrikeSession()
+        let selection = TrainingSelection.aura(
+            track: .firstRound,
+            technique: .jab,
+            stance: .orthodox
+        )
+        let runID = UUID(uuidString: "00000000-0000-0000-0000-00000000E520")!
+        flow.navigate(to: .experience(selection))
+        var events: [String] = []
+
+        await flow.startExperience(
+            selection,
+            session: session,
+            supportsMultipleScenes: true,
+            openImmersive: { _ in
+                events.append("open")
+                flow.immersiveSceneDidBecomeReady(session: session)
+                return .opened
+            },
+            dismissImmersive: {},
+            hideControlWindow: { events.append("hide") },
+            reservePersistence: { _ in
+                events.append("reserve")
+                return runID
+            },
+            activatePersistence: { id in
+                XCTAssertEqual(id, runID)
+                XCTAssertTrue(session.isImmersiveSpaceOpen)
+                events.append("activate")
+            },
+            abortPersistence: { _ in XCTFail("Successful start must not abort") }
+        )
+
+        XCTAssertEqual(events, ["reserve", "open", "activate", "hide"])
+        XCTAssertEqual(session.auraPunch.cycleResult?.id, nil)
+        XCTAssertTrue(session.auraPunch.isRunning)
+    }
+
+    func testCancelledAuraOpenAbortsItsDurableReservation() async {
+        let flow = TrainingFlowCoordinator()
+        let session = ReactiveStrikeSession()
+        let selection = TrainingSelection.aura(
+            track: .firstRound,
+            technique: .jab,
+            stance: .orthodox
+        )
+        let runID = UUID(uuidString: "00000000-0000-0000-0000-00000000E521")!
+        flow.navigate(to: .experience(selection))
+        var events: [String] = []
+
+        await flow.startExperience(
+            selection,
+            session: session,
+            supportsMultipleScenes: true,
+            openImmersive: { _ in
+                events.append("open")
+                return .cancelled
+            },
+            dismissImmersive: {},
+            hideControlWindow: { XCTFail("Cancelled opening must keep the window") },
+            reservePersistence: { _ in
+                events.append("reserve")
+                return runID
+            },
+            activatePersistence: { _ in XCTFail("Cancelled opening must not activate") },
+            abortPersistence: { id in
+                XCTAssertEqual(id, runID)
+                events.append("abort")
+            }
+        )
+
+        XCTAssertEqual(events, ["reserve", "open", "abort"])
+        XCTAssertEqual(flow.presentationError, "Immersive space cancelled.")
+        XCTAssertFalse(session.auraPunch.isRunning)
+    }
+
+    func testRecoveredAuraResultHasDedicatedProductionRoute() {
+        let flow = TrainingFlowCoordinator()
+        let runID = UUID(uuidString: "00000000-0000-0000-0000-00000000E550")!
+
+        flow.presentRecoveredAuraResult(id: runID)
+
+        XCTAssertEqual(flow.route, .recoveredAuraResult(runID))
+        XCTAssertEqual(flow.transition, .idle)
+    }
+
+    func testAuraResultDeliveryRequiresVisibleExactIdentity() {
+        let runID = UUID()
+        let selection = TrainingSelection.aura(
+            track: .firstRound, technique: .jab, stance: .orthodox
+        )
+        XCTAssertNil(AuraResultDeliveryPolicy.visibleRunID(
+            selection: selection,
+            resultIsVisible: false,
+            persistenceRunID: runID,
+            cycleResultID: runID
+        ))
+        XCTAssertNil(AuraResultDeliveryPolicy.visibleRunID(
+            selection: selection,
+            resultIsVisible: true,
+            persistenceRunID: runID,
+            cycleResultID: UUID()
+        ))
+        XCTAssertEqual(AuraResultDeliveryPolicy.visibleRunID(
+            selection: selection,
+            resultIsVisible: true,
+            persistenceRunID: runID,
+            cycleResultID: runID
+        ), runID)
+    }
 }

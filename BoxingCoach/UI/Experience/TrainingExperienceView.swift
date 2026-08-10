@@ -17,6 +17,22 @@ nonisolated enum AuraResultPresentation: Equatable, Sendable {
     }
 }
 
+nonisolated enum AuraResultDeliveryPolicy {
+    static func visibleRunID(
+        selection: TrainingSelection,
+        resultIsVisible: Bool,
+        persistenceRunID: UUID?,
+        cycleResultID: UUID?
+    ) -> UUID? {
+        guard case .aura = selection,
+              resultIsVisible,
+              let persistenceRunID,
+              cycleResultID == persistenceRunID
+        else { return nil }
+        return persistenceRunID
+    }
+}
+
 struct TrainingExperienceView: View {
     @AccessibilityFocusState private var resultPrimaryActionFocused: Bool
 
@@ -26,6 +42,7 @@ struct TrainingExperienceView: View {
     let controlsDisabled: Bool
     let onStart: () -> Void
     let onChangeSelection: () -> Void
+    let onAuraResultVisible: (UUID) -> Void
 
     var body: some View {
         Group {
@@ -163,6 +180,7 @@ struct TrainingExperienceView: View {
 
                 if aura.phase == .results, let proof = aura.proofMetric {
                     auraProofCard(proof)
+                        .onAppear { acknowledgeVisibleAuraResult() }
                     if let feedback = aura.feedback {
                         auraFeedbackCard(feedback)
                     }
@@ -188,6 +206,9 @@ struct TrainingExperienceView: View {
 
                         auraFeedbackCard(feedback)
                     }
+                    Color.clear
+                        .frame(width: 0, height: 0)
+                        .onAppear { acknowledgeVisibleAuraResult() }
                 }
 
                 errorCards(engineError: aura.errorMessage)
@@ -203,6 +224,16 @@ struct TrainingExperienceView: View {
                 }
             }
         }
+    }
+
+    private func acknowledgeVisibleAuraResult() {
+        guard let runID = AuraResultDeliveryPolicy.visibleRunID(
+            selection: selection,
+            resultIsVisible: session.auraPunch.phase == .results,
+            persistenceRunID: session.auraPunch.persistenceRunID,
+            cycleResultID: session.auraPunch.coachingCycle.result?.id
+        ) else { return }
+        onAuraResultVisible(runID)
     }
 
     @ViewBuilder

@@ -23,6 +23,7 @@ struct BoxingCoachImmersiveView: View {
     @State private var voiceCommandRegistrationID: UUID?
     @State private var thermalProfile = ThermalPerformancePolicy.profile(for: .nominal)
     @State private var announcementGate = TrainingAccessibilityAnnouncementGate()
+    @State private var sceneOwnedAuraRunID: UUID?
     @AccessibilityFocusState private var voiceFocusDestination: TrainingAccessibilityFocusDestination?
     @AppStorage("BoxingCoach.prefersHeadAnchoredGuidance")
     private var prefersHeadAnchoredGuidance = true
@@ -264,6 +265,9 @@ struct BoxingCoachImmersiveView: View {
             guard oldProof != newProof, let newProof else { return }
             announceSemantic(.proof(TrainingAccessibility.proofAnnouncement(for: newProof)))
         }
+        .onChange(of: session.auraPunch.persistenceRunID) { _, runID in
+            if let runID { sceneOwnedAuraRunID = runID }
+        }
         .onChange(of: session.voiceCoach.state) { oldState, newState in
             if let destination = TrainingAccessibility.focusAfterVoiceTransition(
                 from: oldState,
@@ -279,6 +283,11 @@ struct BoxingCoachImmersiveView: View {
         }
         .onDisappear {
             session.auraPunch.cycleDidComplete = nil
+            session.auraPunch.cycleWillComplete = nil
+            let closingRunID = sceneOwnedAuraRunID
+            if let closingRunID {
+                Task { await competitionStore.abortSceneOwnedAuraRunIfNeeded(id: closingRunID) }
+            }
             if let voiceCommandRegistrationID {
                 session.voiceCoach.unregisterCommandHandler(voiceCommandRegistrationID)
                 self.voiceCommandRegistrationID = nil
@@ -289,6 +298,9 @@ struct BoxingCoachImmersiveView: View {
             flow.immersiveSceneDidClose(session: session)
         }
         .task {
+            if sceneOwnedAuraRunID == nil {
+                sceneOwnedAuraRunID = session.auraPunch.persistenceRunID
+            }
             refreshThermalProfile()
             bindVoiceCommands()
             session.auraPunch.cycleDidComplete = { result, reach in
@@ -296,6 +308,9 @@ struct BoxingCoachImmersiveView: View {
                     result,
                     fittedReach: reach
                 )
+            }
+            session.auraPunch.cycleWillComplete = { runID in
+                competitionStore.markAuraCompletionStarted(id: runID)
             }
             refreshVoiceCoachContext()
         }

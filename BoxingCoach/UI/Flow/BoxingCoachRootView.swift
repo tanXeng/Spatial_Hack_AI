@@ -66,7 +66,26 @@ struct BoxingCoachRootView: View {
                         presentationError: flow.presentationError,
                         controlsDisabled: flow.controlsDisabled,
                         onStart: { start(selection) },
-                        onChangeSelection: { changeSelection(selection) }
+                        onChangeSelection: { changeSelection(selection) },
+                        onAuraResultVisible: { runID in
+                            Task {
+                                await competitionStore.acknowledgeAuraResultDelivery(id: runID)
+                            }
+                        }
+                    )
+
+                case .recoveredAuraResult(let runID):
+                    RecoveredAuraResultView(
+                        result: competitionStore.recoveredAuraResult,
+                        expectedRunID: runID,
+                        onDone: {
+                            Task {
+                                await competitionStore.acknowledgeAuraResultDelivery(id: runID)
+                                if competitionStore.recoveredAuraResult == nil {
+                                    flow.navigate(to: .features)
+                                }
+                            }
+                        }
                     )
             }
         }
@@ -109,6 +128,9 @@ struct BoxingCoachRootView: View {
         }
         .task {
             await competitionStore.bootstrap()
+            if let recovered = competitionStore.recoveredAuraResult {
+                flow.presentRecoveredAuraResult(id: recovered.runID)
+            }
             await completeCompetitionRunIfNeeded()
             // A standalone calibration belongs to the training session. Reopening the control
             // window must not replace it with whichever competition player happened to be used
@@ -229,7 +251,10 @@ struct BoxingCoachRootView: View {
                 dismissImmersive: dismissImmersive,
                 hideControlWindow: {
                     dismissWindow(id: BoxingCoachSceneID.controlWindow)
-                }
+                },
+                reservePersistence: reservePersistence,
+                activatePersistence: competitionStore.activateAuraRun,
+                abortPersistence: competitionStore.abortAuraRun
             )
         }
     }
@@ -255,7 +280,10 @@ struct BoxingCoachRootView: View {
                 dismissImmersive: dismissImmersive,
                 hideControlWindow: {
                     dismissWindow(id: BoxingCoachSceneID.controlWindow)
-                }
+                },
+                reservePersistence: reservePersistence,
+                activatePersistence: competitionStore.activateAuraRun,
+                abortPersistence: competitionStore.abortAuraRun
             )
             if let message = flow.presentationError {
                 competitionStore.cancelActiveRun(message: message)
@@ -273,6 +301,11 @@ struct BoxingCoachRootView: View {
             )
             AccessibilityNotification.Announcement(presentation.announcement).post()
         }
+    }
+
+    private func reservePersistence(_ selection: TrainingSelection) async throws -> UUID? {
+        guard case .aura = selection else { return nil }
+        return try await competitionStore.reserveAuraRun(selection)
     }
 
     private func completeCompetitionRunIfNeeded() async {
@@ -351,7 +384,7 @@ struct BoxingCoachRootView: View {
 
     private func refreshWindowVoiceContext() {
         switch flow.route {
-        case .features:
+        case .features, .recoveredAuraResult:
             session.voiceCoach.updateContext(.idle)
         case .reactiveSetup, .combinationSetup:
             session.voiceCoach.updateContext(CoachVoiceContext(
@@ -384,6 +417,51 @@ struct BoxingCoachRootView: View {
                     techniqueName: nil
                 ))
             }
+        }
+    }
+}
+
+private struct RecoveredAuraResultView: View {
+    let result: RecoveredAuraResult?
+    let expectedRunID: UUID
+    let onDone: () -> Void
+
+    var body: some View {
+        ScrollView {
+            VStack(alignment: .leading, spacing: 20) {
+                Text("Saved Aura Proof")
+                    .font(.largeTitle.bold())
+                if let result, result.runID == expectedRunID {
+                    Text("\(result.snapshot.techniqueID.capitalized) · \(result.snapshot.stance.title)")
+                        .font(.title2)
+                    LabeledMetricRow(
+                        title: "Baseline",
+                        value: "\(Int(result.snapshot.baselineOverall.rounded()))"
+                    )
+                    LabeledMetricRow(
+                        title: "Retest",
+                        value: "\(Int(result.snapshot.retestOverall.rounded()))"
+                    )
+                    LabeledMetricRow(
+                        title: "Change",
+                        value: result.snapshot.overallDelta >= 0
+                            ? "+\(Int(result.snapshot.overallDelta.rounded()))"
+                            : "\(Int(result.snapshot.overallDelta.rounded()))"
+                    )
+                    Text("Six immutable attempts were restored from local athlete memory.")
+                        .foregroundStyle(.secondary)
+                } else {
+                    Label(
+                        "Saved proof unavailable. The recovered result no longer matches this run.",
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                }
+                Button("Done", action: onDone)
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .frame(minWidth: 60, minHeight: 60)
+            }
+            .frame(maxWidth: 640, alignment: .leading)
         }
     }
 }

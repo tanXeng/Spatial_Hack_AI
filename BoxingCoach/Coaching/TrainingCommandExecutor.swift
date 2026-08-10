@@ -432,7 +432,7 @@ final class TrainingSessionCommandTarget: TrainingCommandTarget {
              .experience(.competitionCalibration):
             return session.pauseForVoiceCommand()
         case .experience(.competition), .features, .reactiveSetup, .combinationSetup,
-             .auraSetup, .auraTrackSetup:
+             .auraSetup, .auraTrackSetup, .recoveredAuraResult:
             return nil
         }
     }
@@ -457,7 +457,7 @@ final class TrainingSessionCommandTarget: TrainingCommandTarget {
                 }
             )
         case .experience(.competition), .features, .reactiveSetup, .combinationSetup,
-             .auraSetup, .auraTrackSetup:
+             .auraSetup, .auraTrackSetup, .recoveredAuraResult:
             return nil
         }
     }

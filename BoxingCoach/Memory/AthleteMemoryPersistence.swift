@@ -511,3 +511,74 @@ extension CompetitionSchemaV3 {
         }
     }
 }
+
+/// V4 adds a sidecar payload for crash-safe coaching completion. Every shipped V3 model type is
+/// reused unchanged, preserving the V3 schema checksum and its migration contract.
+enum CompetitionSchemaV4: VersionedSchema {
+    static var versionIdentifier = Schema.Version(4, 0, 0)
+
+    static var models: [any PersistentModel.Type] {
+        CompetitionSchemaV3.models + [
+            TrainingRunDescriptorRecord.self,
+            CoachingRunCompletionRecord.self,
+        ]
+    }
+
+    @Model
+    final class TrainingRunDescriptorRecord {
+        @Attribute(.unique) var runID: UUID
+        var descriptorData: Data
+        var resultAcknowledgedAt: Date?
+
+        init(_ descriptor: DurableTrainingRunDescriptor) throws {
+            runID = descriptor.runID
+            descriptorData = try JSONEncoder().encode(descriptor)
+            resultAcknowledgedAt = nil
+        }
+
+        var descriptor: DurableTrainingRunDescriptor? {
+            guard let decoded = try? JSONDecoder().decode(
+                DurableTrainingRunDescriptor.self,
+                from: descriptorData
+            ), decoded.runID == runID else { return nil }
+            return decoded
+        }
+    }
+
+    @Model
+    final class CoachingRunCompletionRecord {
+        @Attribute(.unique) var runID: UUID
+        var transactionData: Data
+
+        init(runID: UUID, transaction: CoachingCycleMemoryTransaction) throws {
+            self.runID = runID
+            transactionData = try JSONEncoder().encode(transaction)
+        }
+
+        var transaction: CoachingCycleMemoryTransaction? {
+            guard let decoded = try? JSONDecoder().decode(
+                CoachingCycleMemoryTransaction.self,
+                from: transactionData
+            ), decoded.cycle.id == runID else { return nil }
+            return decoded
+        }
+    }
+}
+
+nonisolated enum CompetitionRunV4Migration {
+    static func migrate(_ context: ModelContext) throws {
+        let runs = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV3.PendingTrainingRunRecord>()
+        )
+        let existing = try context.fetch(
+            FetchDescriptor<CompetitionSchemaV4.TrainingRunDescriptorRecord>()
+        )
+        let existingIDs = Set(existing.map(\.runID))
+        for run in runs where !existingIDs.contains(run.id) {
+            context.insert(try CompetitionSchemaV4.TrainingRunDescriptorRecord(
+                .legacy(runID: run.id)
+            ))
+        }
+        try context.save()
+    }
+}

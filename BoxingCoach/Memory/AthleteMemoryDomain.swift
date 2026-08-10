@@ -335,6 +335,7 @@ nonisolated struct TechniqueAttemptSnapshot: Identifiable, Codable, Hashable, Se
     let eventID: UUID?
     let coachingCycleID: UUID?
     let stage: TechniqueAttemptStage
+    let cycleOrdinal: Int?
     let techniqueID: String
     let stance: Stance
     let score: Float
@@ -359,6 +360,7 @@ nonisolated struct TechniqueAttemptSnapshot: Identifiable, Codable, Hashable, Se
         case eventID
         case coachingCycleID
         case stage
+        case cycleOrdinal
         case techniqueID
         case stance
         case score
@@ -384,6 +386,7 @@ nonisolated struct TechniqueAttemptSnapshot: Identifiable, Codable, Hashable, Se
         eventID: UUID?,
         coachingCycleID: UUID?,
         stage: TechniqueAttemptStage,
+        cycleOrdinal: Int? = nil,
         techniqueID: String,
         stance: Stance,
         score: Float,
@@ -425,7 +428,10 @@ nonisolated struct TechniqueAttemptSnapshot: Identifiable, Codable, Hashable, Se
               completedAt.timeIntervalSinceReferenceDate.isFinite,
               normalizedCorrection.map({ !$0.isEmpty && $0.utf8.count <= 64 }) ?? true,
               pastSelfTrace.map({ $0.attemptID == id }) ?? true,
-              publicHandleSnapshot.map({ $0.eventID == eventID }) ?? true
+              publicHandleSnapshot.map({ $0.eventID == eventID }) ?? true,
+              cycleOrdinal.map({
+                  (1...CoachingCycleSession.requiredAttempts).contains($0)
+              }) ?? true
         else { return nil }
 
         switch stage {
@@ -445,6 +451,7 @@ nonisolated struct TechniqueAttemptSnapshot: Identifiable, Codable, Hashable, Se
         self.eventID = eventID
         self.coachingCycleID = coachingCycleID
         self.stage = stage
+        self.cycleOrdinal = cycleOrdinal
         self.techniqueID = techniqueID
         self.stance = stance
         self.score = score
@@ -482,6 +489,7 @@ nonisolated struct TechniqueAttemptSnapshot: Identifiable, Codable, Hashable, Se
             eventID: eventID,
             coachingCycleID: nil,
             stage: .practice,
+            cycleOrdinal: nil,
             techniqueID: techniqueID,
             stance: .orthodox,
             score: score,
@@ -512,6 +520,7 @@ nonisolated struct TechniqueAttemptSnapshot: Identifiable, Codable, Hashable, Se
             eventID: try values.decodeIfPresent(UUID.self, forKey: .eventID),
             coachingCycleID: try values.decodeIfPresent(UUID.self, forKey: .coachingCycleID),
             stage: try values.decodeIfPresent(TechniqueAttemptStage.self, forKey: .stage) ?? .practice,
+            cycleOrdinal: try values.decodeIfPresent(Int.self, forKey: .cycleOrdinal),
             techniqueID: try values.decode(String.self, forKey: .techniqueID),
             stance: try values.decodeIfPresent(Stance.self, forKey: .stance) ?? .orthodox,
             score: try values.decode(Float.self, forKey: .score),
@@ -820,7 +829,139 @@ nonisolated struct AthleteSkillMemory: Codable, Hashable, Sendable {
         _ rhs: TechniqueAttemptSnapshot
     ) -> Bool {
         if lhs.completedAt != rhs.completedAt { return lhs.completedAt < rhs.completedAt }
+        if lhs.coachingCycleID == rhs.coachingCycleID,
+           lhs.stage != rhs.stage {
+            return lhs.stage == .baseline
+        }
+        if lhs.coachingCycleID == rhs.coachingCycleID,
+           lhs.cycleOrdinal != rhs.cycleOrdinal {
+            return (lhs.cycleOrdinal ?? .max) < (rhs.cycleOrdinal ?? .max)
+        }
         return lhs.id.uuidString < rhs.id.uuidString
+    }
+}
+
+nonisolated enum DurableTrainingRunKind: String, Codable, Hashable, Sendable {
+    case auraCoaching
+    case rankedCompetition
+    case legacy
+}
+
+nonisolated struct DurableTrainingRunDescriptor: Codable, Hashable, Sendable {
+    private enum CodingKeys: String, CodingKey {
+        case runID, kind, track, techniqueID, stance, competitionMode
+    }
+    let runID: UUID
+    let kind: DurableTrainingRunKind
+    let track: TrainingTrack?
+    let techniqueID: String?
+    let stance: Stance?
+    let competitionMode: CompetitionMode?
+
+    private init(
+        runID: UUID,
+        kind: DurableTrainingRunKind,
+        track: TrainingTrack?,
+        techniqueID: String?,
+        stance: Stance?,
+        competitionMode: CompetitionMode?
+    ) {
+        self.runID = runID
+        self.kind = kind
+        self.track = track
+        self.techniqueID = techniqueID
+        self.stance = stance
+        self.competitionMode = competitionMode
+    }
+
+    static func aura(
+        runID: UUID,
+        track: TrainingTrack,
+        technique: Technique,
+        stance: Stance
+    ) -> DurableTrainingRunDescriptor {
+        DurableTrainingRunDescriptor(
+            runID: runID,
+            kind: .auraCoaching,
+            track: track,
+            techniqueID: technique.id,
+            stance: stance,
+            competitionMode: nil
+        )
+    }
+
+    static func ranked(
+        runID: UUID,
+        mode: CompetitionMode,
+        stance: Stance
+    ) -> DurableTrainingRunDescriptor {
+        DurableTrainingRunDescriptor(
+            runID: runID,
+            kind: .rankedCompetition,
+            track: nil,
+            techniqueID: nil,
+            stance: stance,
+            competitionMode: mode
+        )
+    }
+
+    static func legacy(runID: UUID) -> DurableTrainingRunDescriptor {
+        DurableTrainingRunDescriptor(
+            runID: runID,
+            kind: .legacy,
+            track: nil,
+            techniqueID: nil,
+            stance: nil,
+            competitionMode: nil
+        )
+    }
+
+    func validates(_ run: PendingTrainingRun) -> Bool {
+        guard runID == run.id else { return false }
+        switch kind {
+        case .auraCoaching:
+            return track != nil && stance != nil && competitionMode == nil
+                && techniqueID == run.techniqueID
+        case .rankedCompetition:
+            return track == nil && techniqueID == nil && stance != nil && competitionMode != nil
+        case .legacy:
+            return track == nil && techniqueID == nil && stance == nil && competitionMode == nil
+        }
+    }
+
+    init(from decoder: Decoder) throws {
+        let values = try decoder.container(keyedBy: CodingKeys.self)
+        let runID = try values.decode(UUID.self, forKey: .runID)
+        let kind = try values.decode(DurableTrainingRunKind.self, forKey: .kind)
+        let track = try values.decodeIfPresent(TrainingTrack.self, forKey: .track)
+        let techniqueID = try values.decodeIfPresent(String.self, forKey: .techniqueID)
+        let stance = try values.decodeIfPresent(Stance.self, forKey: .stance)
+        let competitionMode = try values.decodeIfPresent(CompetitionMode.self, forKey: .competitionMode)
+        let decoded = DurableTrainingRunDescriptor(
+            runID: runID,
+            kind: kind,
+            track: track,
+            techniqueID: techniqueID,
+            stance: stance,
+            competitionMode: competitionMode
+        )
+        let shapeIsValid: Bool = switch kind {
+        case .auraCoaching:
+            track != nil && stance != nil && competitionMode == nil
+                && !(techniqueID?.isEmpty ?? true)
+        case .rankedCompetition:
+            track == nil && techniqueID == nil && stance != nil && competitionMode != nil
+        case .legacy:
+            track == nil && techniqueID == nil && stance == nil && competitionMode == nil
+        }
+        guard shapeIsValid else {
+            throw DecodingError.dataCorruptedError(
+                forKey: .kind,
+                in: values,
+                debugDescription: "Run descriptor fields do not match its durable kind."
+            )
+        }
+        self = decoded
     }
 }
 
@@ -1299,6 +1440,30 @@ nonisolated struct TrainingRunSnapshot: Identifiable, Codable, Hashable, Sendabl
             completedAt: attempt.completedAt,
             attemptID: attempt.id,
             updatedAt: attempt.completedAt
+        )
+    }
+
+    func completing(with cycle: CoachingCycleSnapshot) -> TrainingRunSnapshot? {
+        guard status == .active,
+              cycle.id == id,
+              cycle.athleteID == athleteID,
+              cycle.eventID == eventID,
+              cycle.techniqueID == techniqueID,
+              cycle.attempts.count == CoachingCycleSession.requiredAttempts * 2,
+              let startedAt,
+              cycle.completedAt >= startedAt
+        else { return nil }
+        return TrainingRunSnapshot(
+            id: id,
+            athleteID: athleteID,
+            eventID: eventID,
+            techniqueID: techniqueID,
+            status: .completedAwaitingCommit,
+            requestedAt: requestedAt,
+            startedAt: startedAt,
+            completedAt: cycle.completedAt,
+            attemptID: id,
+            updatedAt: cycle.completedAt
         )
     }
 

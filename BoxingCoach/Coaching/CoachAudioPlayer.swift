@@ -1,6 +1,106 @@
 import AVFoundation
 import Foundation
+import RealityKit
 import os
+
+/// Owns the RealityKit audio entities for one mixed-immersion scene. The ambient fields and
+/// mono emitter pools are created once per scene root, reused for every cue, and removed together.
+@MainActor
+final class TrainingSpatialAudioScene {
+    private weak var worldRoot: Entity?
+    private weak var bodyAnchor: Entity?
+    private var ambienceFields: [TrainingAudioChannel: Entity] = [:]
+    private var targetEmitters: [Entity] = []
+    private var bodyEmitters: [Entity] = []
+    private var nextTargetEmitter = 0
+    private var nextBodyEmitter = 0
+
+    var entityCount: Int {
+        ambienceFields.count + targetEmitters.count + bodyEmitters.count
+    }
+
+    func attach(worldRoot: Entity, bodyAnchor: Entity) {
+        if self.worldRoot === worldRoot,
+           self.bodyAnchor === bodyAnchor,
+           entityCount > 0 {
+            return
+        }
+        detach()
+        self.worldRoot = worldRoot
+        self.bodyAnchor = bodyAnchor
+
+        let gym = Entity()
+        gym.name = "TrainingGymAmbienceField"
+        gym.ambientAudio = AmbientAudioComponent(gain: 0)
+        bodyAnchor.addChild(gym)
+        ambienceFields[.ambience] = gym
+
+        let crowd = Entity()
+        crowd.name = "TrainingCompetitionCrowdField"
+        crowd.ambientAudio = AmbientAudioComponent(gain: 0)
+        bodyAnchor.addChild(crowd)
+        ambienceFields[.crowd] = crowd
+
+        targetEmitters = (0..<4).map { index in
+            let emitter = Entity()
+            emitter.name = "TrainingTargetAudioEmitter\(index + 1)"
+            emitter.spatialAudio = Self.monoSpatialComponent
+            worldRoot.addChild(emitter)
+            return emitter
+        }
+
+        bodyEmitters = (0..<3).map { index in
+            let emitter = Entity()
+            emitter.name = "TrainingBodyAudioEmitter\(index + 1)"
+            emitter.position = SIMD3<Float>(Float(index - 1) * 0.34, 0.02, -1.15)
+            emitter.spatialAudio = Self.monoSpatialComponent
+            bodyAnchor.addChild(emitter)
+            return emitter
+        }
+    }
+
+    func detach() {
+        for entity in ambienceFields.values { entity.removeFromParent() }
+        for entity in targetEmitters { entity.removeFromParent() }
+        for entity in bodyEmitters { entity.removeFromParent() }
+        ambienceFields.removeAll()
+        targetEmitters.removeAll()
+        bodyEmitters.removeAll()
+        nextTargetEmitter = 0
+        nextBodyEmitter = 0
+        worldRoot = nil
+        bodyAnchor = nil
+    }
+
+    func playbackEntity(for request: TrainingAudioPlaybackRequest) -> Entity? {
+        switch request.channel {
+        case .ambience, .crowd:
+            return ambienceFields[request.channel]
+        case .impact:
+            guard targetEmitters.isEmpty == false else { return nil }
+            let entity = targetEmitters[nextTargetEmitter % targetEmitters.count]
+            nextTargetEmitter = (nextTargetEmitter + 1) % targetEmitters.count
+            if let position = request.position { entity.position = position }
+            return entity
+        case .status:
+            guard bodyEmitters.isEmpty == false else { return nil }
+            let entity = bodyEmitters[nextBodyEmitter % bodyEmitters.count]
+            nextBodyEmitter = (nextBodyEmitter + 1) % bodyEmitters.count
+            return entity
+        case .coach:
+            return nil
+        }
+    }
+
+    private static var monoSpatialComponent: SpatialAudioComponent {
+        SpatialAudioComponent(
+            gain: 0,
+            directLevel: 0,
+            reverbLevel: -96,
+            directivity: .beam(focus: 0)
+        )
+    }
+}
 
 /// AVFoundation renderer for `TrainingAudioCoordinator`.
 ///
@@ -19,6 +119,10 @@ final class CoachAudioPlayer: TrainingAudioBackend {
     private let playbackDelegate = PlaybackDelegate()
     private var players: [TrainingAudioPlaybackHandle: AVAudioPlayer] = [:]
     private var channels: [TrainingAudioPlaybackHandle: TrainingAudioChannel] = [:]
+    private let spatialScene = TrainingSpatialAudioScene()
+    private var spatialPlayers: [TrainingAudioPlaybackHandle: AudioPlaybackController] = [:]
+    private var spatialChannels: [TrainingAudioPlaybackHandle: TrainingAudioChannel] = [:]
+    private var spatialResources: [SpatialResourceKey: AudioFileResource] = [:]
     private var nextHandleValue = 1
     private var currentMix = TrainingAudioMix.stage(.fit)
     private var sceneAttached = false
@@ -51,6 +155,7 @@ final class CoachAudioPlayer: TrainingAudioBackend {
     func detachScene() {
         guard sceneAttached else { return }
         removeAudioSystemObservers()
+        detachSpatialScene()
         sceneAttached = false
         captureActive = false
         playbackReady = false
@@ -60,6 +165,17 @@ final class CoachAudioPlayer: TrainingAudioBackend {
         )
     }
 
+    func attachSpatialScene(worldRoot: Entity, bodyAnchor: Entity) {
+        spatialScene.attach(worldRoot: worldRoot, bodyAnchor: bodyAnchor)
+    }
+
+    func detachSpatialScene() {
+        let handles = Array(spatialPlayers.keys)
+        for handle in handles { stop(handle) }
+        spatialScene.detach()
+        spatialResources.removeAll()
+    }
+
     func apply(mix: TrainingAudioMix, fadeDuration: Duration) {
         currentMix = mix
         let seconds = Self.seconds(for: fadeDuration)
@@ -67,9 +183,16 @@ final class CoachAudioPlayer: TrainingAudioBackend {
             guard let channel = channels[handle] else { continue }
             player.setVolume(mix.gain(for: channel).linearAmplitude, fadeDuration: seconds)
         }
+        for (handle, player) in spatialPlayers {
+            guard let channel = spatialChannels[handle] else { continue }
+            player.fade(to: mix.gain(for: channel).decibels, duration: seconds)
+        }
     }
 
     func play(_ request: TrainingAudioPlaybackRequest) -> TrainingAudioPlaybackHandle? {
+        if let entity = spatialScene.playbackEntity(for: request) {
+            return playSpatial(request, on: entity)
+        }
         do {
             if !playbackReady || captureActive {
                 try configurePlaybackSession()
@@ -99,12 +222,20 @@ final class CoachAudioPlayer: TrainingAudioBackend {
     }
 
     func stop(_ handle: TrainingAudioPlaybackHandle) {
+        if let spatialPlayer = spatialPlayers.removeValue(forKey: handle) {
+            spatialPlayer.completionHandler = nil
+            spatialPlayer.stop()
+            spatialChannels[handle] = nil
+            return
+        }
         players.removeValue(forKey: handle)?.stop()
         channels[handle] = nil
     }
 
     func stop(channels channelsToStop: Set<TrainingAudioChannel>) {
         let handles = channels.compactMap { handle, channel in
+            channelsToStop.contains(channel) ? handle : nil
+        } + spatialChannels.compactMap { handle, channel in
             channelsToStop.contains(channel) ? handle : nil
         }
         for handle in handles {
@@ -113,7 +244,7 @@ final class CoachAudioPlayer: TrainingAudioBackend {
     }
 
     func stopAll() {
-        let handles = Array(players.keys)
+        let handles = Array(players.keys) + Array(spatialPlayers.keys)
         for handle in handles {
             stop(handle)
         }
@@ -248,6 +379,52 @@ final class CoachAudioPlayer: TrainingAudioBackend {
         playbackDidFinish?(handle)
     }
 
+    private func playSpatial(
+        _ request: TrainingAudioPlaybackRequest,
+        on entity: Entity
+    ) -> TrainingAudioPlaybackHandle? {
+        do {
+            if !playbackReady || captureActive { try configurePlaybackSession() }
+            let key = SpatialResourceKey(resource: request.resource, loops: request.loops)
+            let resource: AudioFileResource
+            if let cached = spatialResources[key] {
+                resource = cached
+            } else {
+                resource = try AudioFileResource.load(
+                    contentsOf: request.url,
+                    withName: request.resource.fileName,
+                    configuration: .init(
+                        loadingStrategy: .preload,
+                        shouldLoop: request.loops
+                    )
+                )
+                spatialResources[key] = resource
+            }
+
+            let handle = TrainingAudioPlaybackHandle(rawValue: nextHandleValue)
+            nextHandleValue &+= 1
+            let player = entity.playAudio(resource)
+            player.gain = currentMix.gain(for: request.channel).decibels
+            player.completionHandler = { [weak self] in
+                self?.spatialPlayerDidFinish(handle)
+            }
+            spatialPlayers[handle] = player
+            spatialChannels[handle] = request.channel
+            return handle
+        } catch {
+            Self.logger.error(
+                "Unable to spatially play \(request.resource.fileName, privacy: .public): \(error.localizedDescription, privacy: .public)"
+            )
+            return nil
+        }
+    }
+
+    private func spatialPlayerDidFinish(_ handle: TrainingAudioPlaybackHandle) {
+        spatialPlayers[handle] = nil
+        spatialChannels[handle] = nil
+        playbackDidFinish?(handle)
+    }
+
     private static func seconds(for duration: Duration) -> TimeInterval {
         let components = duration.components
         return TimeInterval(components.seconds)
@@ -270,6 +447,20 @@ private extension TrainingAudioMix {
             status
         }
     }
+}
+
+private extension TrainingAudioGain {
+    var decibels: Double {
+        switch self {
+        case .muted: -96
+        case let .decibels(value): Double(value)
+        }
+    }
+}
+
+private struct SpatialResourceKey: Hashable {
+    let resource: TrainingAudioResourceID
+    let loops: Bool
 }
 
 private final class PlaybackDelegate: NSObject, AVAudioPlayerDelegate {

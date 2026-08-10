@@ -1,5 +1,6 @@
 import Foundation
 import Observation
+import RealityKit
 import os
 
 @MainActor
@@ -14,6 +15,8 @@ protocol TrainingAudioBackend: AnyObject {
 
     func attachScene() throws
     func detachScene()
+    func attachSpatialScene(worldRoot: Entity, bodyAnchor: Entity)
+    func detachSpatialScene()
     func apply(mix: TrainingAudioMix, fadeDuration: Duration)
     func play(_ request: TrainingAudioPlaybackRequest) -> TrainingAudioPlaybackHandle?
     func stop(_ handle: TrainingAudioPlaybackHandle)
@@ -23,6 +26,11 @@ protocol TrainingAudioBackend: AnyObject {
     func endVoiceCapture()
     func recoverPlaybackSession() throws
     func mediaServicesWereReset() throws
+}
+
+extension TrainingAudioBackend {
+    func attachSpatialScene(worldRoot: Entity, bodyAnchor: Entity) {}
+    func detachSpatialScene() {}
 }
 
 @MainActor
@@ -48,6 +56,7 @@ final class TrainingAudioCoordinator {
     )
     private static let captureChannels: Set<TrainingAudioChannel> = [.coach, .impact, .status]
     private static let maximumImpactVoices = 4
+    private static let maximumAccentVoices = 3
 
     private struct ActivePlayback {
         let handle: TrainingAudioPlaybackHandle
@@ -87,12 +96,14 @@ final class TrainingAudioCoordinator {
     private var crowd: ActivePlayback?
     private var status: ActivePlayback?
     private var impactVoices: [ActivePlayback] = []
+    private var accentVoices: [ActivePlayback] = []
     private var pendingVoiceResponse: PendingVoiceResponse?
     private var nextImpactVariant = 0
     private var nextCapturePreparationID: UInt64 = 0
     private var capturePreparation: CapturePreparation?
     private var activeCaptureOrigin: TrainingAudioSceneOwner?
     private var captureRevocationHandler: (@MainActor () -> Void)?
+    private var rejectedImpactPresentedForTarget = false
 
     private var sceneAttached: Bool { !attachedScenes.isEmpty }
 
@@ -133,6 +144,14 @@ final class TrainingAudioCoordinator {
         captureRevocationHandler = handler
     }
 
+    func attachSpatialScene(worldRoot: Entity, bodyAnchor: Entity) {
+        backend.attachSpatialScene(worldRoot: worldRoot, bodyAnchor: bodyAnchor)
+    }
+
+    func detachSpatialScene() {
+        backend.detachSpatialScene()
+    }
+
     @discardableResult
     func handle(_ event: TrainingAudioEvent) async -> TrainingAudioEventOutcome {
         if case let .voiceCaptureDidBegin(origin) = event {
@@ -154,6 +173,8 @@ final class TrainingAudioCoordinator {
             return targetAppeared(at: position)
         case let .validatedImpact(position, quality):
             return playValidatedImpact(at: position, quality: quality)
+        case let .rejectedImpact(position, reason):
+            return playRejectedImpact(at: position, reason: reason)
         case let .coachCue(cue):
             return playCoachCue(cue)
         case let .trackingDidPause(reason):
@@ -169,6 +190,8 @@ final class TrainingAudioCoordinator {
             return handleSystemEvent(systemEvent)
         case .audioRecoveryConfirmed:
             return recoverAfterExplicitConfirmation()
+        case let .presetDidChange(preset):
+            return changePreset(to: preset)
         case .trainingWillBegin:
             return prepareForTrainingStart()
         case let .trainingDidStop(preservingVoiceCapture):
@@ -186,8 +209,10 @@ final class TrainingAudioCoordinator {
         trackingPaused = false
         presentation.status = .ready
         presentation.caption = "Training audio ready."
+        presentation.symbolName = presentation.preset.symbolName
         presentation.requiresExplicitRecovery = false
         presentation.isCapturing = false
+        presentation.isScoringFrozen = false
         applyCurrentMix()
 
         do {
@@ -200,13 +225,19 @@ final class TrainingAudioCoordinator {
             backendReady = false
             presentation.status = .unavailable
             presentation.caption = "Audio is unavailable. Visual coaching remains active."
+            presentation.symbolName = "speaker.slash.fill"
             Self.logger.error("Audio scene attachment failed: \(error.localizedDescription, privacy: .public)")
             return .backendUnavailable
         }
     }
 
     private func enter(_ stage: TrainingAudioStage) -> TrainingAudioEventOutcome {
+        let previousStage = presentation.stage
+        let changedStage = previousStage != stage
         presentation.stage = stage
+        guard changedStage else {
+            return sceneAttached ? .handled : .ignoredWhileDetached
+        }
         guard !trackingPaused,
               !presentation.requiresExplicitRecovery,
               capturePreparation == nil,
@@ -221,11 +252,13 @@ final class TrainingAudioCoordinator {
 
         applyCurrentMix()
         startEnvironmentBedsIfNeeded()
+        playStageAccent(entering: stage, from: previousStage)
         return .handled
     }
 
     private func targetAppeared(at position: SIMD3<Float>) -> TrainingAudioEventOutcome {
         presentation.targetPosition = position
+        rejectedImpactPresentedForTarget = false
         guard !trackingPaused,
               !presentation.requiresExplicitRecovery,
               capturePreparation == nil,
@@ -234,6 +267,7 @@ final class TrainingAudioCoordinator {
             return sceneAttached ? .handled : .ignoredWhileDetached
         }
         presentation.caption = "Target ready."
+        presentation.symbolName = "scope"
         return sceneAttached ? .handled : .ignoredWhileDetached
     }
 
@@ -241,6 +275,7 @@ final class TrainingAudioCoordinator {
         at position: SIMD3<Float>,
         quality: TrainingImpactQuality
     ) -> TrainingAudioEventOutcome {
+        guard !presentation.isScoringFrozen else { return .scoringFrozen }
         guard !trackingPaused,
               capturePreparation == nil,
               !presentation.isCapturing,
@@ -249,9 +284,11 @@ final class TrainingAudioCoordinator {
         }
         if highestActivePriority == nil {
             presentation.caption = quality.caption
+            presentation.symbolName = "burst.fill"
         }
         guard sceneAttached else { return .ignoredWhileDetached }
         guard backendReady else { return .backendUnavailable }
+        guard presentation.preset.allows(.impact) else { return .handled }
 
         let resource = impactResourceForNextVoice()
         guard let url = resources.url(for: resource) else {
@@ -276,6 +313,44 @@ final class TrainingAudioCoordinator {
         impactVoices.append(ActivePlayback(
             handle: handle,
             resource: resource,
+            generation: generation,
+            priority: nil
+        ))
+        return .handled
+    }
+
+    private func playRejectedImpact(
+        at position: SIMD3<Float>,
+        reason: String
+    ) -> TrainingAudioEventOutcome {
+        guard !rejectedImpactPresentedForTarget else { return .duplicateEvidence }
+        rejectedImpactPresentedForTarget = true
+        presentation.caption = reason
+        presentation.symbolName = "hand.raised.slash.fill"
+        guard !presentation.isScoringFrozen else { return .scoringFrozen }
+        guard sceneAttached else { return .ignoredWhileDetached }
+        guard backendReady else { return .backendUnavailable }
+        guard presentation.preset.allows(.impact) else { return .handled }
+        guard let url = resources.url(for: .rejectedImpact) else {
+            return .missingResource(.rejectedImpact)
+        }
+
+        if impactVoices.count >= Self.maximumImpactVoices {
+            let oldest = impactVoices.removeFirst()
+            backend.stop(oldest.handle)
+        }
+        let request = TrainingAudioPlaybackRequest(
+            resource: .rejectedImpact,
+            url: url,
+            channel: .impact,
+            loops: false,
+            position: position,
+            generation: generation
+        )
+        guard let handle = backend.play(request) else { return .backendUnavailable }
+        impactVoices.append(ActivePlayback(
+            handle: handle,
+            resource: .rejectedImpact,
             generation: generation,
             priority: nil
         ))
@@ -335,6 +410,8 @@ final class TrainingAudioCoordinator {
                 backendReady = false
                 presentation.status = .awaitingExplicitRecovery
                 presentation.requiresExplicitRecovery = true
+                presentation.isScoringFrozen = true
+                presentation.symbolName = "speaker.slash.fill"
                 Self.logger.error(
                     "Safety cue playback recovery failed: \(error.localizedDescription, privacy: .public)"
                 )
@@ -345,6 +422,7 @@ final class TrainingAudioCoordinator {
         presentation.status = trackingPaused
             ? .trackingPaused
             : (presentation.requiresExplicitRecovery ? .awaitingExplicitRecovery : .ready)
+        presentation.isScoringFrozen = trackingPaused || presentation.requiresExplicitRecovery
         applyCurrentMix()
         return .handled
     }
@@ -352,6 +430,7 @@ final class TrainingAudioCoordinator {
     private func startForegroundCue(_ cue: TrainingCoachCue) -> TrainingAudioEventOutcome {
         guard sceneAttached else { return .ignoredWhileDetached }
         guard backendReady else { return .backendUnavailable }
+        guard presentation.preset.allows(.coach) else { return .handled }
 
         if let current = foreground {
             backend.stop(current.handle)
@@ -402,6 +481,8 @@ final class TrainingAudioCoordinator {
         activeCaptureOrigin = nil
         presentation.status = .trackingPaused
         presentation.caption = "Tracking paused. Keep your space clear and bring both hands into view."
+        presentation.symbolName = "hand.raised.slash.fill"
+        presentation.isScoringFrozen = true
         presentation.isCapturing = false
         presentation.activePriority = nil
 
@@ -418,6 +499,10 @@ final class TrainingAudioCoordinator {
         trackingPaused = false
         presentation.status = presentation.requiresExplicitRecovery ? .awaitingExplicitRecovery : .ready
         presentation.caption = "Tracking restored. Return both hands to guard."
+        presentation.symbolName = presentation.requiresExplicitRecovery
+            ? "speaker.slash.fill"
+            : "hand.raised.fill"
+        presentation.isScoringFrozen = presentation.requiresExplicitRecovery
         applyCurrentMix()
         if !presentation.requiresExplicitRecovery {
             playStatusResource(.trackingRestored, caption: presentation.caption)
@@ -451,6 +536,7 @@ final class TrainingAudioCoordinator {
         pendingVoiceResponse = nil
         presentation.status = .capturePreparing
         presentation.caption = "Preparing microphone…"
+        presentation.symbolName = "mic.fill"
         presentation.activePriority = nil
         backend.stop(channels: Self.captureChannels)
         clearPlaybackRecords(in: Self.captureChannels)
@@ -471,6 +557,7 @@ final class TrainingAudioCoordinator {
             try backend.beginVoiceCapture()
             presentation.status = .capturing
             presentation.caption = "Listening…"
+            presentation.symbolName = "waveform"
             presentation.isCapturing = true
             presentation.mix = .voiceCapture
             activeCaptureOrigin = origin
@@ -485,6 +572,7 @@ final class TrainingAudioCoordinator {
             completeCapturePreparation(id: preparationID, with: .backendUnavailable)
             presentation.status = .unavailable
             presentation.caption = "Microphone audio is unavailable. Use the visible controls."
+            presentation.symbolName = "mic.slash.fill"
             applyCurrentMix()
             Self.logger.error("Voice capture focus failed: \(error.localizedDescription, privacy: .public)")
             return .backendUnavailable
@@ -512,7 +600,9 @@ final class TrainingAudioCoordinator {
             backendReady = false
             presentation.status = .awaitingExplicitRecovery
             presentation.caption = "Audio recovery failed. Confirm recovery to hear the coach response."
+            presentation.symbolName = "speaker.slash.fill"
             presentation.requiresExplicitRecovery = true
+            presentation.isScoringFrozen = true
             return .backendUnavailable
         }
 
@@ -552,6 +642,7 @@ final class TrainingAudioCoordinator {
                 try backend.recoverPlaybackSession()
                 backendReady = true
                 presentation.caption = "Audio is ready. Resume when your guard is set."
+                presentation.symbolName = "speaker.wave.2.fill"
             } catch {
                 backendReady = false
                 presentation.status = .unavailable
@@ -579,6 +670,10 @@ final class TrainingAudioCoordinator {
         presentation.caption = trackingPaused
             ? "Tracking is still paused. Bring both hands into view."
             : "Audio restored. Return both hands to guard."
+        presentation.symbolName = trackingPaused
+            ? "hand.raised.slash.fill"
+            : "speaker.wave.2.fill"
+        presentation.isScoringFrozen = trackingPaused
         applyCurrentMix()
         startEnvironmentBedsIfNeeded()
         return playPendingVoiceResponseIfCurrentGeneration()
@@ -603,7 +698,9 @@ final class TrainingAudioCoordinator {
         backend.stopAll()
         backend.detachScene()
         clearAllPlaybackRecords()
+        let preset = presentation.preset
         presentation = .detached
+        presentation.preset = preset
         return .handled
     }
 
@@ -667,7 +764,9 @@ final class TrainingAudioCoordinator {
                 backendReady = false
                 presentation.status = .awaitingExplicitRecovery
                 presentation.caption = "Audio recovery failed. Confirm recovery before continuing."
+                presentation.symbolName = "speaker.slash.fill"
                 presentation.requiresExplicitRecovery = true
+                presentation.isScoringFrozen = true
                 return .backendUnavailable
             }
         }
@@ -675,8 +774,10 @@ final class TrainingAudioCoordinator {
         presentation.status = trackingPaused
             ? .trackingPaused
             : (presentation.requiresExplicitRecovery ? .awaitingExplicitRecovery : .ready)
+        presentation.isScoringFrozen = trackingPaused || presentation.requiresExplicitRecovery
         if !trackingPaused, !presentation.requiresExplicitRecovery {
             presentation.caption = "Training stopped."
+            presentation.symbolName = "stop.circle.fill"
         }
         applyCurrentMix()
         return .handled
@@ -702,8 +803,10 @@ final class TrainingAudioCoordinator {
         }
         presentation.status = .awaitingExplicitRecovery
         presentation.caption = caption
+        presentation.symbolName = "speaker.slash.fill"
         presentation.isCapturing = false
         presentation.requiresExplicitRecovery = true
+        presentation.isScoringFrozen = true
         presentation.activePriority = nil
         presentation.mix = .silent
         backend.apply(mix: .silent, fadeDuration: fadeDuration)
@@ -715,10 +818,15 @@ final class TrainingAudioCoordinator {
             status = nil
         }
         presentation.caption = caption
+        presentation.symbolName = resource == .trackingLost
+            ? "hand.raised.slash.fill"
+            : "hand.raised.fill"
         presentation.activePriority = highestActivePriority
         applyCurrentMix()
 
-        guard backendReady, let url = resources.url(for: resource) else { return }
+        guard backendReady,
+              presentation.preset.allows(.status),
+              let url = resources.url(for: resource) else { return }
         let request = TrainingAudioPlaybackRequest(
             resource: resource,
             url: url,
@@ -738,6 +846,91 @@ final class TrainingAudioCoordinator {
         applyCurrentMix()
     }
 
+    private func changePreset(to preset: TrainingAudioPreset) -> TrainingAudioEventOutcome {
+        presentation.preset = preset
+        presentation.caption = "Audio preset: \(preset.title). \(preset.accessibilityDescription)."
+        presentation.symbolName = preset.symbolName
+        applyCurrentMix()
+        startEnvironmentBedsIfNeeded()
+        return sceneAttached ? .handled : .ignoredWhileDetached
+    }
+
+    private func playStageAccent(
+        entering stage: TrainingAudioStage,
+        from previousStage: TrainingAudioStage
+    ) {
+        switch stage {
+        case .baseline, .compete:
+            playAccentResource(
+                .startBell,
+                caption: stage == .compete ? "Competition round started." : "Round started.",
+                symbolName: "bell.fill"
+            )
+        case .prove:
+            playAccentResource(
+                .improvementSting,
+                caption: "Improvement round ready.",
+                symbolName: "chart.line.uptrend.xyaxis"
+            )
+        case .celebrate:
+            playAccentResource(
+                .endBell,
+                caption: "Round complete.",
+                symbolName: "bell.fill"
+            )
+            if previousStage == .compete {
+                playAccentResource(
+                    .winnerSwell,
+                    caption: "Winner confirmed. Round complete.",
+                    symbolName: "trophy.fill"
+                )
+            } else {
+                playAccentResource(
+                    .improvementSting,
+                    caption: "Training improvement complete.",
+                    symbolName: "chart.line.uptrend.xyaxis"
+                )
+            }
+        case .fit, .learn, .correct, .transfer:
+            break
+        }
+    }
+
+    private func playAccentResource(
+        _ resource: TrainingAudioResourceID,
+        caption: String,
+        symbolName: String
+    ) {
+        presentation.caption = caption
+        presentation.symbolName = symbolName
+        guard sceneAttached,
+              backendReady,
+              !trackingPaused,
+              !presentation.requiresExplicitRecovery,
+              presentation.preset.allows(.status),
+              let url = resources.url(for: resource) else { return }
+
+        if accentVoices.count >= Self.maximumAccentVoices {
+            let oldest = accentVoices.removeFirst()
+            backend.stop(oldest.handle)
+        }
+        let request = TrainingAudioPlaybackRequest(
+            resource: resource,
+            url: url,
+            channel: .status,
+            loops: false,
+            position: nil,
+            generation: generation
+        )
+        guard let handle = backend.play(request) else { return }
+        accentVoices.append(ActivePlayback(
+            handle: handle,
+            resource: resource,
+            generation: generation,
+            priority: nil
+        ))
+    }
+
     private func startEnvironmentBedsIfNeeded() {
         guard sceneAttached,
               backendReady,
@@ -749,6 +942,7 @@ final class TrainingAudioCoordinator {
         }
 
         if ambience == nil,
+           presentation.preset.allows(.ambience),
            let url = resources.url(for: .gymAmbience),
            let handle = backend.play(TrainingAudioPlaybackRequest(
                resource: .gymAmbience,
@@ -771,6 +965,7 @@ final class TrainingAudioCoordinator {
             break
         case .decibels:
             if crowd == nil,
+               presentation.preset.allows(.crowd),
                let url = resources.url(for: .competitionCrowd),
                let handle = backend.play(TrainingAudioPlaybackRequest(
                    resource: .competitionCrowd,
@@ -810,9 +1005,10 @@ final class TrainingAudioCoordinator {
         } else {
             mix = TrainingAudioMix.stage(presentation.stage)
         }
-        presentation.mix = mix
+        let presetMix = presentation.preset.applying(to: mix)
+        presentation.mix = presetMix
         guard sceneAttached, backendReady else { return }
-        backend.apply(mix: mix, fadeDuration: fadeDuration)
+        backend.apply(mix: presetMix, fadeDuration: fadeDuration)
     }
 
     private func playbackFinished(_ handle: TrainingAudioPlaybackHandle) {
@@ -827,6 +1023,10 @@ final class TrainingAudioCoordinator {
             status = nil
             presentation.activePriority = highestActivePriority
             applyCurrentMix()
+            return
+        }
+        if accentVoices.contains(where: { $0.handle == handle }) {
+            accentVoices.removeAll { $0.handle == handle }
             return
         }
         if ambience?.handle == handle {
@@ -849,6 +1049,7 @@ final class TrainingAudioCoordinator {
         }
         if channels.contains(.status) {
             status = nil
+            accentVoices.removeAll()
         }
         if channels.contains(.ambience) {
             ambience = nil
@@ -865,6 +1066,7 @@ final class TrainingAudioCoordinator {
         crowd = nil
         status = nil
         impactVoices.removeAll()
+        accentVoices.removeAll()
         presentation.activePriority = nil
     }
 

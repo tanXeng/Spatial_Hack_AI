@@ -1006,6 +1006,18 @@ final class AuraPunchSession {
                 continue
             }
 
+            if audioCoordinator.presentation.isScoringFrozen,
+               !audioCoordinator.presentation.requiresExplicitRecovery,
+               hands.freshObservation(for: expectedSide) != nil {
+                audioCoordinator.handleImmediately(.trackingDidResume)
+            }
+            guard !audioCoordinator.presentation.isScoringFrozen else {
+                statusMessage = audioCoordinator.presentation.caption
+                    ?? "Training paused · return to guard"
+                try? await Task.sleep(for: .milliseconds(25))
+                continue
+            }
+
             targets.spawnTarget(at: landing, radius: targetVisualRadius)
             audioCoordinator.handleImmediately(.targetDidAppear(position: landing))
 
@@ -1084,8 +1096,11 @@ final class AuraPunchSession {
             return nil
         }
         guard guardObservation.fistState == .closed else {
-            statusMessage = PunchEvidenceFeedback.message(
-                for: .fistNotClosed(side: side, state: guardObservation.fistState)
+            rejectCurrentPunch(
+                PunchEvidenceFeedback.message(
+                    for: .fistNotClosed(side: side, state: guardObservation.fistState)
+                ),
+                at: targetPosition
             )
             return nil
         }
@@ -1122,6 +1137,7 @@ final class AuraPunchSession {
                 for recorder in recorders.values { recorder.cancel() }
                 mirrorArm?.isVisible = false
                 statusMessage = "Tracking changed · punch discarded"
+                audioCoordinator.handleImmediately(.trackingDidPause(.staleSamples))
                 return nil
             }
 
@@ -1147,8 +1163,9 @@ final class AuraPunchSession {
                     guard let attempt = capturedAttempt(for: side), attempt.isUsable else {
                         for recorder in recorders.values { recorder.cancel() }
                         mirrorArm?.isVisible = false
-                        statusMessage = PunchEvidenceFeedback.message(
-                            for: .missingTrackingCoverage
+                        rejectCurrentPunch(
+                            PunchEvidenceFeedback.message(for: .missingTrackingCoverage),
+                            at: targetPosition
                         )
                         return nil
                     }
@@ -1160,6 +1177,7 @@ final class AuraPunchSession {
                         for recorder in recorders.values { recorder.cancel() }
                         mirrorArm?.isVisible = false
                         statusMessage = "Tracking changed · punch discarded"
+                        audioCoordinator.handleImmediately(.trackingDidPause(.staleSamples))
                         return nil
                     }
                     switch PunchEvidenceAttemptAction(
@@ -1177,18 +1195,24 @@ final class AuraPunchSession {
                     case let .retry(reason):
                         for recorder in recorders.values { recorder.cancel() }
                         mirrorArm?.isVisible = false
-                        statusMessage = PunchEvidenceFeedback.message(for: reason)
+                        rejectCurrentPunch(
+                            PunchEvidenceFeedback.message(for: reason),
+                            at: targetPosition
+                        )
                         return nil
                     case .waiting, .armed, .contact, .completeCoverage:
                         for recorder in recorders.values { recorder.cancel() }
                         mirrorArm?.isVisible = false
-                        statusMessage = "Punch evidence was incomplete"
+                        rejectCurrentPunch("Punch evidence was incomplete", at: targetPosition)
                         return nil
                     }
                 case let .invalid(reason):
                     for recorder in recorders.values { recorder.cancel() }
                     mirrorArm?.isVisible = false
-                    statusMessage = PunchEvidenceFeedback.message(for: reason)
+                    rejectCurrentPunch(
+                        PunchEvidenceFeedback.message(for: reason),
+                        at: targetPosition
+                    )
                     return nil
                 case .validated:
                     break
@@ -1202,7 +1226,7 @@ final class AuraPunchSession {
         for recorder in recorders.values { recorder.cancel() }
         if !Task.isCancelled,
            case let .retry(reason) = PunchEvidenceAttemptAction(event: validator.finish()) {
-            statusMessage = PunchEvidenceFeedback.message(for: reason)
+            rejectCurrentPunch(PunchEvidenceFeedback.message(for: reason), at: targetPosition)
         }
         return nil
     }
@@ -1298,6 +1322,11 @@ final class AuraPunchSession {
     /// still active.
     @discardableResult
     func finishAggregated(_ aggregated: TechniqueScore) -> Task<Void, Never> {
+        guard !audioCoordinator.presentation.isScoringFrozen else {
+            statusMessage = audioCoordinator.presentation.caption
+                ?? "Training paused · no score recorded"
+            return Task {}
+        }
         cancelPendingPhrasing()
         phase = .scoring
         statusMessage = "Scoring…"
@@ -1509,5 +1538,15 @@ final class AuraPunchSession {
             clip: clip,
             caption: caption
         )))
+    }
+
+    private func rejectCurrentPunch(_ reason: String, at position: SIMD3<Float>) {
+        statusMessage = reason
+        if targets.showInvalidEvidenceOnce() {
+            audioCoordinator.handleImmediately(.rejectedImpact(
+                position: position,
+                reason: reason
+            ))
+        }
     }
 }

@@ -30,6 +30,12 @@ struct BoxingCoachImmersiveView: View {
             root.name = "BoxingCoachTrainingRoot"
             content.add(root)
 
+            // Body-relative audio follows current head orientation in mixed immersion while target
+            // impacts remain world-positioned on the reusable scene root.
+            let audioBodyAnchor = Entity()
+            audioBodyAnchor.name = "BoxingCoachBodyAudioAnchor"
+            content.add(audioBodyAnchor)
+
             // Keep coaching just above the user's neutral gaze instead of at a fixed room height.
             // At 1.15 m forward and 18 cm up this is roughly nine degrees above line of sight.
             let instructionAnchor = AnchorEntity(.head, trackingMode: .continuous)
@@ -59,8 +65,10 @@ struct BoxingCoachImmersiveView: View {
                 }
             }
 
-            session.attachSceneRoot(root)
+            session.attachSceneRoot(root, audioBodyAnchor: audioBodyAnchor)
             flow.immersiveSceneDidBecomeReady(session: session)
+        } update: { _, _ in
+            session.updateAudioBodyOrientation()
         } attachments: {
             Attachment(id: instructionsAttachmentID) {
                 ImmersiveInstructionBanner(
@@ -70,39 +78,41 @@ struct BoxingCoachImmersiveView: View {
             }
 
             Attachment(id: voiceCoachAttachmentID) {
-                if audioControlVisibility.showsPushToTalk
-                    || audioControlVisibility.showsRecoveryAction {
-                    VStack(spacing: 8) {
-                        if audioControlVisibility.showsPushToTalk {
-                            CoachPushToTalkButton(
-                                isListening: session.voiceCoach.isListening,
-                                isCaptureReady: session.voiceCoach.isCaptureReady,
-                                isRouting: session.voiceCoach.isRouting,
-                                isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
-                                isDisabled: flow.controlsDisabled,
-                                style: .compactSpatial,
-                                onPress: {
-                                    session.voiceCoach.beginPushToTalk(origin: .immersiveSpace)
-                                },
-                                onRelease: { session.voiceCoach.endPushToTalk() }
-                            )
-                        }
-                        if audioControlVisibility.showsRecoveryAction {
-                            TrainingAudioRecoveryButton {
-                                session.resumeAudio()
-                            }
-                        }
-                        if let caption = session.audioCoordinator.presentation.caption {
-                            Text(caption)
-                                .font(.caption)
-                                .multilineTextAlignment(.center)
-                                .frame(maxWidth: 260)
-                                .accessibilityLabel("Coach caption: \(caption)")
+                VStack(spacing: 8) {
+                    if audioControlVisibility.showsPushToTalk {
+                        CoachPushToTalkButton(
+                            isListening: session.voiceCoach.isListening,
+                            isCaptureReady: session.voiceCoach.isCaptureReady,
+                            isRouting: session.voiceCoach.isRouting,
+                            isGeneratingResponse: session.voiceCoach.isGeneratingResponse,
+                            isDisabled: flow.controlsDisabled,
+                            style: .compactSpatial,
+                            onPress: {
+                                session.voiceCoach.beginPushToTalk(origin: .immersiveSpace)
+                            },
+                            onRelease: { session.voiceCoach.endPushToTalk() }
+                        )
+                    }
+                    if audioControlVisibility.showsRecoveryAction {
+                        TrainingAudioRecoveryButton {
+                            session.resumeAudio()
                         }
                     }
-                    .padding(10)
-                    .glassBackgroundEffect()
+                    audioPresetMenu
+                    if let caption = session.audioCoordinator.presentation.caption {
+                        Label(
+                            caption,
+                            systemImage: session.audioCoordinator.presentation.symbolName
+                        )
+                        .font(.caption)
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 280)
+                        .accessibilityElement(children: .combine)
+                        .accessibilityLabel("Training status: \(caption)")
+                    }
                 }
+                .padding(10)
+                .glassBackgroundEffect()
             }
 
             Attachment(id: controlsAttachmentID) {
@@ -161,6 +171,7 @@ struct BoxingCoachImmersiveView: View {
         }
         .onDisappear {
             // Idempotent whether closure was requested by the coordinator or by the system.
+            session.detachSceneRoot()
             openWindow(id: BoxingCoachSceneID.controlWindow)
             flow.immersiveSceneDidClose(session: session)
         }
@@ -191,6 +202,24 @@ struct BoxingCoachImmersiveView: View {
             allowsVoiceCoaching: showsVoiceCoach,
             requiresExplicitRecovery: session.audioCoordinator.presentation.requiresExplicitRecovery
         )
+    }
+
+    private var audioPresetMenu: some View {
+        let preset = session.audioCoordinator.presentation.preset
+        return Menu("Audio: \(preset.title)", systemImage: preset.symbolName) {
+            Picker("Training audio preset", selection: Binding(
+                get: { session.audioCoordinator.presentation.preset },
+                set: { session.setAudioPreset($0) }
+            )) {
+                ForEach(TrainingAudioPreset.allCases) { option in
+                    Label(option.title, systemImage: option.symbolName).tag(option)
+                }
+            }
+        }
+        .disabled(flow.controlsDisabled)
+        .accessibilityLabel("Training audio preset")
+        .accessibilityValue(preset.title)
+        .accessibilityHint(preset.accessibilityDescription)
     }
 
     private func refreshVoiceCoachContext() {

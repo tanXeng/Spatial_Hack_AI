@@ -291,6 +291,9 @@ struct CompetitionSheetView: View {
     private var result: some View {
         VStack(alignment: .leading, spacing: 18) {
             if let submission = store.latestSubmission {
+                Label("Competition result saved", systemImage: "trophy.fill")
+                    .font(.headline)
+                    .accessibilityLabel("Competition result saved")
                 sheetHeading(
                     "\(submission.score) points",
                     detail: "Saved to the \(submission.mode.title) leaderboard for \(submission.playerName)."

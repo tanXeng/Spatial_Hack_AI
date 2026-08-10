@@ -32,6 +32,84 @@ nonisolated enum TrainingAudioStage: String, CaseIterable, Sendable {
     }
 }
 
+nonisolated enum TrainingAudioPreset: String, CaseIterable, Identifiable, Sendable {
+    case full
+    case coachOnly
+    case reduced
+    case off
+
+    var id: Self { self }
+
+    var title: String {
+        switch self {
+        case .full: "Full"
+        case .coachOnly: "Coach Only"
+        case .reduced: "Reduced"
+        case .off: "Off"
+        }
+    }
+
+    var symbolName: String {
+        switch self {
+        case .full: "speaker.wave.3.fill"
+        case .coachOnly: "person.wave.2.fill"
+        case .reduced: "speaker.wave.1.fill"
+        case .off: "speaker.slash.fill"
+        }
+    }
+
+    var accessibilityDescription: String {
+        switch self {
+        case .full:
+            "Coach, gym ambience, crowd, impacts, and status cues"
+        case .coachOnly:
+            "Coach and essential status cues without ambience, crowd, or impacts"
+        case .reduced:
+            "Coach and quieter impacts without ambience or crowd"
+        case .off:
+            "All training audio off; visible coaching remains available"
+        }
+    }
+
+    func applying(to mix: TrainingAudioMix) -> TrainingAudioMix {
+        switch self {
+        case .full:
+            mix
+        case .coachOnly:
+            TrainingAudioMix(
+                coach: mix.coach,
+                ambience: .muted,
+                crowd: .muted,
+                impact: .muted,
+                status: mix.status
+            )
+        case .reduced:
+            TrainingAudioMix(
+                coach: mix.coach.capped(at: -6),
+                ambience: .muted,
+                crowd: .muted,
+                impact: mix.impact.capped(at: -12),
+                status: mix.status.capped(at: -6)
+            )
+        case .off:
+            .silent
+        }
+    }
+
+    func allows(_ channel: TrainingAudioChannel) -> Bool {
+        switch self {
+        case .full:
+            true
+        case .coachOnly:
+            channel == .coach || channel == .status
+        case .reduced:
+            channel == .coach || channel == .impact || channel == .status
+        case .off:
+            false
+        }
+    }
+}
+
 nonisolated enum TrainingImpactQuality: String, Sendable {
     case clean
     case solid
@@ -114,6 +192,7 @@ nonisolated enum TrainingAudioEvent: Equatable, Sendable {
     case experienceDidEnter(TrainingAudioStage)
     case targetDidAppear(position: SIMD3<Float>)
     case validatedImpact(position: SIMD3<Float>, quality: TrainingImpactQuality)
+    case rejectedImpact(position: SIMD3<Float>, reason: String)
     case coachCue(TrainingCoachCue)
     case trackingDidPause(TrainingTrackingPauseReason)
     case trackingDidResume
@@ -121,6 +200,7 @@ nonisolated enum TrainingAudioEvent: Equatable, Sendable {
     case voiceCaptureDidEnd
     case audioSystemEvent(TrainingAudioSystemEvent)
     case audioRecoveryConfirmed
+    case presetDidChange(TrainingAudioPreset)
     case trainingWillBegin
     case trainingDidStop(preservingVoiceCapture: Bool)
     case sceneDidDetach(TrainingAudioSceneOwner)
@@ -375,21 +455,27 @@ nonisolated struct TrainingAudioPresentationState: Equatable, Sendable {
     var status: TrainingAudioCoordinatorStatus
     var stage: TrainingAudioStage
     var caption: String?
+    var symbolName: String
     var targetPosition: SIMD3<Float>?
     var mix: TrainingAudioMix
     var activePriority: TrainingCoachCueKind?
     var isCapturing: Bool
     var requiresExplicitRecovery: Bool
+    var isScoringFrozen: Bool
+    var preset: TrainingAudioPreset
 
     static let detached = Self(
         status: .detached,
         stage: .fit,
         caption: nil,
+        symbolName: "speaker.wave.2.fill",
         targetPosition: nil,
         mix: .silent,
         activePriority: nil,
         isCapturing: false,
-        requiresExplicitRecovery: false
+        requiresExplicitRecovery: false,
+        isScoringFrozen: false,
+        preset: .full
     )
 }
 
@@ -402,4 +488,6 @@ nonisolated enum TrainingAudioEventOutcome: Equatable, Sendable {
     case ignoredWhileDetached
     case staleGeneration
     case backendUnavailable
+    case duplicateEvidence
+    case scoringFrozen
 }

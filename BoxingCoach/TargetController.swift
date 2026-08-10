@@ -16,6 +16,7 @@ final class TargetController {
     private(set) var activeTarget: ModelEntity?
     private(set) var activeTargetPosition: SIMD3<Float>?
     private var activeTargetRadius: Float?
+    private var invalidEvidenceShown = false
 
     private let idleColor = PlatformColor(red: 1.0, green: 0.55, blue: 0.1, alpha: 1.0)
     private let hitColor = PlatformColor(red: 0.2, green: 0.8, blue: 0.3, alpha: 1.0)
@@ -23,6 +24,11 @@ final class TargetController {
 
     func attach(to root: Entity) {
         self.root = root
+    }
+
+    func detach() {
+        removeActiveTarget()
+        root = nil
     }
 
     @discardableResult
@@ -34,6 +40,7 @@ final class TargetController {
            activeTargetPosition == position,
            activeTargetRadius == radius {
             activeTarget.model?.materials = [SimpleMaterial(color: idleColor, isMetallic: false)]
+            invalidEvidenceShown = false
             return activeTarget
         }
 
@@ -49,6 +56,7 @@ final class TargetController {
         activeTarget = entity
         activeTargetPosition = position
         activeTargetRadius = radius
+        invalidEvidenceShown = false
         return entity
     }
 
@@ -56,6 +64,16 @@ final class TargetController {
         guard let activeTarget else { return }
         let color = result == .hit ? hitColor : missColor
         activeTarget.model?.materials = [SimpleMaterial(color: color, isMetallic: false)]
+    }
+
+    /// Marks one semantically rejected evidence chain without turning it into a scored miss.
+    /// Repeated reducer callbacks for the same target remain visually and sonically idempotent.
+    @discardableResult
+    func showInvalidEvidenceOnce() -> Bool {
+        guard activeTarget != nil, !invalidEvidenceShown else { return false }
+        invalidEvidenceShown = true
+        flash(result: .miss)
+        return true
     }
 
     func updateActiveTargetPosition(_ position: SIMD3<Float>) {
@@ -69,5 +87,6 @@ final class TargetController {
         activeTarget = nil
         activeTargetPosition = nil
         activeTargetRadius = nil
+        invalidEvidenceShown = false
     }
 }

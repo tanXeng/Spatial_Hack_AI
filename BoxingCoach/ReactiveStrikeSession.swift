@@ -267,6 +267,7 @@ final class ReactiveStrikeSession {
     private var competitionElapsedClock = CompetitionElapsedClock()
     private var trackingResumeRequested = false
     private var phaseBeforeVoicePause: DrillPhase?
+    private weak var audioBodyAnchor: Entity?
     let audioCoordinator: TrainingAudioCoordinator
     private let roundReadyDelay: @MainActor () async throws -> Void
     private let postAttemptRecordDelay: @MainActor () async throws -> Void
@@ -348,6 +349,10 @@ final class ReactiveStrikeSession {
     @discardableResult
     func resumeAudio() -> TrainingAudioEventOutcome {
         audioCoordinator.handleImmediately(.audioRecoveryConfirmed)
+    }
+
+    func setAudioPreset(_ preset: TrainingAudioPreset) {
+        audioCoordinator.handleImmediately(.presetDidChange(preset))
     }
 
     func configure(
@@ -439,9 +444,35 @@ final class ReactiveStrikeSession {
         configure(mode: mode, combination: nil, stance: stance)
     }
 
-    func attachSceneRoot(_ root: Entity) {
+    func attachSceneRoot(_ root: Entity, audioBodyAnchor: Entity? = nil) {
         targets.attach(to: root)
         auraPunch.attach(to: root)
+        if let audioBodyAnchor {
+            self.audioBodyAnchor = audioBodyAnchor
+            audioCoordinator.attachSpatialScene(worldRoot: root, bodyAnchor: audioBodyAnchor)
+            updateAudioBodyOrientation()
+        }
+    }
+
+    func detachSceneRoot() {
+        targets.detach()
+        auraPunch.detach()
+        audioCoordinator.detachSpatialScene()
+        audioBodyAnchor = nil
+    }
+
+    func updateAudioBodyOrientation() {
+        guard let audioBodyAnchor,
+              let headTransform = hands.deviceTransform,
+              let frame = poseSolver.bodyFrame(headTransform: headTransform) else { return }
+        let bodyTransform = simd_float4x4(columns: (
+            SIMD4<Float>(frame.right, 0),
+            SIMD4<Float>(frame.up, 0),
+            SIMD4<Float>(-frame.forward, 0),
+            SIMD4<Float>(frame.origin, 1)
+        ))
+        guard bodyTransform.isFinite else { return }
+        audioBodyAnchor.transform = Transform(matrix: bodyTransform)
     }
 
     func startDrill() {
@@ -1243,6 +1274,7 @@ final class ReactiveStrikeSession {
         var guardPausedAt: Date?
         var contactTime: Date?
         var contactFist: SIMD3<Float>?
+        var audioPausedAt: Date?
         var lastEvidenceTimestamps: [BodySide: TimeInterval] = [:]
         var evidencePollCount = 0
         var trackedPollCount: [BodySide: Int] = [:]
@@ -1251,6 +1283,21 @@ final class ReactiveStrikeSession {
             let now = Date()
             let evidenceNow = CACurrentMediaTime()
 
+            if audioCoordinator.presentation.isScoringFrozen {
+                competitionElapsedClock.beginPause(at: ProcessInfo.processInfo.systemUptime)
+                audioPausedAt = audioPausedAt ?? now
+                lastTick = now
+                try? await Task.sleep(for: .milliseconds(16))
+                continue
+            }
+            if let audioPausedAt {
+                shiftAttemptStart(by: now.timeIntervalSince(audioPausedAt))
+                competitionElapsedClock.endPause(at: ProcessInfo.processInfo.systemUptime)
+                lastTick = now
+                self.lastFeedback = "Audio restored · return to guard"
+            }
+            audioPausedAt = nil
+
             guard hands.providerGeneration == captureChain.generation,
                   hands.continuityEpoch == captureChain.continuityEpoch else {
                 if capturesCompetitionEvidence {
@@ -1258,7 +1305,8 @@ final class ReactiveStrikeSession {
                 }
                 await discardAttempt(
                     feedback: "Tracking changed · punch discarded",
-                    preserveTarget: true
+                    preserveTarget: true,
+                    presentInvalidEvidence: false
                 )
                 return .retry
             }
@@ -1273,7 +1321,8 @@ final class ReactiveStrikeSession {
                 if trackingDecision == .discardAndRetry {
                     await discardAttempt(
                         feedback: "Tracking paused · punch discarded",
-                        preserveTarget: true
+                        preserveTarget: true,
+                        presentInvalidEvidence: false
                     )
                     return .retry
                 }
@@ -1449,7 +1498,8 @@ final class ReactiveStrikeSession {
                 ) else {
                     await discardAttempt(
                         feedback: "Tracking changed · punch discarded",
-                        preserveTarget: true
+                        preserveTarget: true,
+                        presentInvalidEvidence: false
                     )
                     return .retry
                 }
@@ -1727,6 +1777,7 @@ final class ReactiveStrikeSession {
                 var contactTime: Date?
                 var contactFist: SIMD3<Float>?
                 var trackingLostAt: Date?
+                var audioPausedAt: Date?
                 var evidencePollCount = 0
                 var trackedPollCount = 0
                 var lastEvidenceTimestamps: [BodySide: TimeInterval] = [:]
@@ -1734,6 +1785,23 @@ final class ReactiveStrikeSession {
                 while !Task.isCancelled,
                       phase == .running,
                       activeAttemptID != nil {
+                    let now = Date()
+                    if audioCoordinator.presentation.isScoringFrozen {
+                        competitionElapsedClock.beginPause(at: ProcessInfo.processInfo.systemUptime)
+                        audioPausedAt = audioPausedAt ?? now
+                        try? await Task.sleep(for: .milliseconds(16))
+                        continue
+                    }
+                    if let audioPausedAt {
+                        let pausedDuration = now.timeIntervalSince(audioPausedAt)
+                        deadline = CompetitionTrackingOutagePolicy.compensatedDeadline(
+                            deadline,
+                            pausedDuration: pausedDuration
+                        )
+                        shiftAttemptStart(by: pausedDuration)
+                        competitionElapsedClock.endPause(at: ProcessInfo.processInfo.systemUptime)
+                    }
+                    audioPausedAt = nil
                     let required = hands.freshObservation(for: target.requiredHand)
                     let other = hands.freshObservation(for: target.requiredHand.opposite)
 
@@ -1777,7 +1845,8 @@ final class ReactiveStrikeSession {
                         trackingLostAt = nil
                     case .discardAndRetry:
                         await discardAttempt(
-                            feedback: "Tracking paused · return both fists to guard"
+                            feedback: "Tracking paused · return both fists to guard",
+                            presentInvalidEvidence: false
                         )
                         guard await waitForNormalCombinationGuardRecovery() else { return }
                         continue evidenceRetryLoop
@@ -1895,7 +1964,8 @@ final class ReactiveStrikeSession {
                                     currentContinuityEpoch: hands.continuityEpoch
                                 ) else {
                                     await discardAttempt(
-                                        feedback: "Tracking changed · punch discarded"
+                                        feedback: "Tracking changed · punch discarded",
+                                        presentInvalidEvidence: false
                                     )
                                     retryInvalidEvidence = true
                                     break
@@ -2058,6 +2128,15 @@ final class ReactiveStrikeSession {
         combinationContext: ReactiveCombinationAttemptContext? = nil
     ) async {
         guard let spawnTime else { return }
+        guard !audioCoordinator.presentation.isScoringFrozen else {
+            await discardAttempt(
+                feedback: audioCoordinator.presentation.caption
+                    ?? "Training paused · no score recorded",
+                preserveTarget: true,
+                presentInvalidEvidence: false
+            )
+            return
+        }
 
         var travel: Float?
         var speed: Float?
@@ -2152,9 +2231,18 @@ final class ReactiveStrikeSession {
     /// ranked step, or satisfying target flash. The caller decides whether to retry or abort.
     private func discardAttempt(
         feedback: String,
-        preserveTarget: Bool = false
+        preserveTarget: Bool = false,
+        presentInvalidEvidence: Bool = true
     ) async {
         lastFeedback = feedback
+        if presentInvalidEvidence,
+           targets.showInvalidEvidenceOnce(),
+           let position = targets.activeTargetPosition {
+            audioCoordinator.handleImmediately(.rejectedImpact(
+                position: position,
+                reason: feedback
+            ))
+        }
         clearAttemptState()
         try? await Task.sleep(for: .milliseconds(220))
         if !preserveTarget {

@@ -178,24 +178,42 @@ final class CoachMusicPlayer {
 
     // MARK: - Bundled tracks
 
+    private static let coachClipNames: Set<String> = [
+        "back_to_guard", "countdown", "didnt_catch", "follow_out", "guard_up",
+        "help_commands", "hit_target", "match_extension", "pause_ack", "qa_hit_target",
+        "qa_repeat_demo", "qa_slower", "qa_three_punches", "qa_what_fix", "qa_why_guard",
+        "rep_faster", "results_good", "results_needs_work", "resume_ack", "return_in",
+        "scoring", "welcome", "calibrate_reach", "extend_other_arm", "reach_calibrated"
+    ]
+
     private func discoverBundledTracks() -> [URL] {
-        let dirs = ["WorkoutMusic", "Resources/WorkoutMusic"]
+        let dirs: [String?] = ["WorkoutMusic", "Resources/WorkoutMusic", nil]
         for dir in dirs {
-            if let url = Bundle.main.resourceURL?.appendingPathComponent(dir),
-               FileManager.default.fileExists(atPath: url.path) {
-                if let contents = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil) {
-                    let tracks = contents.filter {
-                        let ext = $0.pathExtension
-                        return ext == "mp3" || ext == "m4a" || ext == "wav"
-                    }
-                    if !tracks.isEmpty {
-                        Self.logger.debug("Found \(tracks.count) bundled music track(s)")
-                        return tracks.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
-                    }
-                }
+            let files = mp3Files(in: dir)
+            let music = files.filter {
+                !Self.coachClipNames.contains($0.deletingPathExtension().lastPathComponent)
+            }
+            if !music.isEmpty {
+                Self.logger.debug("Found \(music.count) music track(s) in \(dir ?? "bundle root")")
+                return music.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
             }
         }
         return []
+    }
+
+    private func mp3Files(in subdirectory: String?) -> [URL] {
+        let url: URL?
+        if let sub = subdirectory {
+            url = Bundle.main.resourceURL?.appendingPathComponent(sub)
+        } else {
+            url = Bundle.main.resourceURL
+        }
+        guard let url, FileManager.default.fileExists(atPath: url.path),
+              let contents = try? FileManager.default.contentsOfDirectory(at: url, includingPropertiesForKeys: nil)
+        else { return [] }
+        return contents.filter {
+            let e = $0.pathExtension; return e == "mp3" || e == "m4a" || e == "wav"
+        }
     }
 
     // MARK: - Synthesized beat

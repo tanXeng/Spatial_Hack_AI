@@ -37,8 +37,6 @@ struct TrainingExperienceView: View {
                 TrainingStatusCard(message: reactiveStatusLine)
                 errorCards(engineError: session.errorMessage)
 
-                MusicControlBar(music: session.musicPlayer)
-
                 Button(session.phase == .finished ? "Calibrate Again" : "Start Calibration") {
                     onStart()
                 }
@@ -75,8 +73,6 @@ struct TrainingExperienceView: View {
                 }
 
                 errorCards(engineError: session.errorMessage)
-
-                MusicControlBar(music: session.musicPlayer)
 
                 Button(session.phase == .finished ? "Try Again" : "Start Drill") {
                     onStart()
@@ -123,8 +119,6 @@ struct TrainingExperienceView: View {
                 }
 
                 errorCards(engineError: aura.errorMessage)
-
-                MusicControlBar(music: session.musicPlayer)
 
                 Button(aura.phase == .results ? "Try Again" : "Start Rep") {
                     onStart()
@@ -276,7 +270,7 @@ struct TrainingExperienceView: View {
     }
 }
 
-private struct MusicControlBar: View {
+struct MusicControlBar: View {
     let music: CoachMusicPlayer
 
     var body: some View {

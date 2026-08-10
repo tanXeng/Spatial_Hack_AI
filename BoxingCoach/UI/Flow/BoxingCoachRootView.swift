@@ -102,27 +102,31 @@ struct BoxingCoachRootView: View {
     }
 
     private var featureSelection: some View {
-        ZStack(alignment: .topTrailing) {
-            FeatureSelectionView(
-                controlsDisabled: flow.controlsDisabled,
-                onSelect: flow.chooseFeature
-            )
-            .padding(.top, 64)
+        VStack(spacing: 16) {
+            MusicControlBar(music: session.musicPlayer)
 
-            Button {
-                competitionStore.open()
-            } label: {
-                Label("Join Competition", systemImage: "trophy.fill")
-                    .padding(.horizontal, 4)
+            ZStack(alignment: .topTrailing) {
+                FeatureSelectionView(
+                    controlsDisabled: flow.controlsDisabled,
+                    onSelect: flow.chooseFeature
+                )
+                .padding(.top, 20)
+
+                Button {
+                    competitionStore.open()
+                } label: {
+                    Label("Join Competition", systemImage: "trophy.fill")
+                        .padding(.horizontal, 4)
+                }
+                .buttonStyle(.borderedProminent)
+                .controlSize(.large)
+                .frame(minWidth: 44, minHeight: 44)
+                .disabled(flow.controlsDisabled)
+                .accessibilityLabel("Join Competition")
+                .accessibilityHint("Enter a player name, calibrate reach, and compete on two leaderboards")
+                .accessibilityInputLabels(["Join Competition", "Competition", "Leaderboard"])
+                .accessibilityFocused($joinCompetitionFocused)
             }
-            .buttonStyle(.borderedProminent)
-            .controlSize(.large)
-            .frame(minWidth: 44, minHeight: 44)
-            .disabled(flow.controlsDisabled)
-            .accessibilityLabel("Join Competition")
-            .accessibilityHint("Enter a player name, calibrate reach, and compete on two leaderboards")
-            .accessibilityInputLabels(["Join Competition", "Competition", "Leaderboard"])
-            .accessibilityFocused($joinCompetitionFocused)
         }
     }
 

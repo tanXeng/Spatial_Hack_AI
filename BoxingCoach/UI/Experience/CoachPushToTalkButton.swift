@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Hold to capture speech; release to route and play a coach clip.
+/// Hold to capture speech; release to ask ChatGPT and hear a live TTS reply.
 struct CoachPushToTalkButton: View {
     enum Style {
         case standard
@@ -40,7 +40,7 @@ struct CoachPushToTalkButton: View {
         }
         .disabled(isDisabled || isBusy)
         .accessibilityLabel("Ask Coach")
-        .accessibilityHint("Hold while speaking, then release to hear a coaching response")
+        .accessibilityHint("Hold while speaking, then release to hear a ChatGPT answer")
         .accessibilityInputLabels(["Ask Coach", "Hold to Ask Coach", "Voice command"])
     }
 

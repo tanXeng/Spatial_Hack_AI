@@ -42,21 +42,54 @@ final class OpenAICoachChatClientTests: XCTestCase {
         configuration.protocolClasses = [MockURLProtocol.self]
         MockURLProtocol.responseData = json
         MockURLProtocol.statusCode = 200
+        MockURLProtocol.capturedBody = nil
 
         let client = OpenAICoachChatClient(apiKey: "sk-test", session: URLSession(configuration: configuration))
         let answer = try await client.answer(transcript: "what should I fix?", context: .idle)
         XCTAssertEqual(answer, "Keep your elbow in and snap back to guard.")
+
+        let body = try XCTUnwrap(MockURLProtocol.capturedBody)
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let messages = try XCTUnwrap(payload["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.last?["role"] as? String, "user")
+        XCTAssertEqual(messages.last?["content"] as? String, "what should I fix?")
+    }
+
+    func testPassesMathQuestionDirectlyToModel() async throws {
+        let json = """
+        {
+          "choices": [
+            { "message": { "content": "One plus one equals two." } }
+          ]
+        }
+        """.data(using: .utf8)!
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        MockURLProtocol.responseData = json
+        MockURLProtocol.statusCode = 200
+        MockURLProtocol.capturedBody = nil
+
+        let client = OpenAICoachChatClient(apiKey: "sk-test", session: URLSession(configuration: configuration))
+        let answer = try await client.answer(transcript: "1 + 1", context: .idle)
+        XCTAssertEqual(answer, "One plus one equals two.")
+
+        let body = try XCTUnwrap(MockURLProtocol.capturedBody)
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let messages = try XCTUnwrap(payload["messages"] as? [[String: Any]])
+        XCTAssertEqual(messages.last?["content"] as? String, "1 + 1")
     }
 }
 
 private final class MockURLProtocol: URLProtocol {
     nonisolated(unsafe) static var responseData = Data()
     nonisolated(unsafe) static var statusCode = 200
+    nonisolated(unsafe) static var capturedBody: Data?
 
     override class func canInit(with request: URLRequest) -> Bool { true }
     override class func canonicalRequest(for request: URLRequest) -> URLRequest { request }
 
     override func startLoading() {
+        Self.capturedBody = request.httpBody
         let response = HTTPURLResponse(
             url: request.url!,
             statusCode: Self.statusCode,

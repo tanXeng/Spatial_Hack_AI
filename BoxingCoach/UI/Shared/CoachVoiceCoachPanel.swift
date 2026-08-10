@@ -18,7 +18,7 @@ struct CoachVoiceCoachPanel: View {
                 onRelease: { session.voiceCoach.endPushToTalk() }
             )
 
-            Text("Hold to ask · Wait for Listening… · Speak naturally")
+            Text("Hold to ask anything · Wait for Listening… · ChatGPT answers live")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

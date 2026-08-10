@@ -61,7 +61,10 @@ nonisolated enum CoachSecrets {
 
     static func validatedKey(from raw: String?) -> String? {
         guard let raw else { return nil }
-        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.hasPrefix("\""), trimmed.hasSuffix("\""), trimmed.count >= 2 {
+            trimmed = String(trimmed.dropFirst().dropLast())
+        }
         guard !trimmed.isEmpty,
               !trimmed.hasPrefix("$("),
               trimmed != "sk-your-key-here"

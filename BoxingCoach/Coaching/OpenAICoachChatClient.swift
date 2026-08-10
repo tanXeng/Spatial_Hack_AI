@@ -32,23 +32,26 @@ nonisolated struct OpenAICoachChatClient {
         request.setValue("Bearer \(effectiveKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": "gpt-4o-mini",
-            "temperature": 0.4,
-            "max_tokens": 120,
+            "temperature": 0.5,
+            "max_tokens": 180,
             "messages": [
                 [
                     "role": "system",
                     "content": """
-                    You are a concise boxing coach in a visionOS training app. \
-                    Answer in 1 to 3 short spoken sentences. No markdown, lists, or clip names. \
-                    Give practical coaching the athlete can act on immediately.
+                    You are ChatGPT in a visionOS boxing training app. \
+                    Answer the user's question directly and accurately — including math, facts, trivia, or general knowledge. \
+                    Do not deflect off-topic questions into boxing advice unless they asked about training. \
+                    For boxing, form, or workout questions, give concise practical coaching. \
+                    Reply in 1 to 3 short spoken sentences. No markdown, lists, or clip names.
                     """
                 ],
                 [
+                    "role": "system",
+                    "content": "Training context (only if relevant): \(contextSummary(context))"
+                ],
+                [
                     "role": "user",
-                    "content": """
-                    Athlete said: "\(normalized)"
-                    Training context: \(contextSummary(context))
-                    """
+                    "content": normalized
                 ]
             ]
         ])

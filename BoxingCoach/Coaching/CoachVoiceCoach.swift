@@ -67,13 +67,14 @@ final class CoachVoiceCoach {
             }
 
             do {
-                liveVoice.stop()
+                liveVoice.beginUserInteraction()
                 try speechClient.prepareForCapture()
                 try speechClient.start()
                 self.isCaptureReady = true
             } catch {
                 self.isListening = false
                 speechClient.cancel()
+                liveVoice.endUserInteraction()
                 self.lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
             }
         }
@@ -86,6 +87,7 @@ final class CoachVoiceCoach {
         processingTask?.cancel()
         processingTask = Task { [weak self] in
             guard let self else { return }
+            defer { liveVoice.endUserInteraction() }
 
             if !isCaptureReady, let setupTask {
                 await withTaskGroup(of: Void.self) { group in
@@ -140,10 +142,10 @@ final class CoachVoiceCoach {
                 }
             } catch {
                 lastSpokenText = nil
-                lastError = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
-                _ = await liveVoice.speakText(
-                    CoachMilestoneScripts.text(for: .didntCatch) ?? "Sorry, I didn't catch that."
-                )
+                let message = (error as? LocalizedError)?.errorDescription ?? error.localizedDescription
+                lastError = message
+                Self.logger.error("Chat answer failed: \(message, privacy: .public)")
+                _ = await liveVoice.speakText("Sorry, I couldn't get an answer. \(message)")
             }
         }
     }

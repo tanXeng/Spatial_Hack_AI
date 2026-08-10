@@ -10,6 +10,7 @@ final class CoachLiveVoiceService {
     private var ttsClient = OpenAITTSClient()
     private let cache = CoachTTSCache()
     private var speakTasks: [Task<Void, Never>] = []
+    private(set) var isUserInteractionActive = false
 
     func prepare() {
         audioPlayer.prepare()
@@ -27,10 +28,20 @@ final class CoachLiveVoiceService {
         }
     }
 
+    func beginUserInteraction() {
+        isUserInteractionActive = true
+        stop()
+    }
+
+    func endUserInteraction() {
+        isUserInteractionActive = false
+    }
+
     func speakMilestone(_ milestone: CoachClipID) {
+        guard !isUserInteractionActive else { return }
         guard let text = CoachMilestoneScripts.text(for: milestone) else { return }
         let task = Task { [weak self] in
-            await self?.speakText(text, waitForCompletion: false)
+            _ = await self?.speakText(text, waitForCompletion: false)
         }
         speakTasks.append(task)
         trimFinishedTasks()

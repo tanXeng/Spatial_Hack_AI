@@ -543,7 +543,7 @@ final class AuraPunchSession {
 
     func advanceDemo() -> String? {
         guard phase == .guiding,
-              coachingCycle.stage == .guidedRehearsal,
+              currentDemoRep > 0,
               !isVoicePaused else { return nil }
         let nextRep = min(max(1, currentDemoRep + 1), max(1, guidedRepetitions))
         guard nextRep > currentDemoRep else { return nil }
@@ -1831,7 +1831,7 @@ final class AuraPunchSession {
                 direction = "improved"
             case .reinforced:
                 direction = "held at its strong baseline"
-            case .retry, nil:
+            case .retry:
                 direction = "did not improve enough yet"
             }
             coachingDetail = "\(proof.kind.title) \(Int(proof.baseline.rounded())) to \(Int(proof.retest.rounded())) · \(direction) · \(proof.sourceBadge)"

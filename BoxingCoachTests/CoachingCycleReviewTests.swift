@@ -315,8 +315,19 @@ struct CoachingCycleReviewTests {
 
     @Test("Participant handoff clears reusable reach, Aura state, and an active voice capture")
     @MainActor
-    func participantHandoffClearsReachReuse() throws {
-        let session = ReactiveStrikeSession()
+    func participantHandoffClearsReachReuse() async throws {
+        let audioSystem = HandoffAudioSystem()
+        let audioCoordinator = TrainingAudioCoordinator(
+            backend: audioSystem,
+            resources: audioSystem,
+            decayWaiter: audioSystem
+        )
+        let speechClient = HandoffSpeechClient()
+        let session = ReactiveStrikeSession(
+            audioCoordinator: audioCoordinator,
+            speechClient: speechClient
+        )
+        session.controlWindowDidOpen()
         let reach = try #require(BilateralReach(left: 0.61, right: 0.64))
         session.applyPersistedCompetitionReach(reach)
         session.auraPunch.persistedReach = BilateralReach(session.latestCalibratedReaches)
@@ -324,7 +335,12 @@ struct CoachingCycleReviewTests {
         #expect(session.hasCalibratedReach)
         #expect(session.auraPunch.persistedReach == reach)
         #expect(session.voiceCoach.beginPushToTalk())
+        session.voiceCoach.acceptPrivacyNotice()
+        for _ in 0..<100 where !session.voiceCoach.isListening {
+            await Task.yield()
+        }
         #expect(session.voiceCoach.isListening)
+        #expect(speechClient.isRecording)
 
         session.resetForParticipantHandoff()
 
@@ -344,6 +360,8 @@ struct CoachingCycleReviewTests {
         #expect(!session.voiceCoach.isListening)
         #expect(!session.voiceCoach.isRouting)
         #expect(!session.voiceCoach.isGeneratingResponse)
+        #expect(!speechClient.isRecording)
+        #expect(speechClient.cancelCount == 1)
     }
 
     @Test("Uppercut completes the same six-attempt proof engine")
@@ -522,5 +540,48 @@ struct CoachingCycleReviewTests {
             guardHand: SIMD3(0, 0.2, 0.1),
             isTracked: tracked
         )
+    }
+}
+
+@MainActor
+private final class HandoffAudioSystem:
+    TrainingAudioBackend,
+    TrainingAudioResourceResolving,
+    TrainingAudioDecayWaiting {
+    var playbackDidFinish: ((TrainingAudioPlaybackHandle) -> Void)?
+    var systemEventHandler: ((TrainingAudioSystemEvent) -> Void)?
+
+    func attachScene() throws {}
+    func detachScene() {}
+    func apply(mix: TrainingAudioMix, fadeDuration: Duration) {}
+    func play(_ request: TrainingAudioPlaybackRequest) -> TrainingAudioPlaybackHandle? { nil }
+    func stop(_ handle: TrainingAudioPlaybackHandle) {}
+    func stop(channels: Set<TrainingAudioChannel>) {}
+    func stopAll() {}
+    func beginVoiceCapture() throws {}
+    func endVoiceCapture() {}
+    func recoverPlaybackSession() throws {}
+    func mediaServicesWereReset() throws {}
+    func url(for resource: TrainingAudioResourceID) -> URL? { nil }
+    func wait(for duration: Duration) async throws {}
+}
+
+@MainActor
+private final class HandoffSpeechClient: SpeechRecognizing {
+    private(set) var isRecording = false
+    private(set) var cancelCount = 0
+
+    func requestPermissions() async -> Bool { true }
+    func prepareModel() async throws {}
+    func start() throws { isRecording = true }
+
+    func stop() async -> SpeechRecognitionResult {
+        isRecording = false
+        return SpeechRecognitionResult(transcript: "", duration: 0)
+    }
+
+    func cancel() {
+        cancelCount += 1
+        isRecording = false
     }
 }

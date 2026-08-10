@@ -32,22 +32,12 @@ nonisolated struct OpenAICoachChatClient {
         request.setValue("Bearer \(effectiveKey)", forHTTPHeaderField: "Authorization")
         request.httpBody = try JSONSerialization.data(withJSONObject: [
             "model": "gpt-4o-mini",
-            "temperature": 0.5,
-            "max_tokens": 180,
+            "temperature": 0.4,
+            "max_tokens": 200,
             "messages": [
                 [
                     "role": "system",
-                    "content": """
-                    You are ChatGPT in a visionOS boxing training app. \
-                    Answer the user's question directly and accurately — including math, facts, trivia, or general knowledge. \
-                    Do not deflect off-topic questions into boxing advice unless they asked about training. \
-                    For boxing, form, or workout questions, give concise practical coaching. \
-                    Reply in 1 to 3 short spoken sentences. No markdown, lists, or clip names.
-                    """
-                ],
-                [
-                    "role": "system",
-                    "content": "Training context (only if relevant): \(contextSummary(context))"
+                    "content": systemPrompt(for: context)
                 ],
                 [
                     "role": "user",
@@ -63,13 +53,22 @@ nonisolated struct OpenAICoachChatClient {
         return try parseAnswer(from: data)
     }
 
-    private func contextSummary(_ context: CoachVoiceContext) -> String {
-        switch context.feature {
-        case .auraPunch:
-            return "Aura Punch, phase: \(context.auraPhase?.rawValue ?? "unknown"), technique: \(context.techniqueName ?? "unknown")"
-        case .reactiveStrike:
-            return "Reactive Strike, phase: \(context.drillPhase?.rawValue ?? "unknown")"
-        }
+    private func systemPrompt(for context: CoachVoiceContext) -> String {
+        """
+        You are the voice coach inside Boxing Coach on Apple Vision Pro. You know this product intimately.
+
+        \(CoachAppGuide.overview)
+
+        CURRENT SESSION: \(CoachAppGuide.sessionContext(for: context))
+
+        RULES:
+        - When users ask how to practice a punch or use the app, give concrete in-app steps \
+        (Aura Punch, Reactive Strike, guard, hologram, targets). Do not tell them to shadowbox at home \
+        unless they explicitly ask about training without the headset.
+        - For general questions (math, trivia, facts), answer directly and briefly.
+        - For boxing form, tie advice to what this app tracks and the active mode when relevant.
+        - Reply in 1 to 3 short spoken sentences. No markdown, lists, or clip names.
+        """
     }
 
     private func parseAnswer(from data: Data) throws -> String {

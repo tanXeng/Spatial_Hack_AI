@@ -283,30 +283,52 @@ struct BoxingCoachRootView: View {
                 feature: .reactiveStrike,
                 auraPhase: nil,
                 drillPhase: .idle,
-                techniqueName: nil
+                techniqueName: nil,
+                stance: flow.draftStance,
+                reactiveMode: nil,
+                combinationName: nil
             ))
         case .auraSetup:
             session.voiceCoach.updateContext(CoachVoiceContext(
                 feature: .auraPunch,
                 auraPhase: .idle,
                 drillPhase: nil,
-                techniqueName: nil
+                techniqueName: nil,
+                stance: flow.draftStance,
+                reactiveMode: nil,
+                combinationName: nil
             ))
         case .experience(let selection):
             switch selection {
-            case .aura(let technique, _):
+            case .aura(let technique, let stance):
                 session.voiceCoach.updateContext(CoachVoiceContext(
                     feature: .auraPunch,
                     auraPhase: session.auraPunch.phase,
                     drillPhase: nil,
-                    techniqueName: technique.name
+                    techniqueName: technique.name,
+                    stance: stance,
+                    reactiveMode: nil,
+                    combinationName: nil
                 ))
-            case .reactive, .reachCalibration, .competitionCalibration, .competition:
+            case .reactive(let mode, let combination, let stance):
                 session.voiceCoach.updateContext(CoachVoiceContext(
                     feature: .reactiveStrike,
                     auraPhase: nil,
                     drillPhase: session.phase,
-                    techniqueName: nil
+                    techniqueName: nil,
+                    stance: stance,
+                    reactiveMode: mode,
+                    combinationName: combination?.name
+                ))
+            case .reachCalibration, .competitionCalibration, .competition:
+                session.voiceCoach.updateContext(CoachVoiceContext(
+                    feature: .reactiveStrike,
+                    auraPhase: nil,
+                    drillPhase: session.phase,
+                    techniqueName: nil,
+                    stance: session.stance,
+                    reactiveMode: session.mode,
+                    combinationName: session.selectedCombination.name
                 ))
             }
         }

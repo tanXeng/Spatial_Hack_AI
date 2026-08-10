@@ -153,26 +153,35 @@ struct BoxingCoachImmersiveView: View {
 
     private func refreshVoiceCoachContext() {
         switch flow.route {
-        case .experience(.aura(let technique, _)):
+        case .experience(.aura(let technique, let stance)):
             session.voiceCoach.updateContext(CoachVoiceContext(
                 feature: .auraPunch,
                 auraPhase: session.auraPunch.phase,
                 drillPhase: nil,
-                techniqueName: technique.name
+                techniqueName: technique.name,
+                stance: stance,
+                reactiveMode: nil,
+                combinationName: nil
             ))
-        case .experience(.reactive):
+        case .experience(.reactive(let mode, let combination, let stance)):
             session.voiceCoach.updateContext(CoachVoiceContext(
                 feature: .reactiveStrike,
                 auraPhase: nil,
                 drillPhase: session.phase,
-                techniqueName: nil
+                techniqueName: nil,
+                stance: stance,
+                reactiveMode: mode,
+                combinationName: combination?.name
             ))
-        case .experience(.competitionCalibration), .experience(.competition):
+        case .experience(.reachCalibration), .experience(.competitionCalibration), .experience(.competition):
             session.voiceCoach.updateContext(CoachVoiceContext(
                 feature: .reactiveStrike,
                 auraPhase: nil,
                 drillPhase: session.phase,
-                techniqueName: nil
+                techniqueName: nil,
+                stance: session.stance,
+                reactiveMode: session.mode,
+                combinationName: session.selectedCombination.name
             ))
         default:
             session.voiceCoach.updateContext(CoachVoiceContext.idle)

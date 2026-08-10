@@ -78,6 +78,64 @@ final class OpenAICoachChatClientTests: XCTestCase {
         let messages = try XCTUnwrap(payload["messages"] as? [[String: Any]])
         XCTAssertEqual(messages.last?["content"] as? String, "1 + 1")
     }
+
+    func testSystemPromptIncludesAppGuide() async throws {
+        let json = """
+        {
+          "choices": [
+            { "message": { "content": "Go to Aura Punch and select Jab." } }
+          ]
+        }
+        """.data(using: .utf8)!
+        let configuration = URLSessionConfiguration.ephemeral
+        configuration.protocolClasses = [MockURLProtocol.self]
+        MockURLProtocol.responseData = json
+        MockURLProtocol.statusCode = 200
+        MockURLProtocol.capturedBody = nil
+
+        let context = CoachVoiceContext(
+            feature: .auraPunch,
+            auraPhase: .idle,
+            drillPhase: nil,
+            techniqueName: nil,
+            stance: .orthodox,
+            reactiveMode: nil,
+            combinationName: nil
+        )
+        _ = try await OpenAICoachChatClient(apiKey: "sk-test", session: URLSession(configuration: configuration))
+            .answer(transcript: "how do I practice my jab?", context: context)
+
+        let body = try XCTUnwrap(MockURLProtocol.capturedBody)
+        let payload = try XCTUnwrap(JSONSerialization.jsonObject(with: body) as? [String: Any])
+        let messages = try XCTUnwrap(payload["messages"] as? [[String: Any]])
+        let system = try XCTUnwrap(messages.first?["content"] as? String)
+        XCTAssertTrue(system.contains("Aura Punch"))
+        XCTAssertTrue(system.contains("HOW TO PRACTICE A JAB"))
+    }
+}
+
+final class CoachAppGuideTests: XCTestCase {
+    func testJabGuidanceIncludesTechniqueCues() {
+        let guidance = CoachAppGuide.techniqueGuidance(named: "Jab")
+        XCTAssertNotNil(guidance)
+        XCTAssertTrue(guidance?.contains("straight") == true)
+    }
+
+    func testSessionContextIncludesReactiveMode() {
+        let context = CoachVoiceContext(
+            feature: .reactiveStrike,
+            auraPhase: nil,
+            drillPhase: .running,
+            techniqueName: nil,
+            stance: .southpaw,
+            reactiveMode: .combination,
+            combinationName: "Jab-Cross"
+        )
+        let summary = CoachAppGuide.sessionContext(for: context)
+        XCTAssertTrue(summary.contains("Reactive Strike"))
+        XCTAssertTrue(summary.contains("Combination Mode"))
+        XCTAssertTrue(summary.contains("Jab-Cross"))
+    }
 }
 
 private final class MockURLProtocol: URLProtocol {

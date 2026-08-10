@@ -83,6 +83,9 @@ nonisolated struct CoachVoiceContext: Sendable, Equatable {
     var auraPhase: AuraPunchPhase?
     var drillPhase: DrillPhase?
     var techniqueName: String?
+    var stance: Stance?
+    var reactiveMode: ReactiveStrikeMode?
+    var combinationName: String?
 
     static let idle = CoachVoiceContext(feature: .auraPunch)
 }

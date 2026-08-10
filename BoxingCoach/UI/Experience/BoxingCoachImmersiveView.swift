@@ -417,8 +417,8 @@ struct BoxingCoachImmersiveView: View {
 
         default:
             return ImmersiveInstruction(
-                stage: "BOXING COACH",
-                message: "Preparing your training space",
+                stage: "TRAINING SPACE READY",
+                message: "Choose a training experience in the control window.",
                 symbol: "figure.boxing"
             )
         }

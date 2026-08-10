@@ -166,6 +166,11 @@ struct ImmersiveInstructionPolicyTests {
 
     @Test("Every reactive selection maps to its visible training context")
     func selectionMappingIsExhaustive() throws {
+        #expect(ImmersiveTrainingContext(selection: .aura(
+            track: .firstRound,
+            technique: .jab,
+            stance: .orthodox
+        )) == .aura)
         #expect(ImmersiveTrainingContext(selection: .reactive(
             mode: .air,
             combination: nil,
@@ -196,6 +201,18 @@ struct ImmersiveInstructionPolicyTests {
             stance: .southpaw,
             reach: reach
         )) == .competition(isCombination: true))
+
+        #expect(ImmersiveInstructionPolicy.instruction(
+            for: .aura,
+            phase: .idle,
+            progressLabel: "",
+            feedback: "Ready",
+            trackingPaused: false
+        ) == ImmersiveInstruction(
+            stage: "AURA PUNCH",
+            message: "Fit your reach, learn the movement, then prove one correction.",
+            symbol: "figure.boxing"
+        ))
     }
 
     @Test("Completion announcements name the experience that just finished")

@@ -59,8 +59,8 @@ enum ImmersiveInstructionPolicy {
         switch context {
         case .aura:
             return ImmersiveInstruction(
-                stage: "BOXING COACH",
-                message: "Preparing your training space",
+                stage: "AURA PUNCH",
+                message: "Fit your reach, learn the movement, then prove one correction.",
                 symbol: "figure.boxing"
             )
 

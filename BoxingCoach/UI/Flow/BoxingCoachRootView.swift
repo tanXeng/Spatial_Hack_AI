@@ -94,7 +94,7 @@ struct BoxingCoachRootView: View {
                     || oldPlayer?.calibrationVersion != newPlayer?.calibrationVersion
             else { return }
             if oldPlayer?.id != newPlayer?.id {
-                session.resetForParticipantHandoff()
+                flow.participantDidChange(session: session)
             }
             syncPlayerCalibration(newPlayer)
         }

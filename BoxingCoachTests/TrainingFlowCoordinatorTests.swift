@@ -131,4 +131,18 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
         XCTAssertFalse(session.isImmersiveSpaceOpen)
         XCTAssertEqual(flow.transition, .idle)
     }
+
+    func testSystemDismissalAndParticipantHandoffInvalidateIssuedCommands() {
+        let flow = TrainingFlowCoordinator()
+        let session = ReactiveStrikeSession()
+
+        flow.immersiveSceneDidBecomeReady(session: session)
+        let beforeSystemDismissal = flow.commandGeneration
+        flow.immersiveSceneDidClose(session: session)
+        XCTAssertGreaterThan(flow.commandGeneration, beforeSystemDismissal)
+
+        let beforeHandoff = flow.commandGeneration
+        flow.participantDidChange(session: session)
+        XCTAssertGreaterThan(flow.commandGeneration, beforeHandoff)
+    }
 }

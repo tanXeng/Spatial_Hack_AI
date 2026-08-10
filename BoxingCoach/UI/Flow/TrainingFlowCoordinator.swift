@@ -320,7 +320,7 @@ final class TrainingFlowCoordinator {
             }
             immersiveState = .closing
             await dismissImmersive()
-            finalizeImmersiveClosure(session: session)
+            finalizeImmersiveClosure(session: session, sessionAlreadyStopped: true)
         } else {
             session.stopDrill()
         }
@@ -397,7 +397,16 @@ final class TrainingFlowCoordinator {
 
     /// Handles both explicit dismissal and the system taking the immersive space away.
     func immersiveSceneDidClose(session: ReactiveStrikeSession) {
+        guard immersiveState != .closed || session.isImmersiveSpaceOpen else { return }
+        invalidateCommands()
         finalizeImmersiveClosure(session: session)
+    }
+
+    /// Participant identity is a command-generation boundary as well as a session reset. A late
+    /// transcript issued for the previous boxer must never mutate the next boxer's training.
+    func participantDidChange(session: ReactiveStrikeSession) {
+        invalidateCommands()
+        session.resetForParticipantHandoff()
     }
 
     func voiceCommandState(session: ReactiveStrikeSession) -> VoiceCommandState {
@@ -568,11 +577,16 @@ final class TrainingFlowCoordinator {
         immersiveState != .closed || session.isImmersiveSpaceOpen
     }
 
-    private func finalizeImmersiveClosure(session: ReactiveStrikeSession) {
+    private func finalizeImmersiveClosure(
+        session: ReactiveStrikeSession,
+        sessionAlreadyStopped: Bool = false
+    ) {
         guard immersiveState != .closed || session.isImmersiveSpaceOpen else { return }
         immersiveState = .closed
         session.immersiveSpaceDidClose()
-        session.stopDrill(preservingVoiceCapture: true)
+        if !sessionAlreadyStopped {
+            session.stopDrill(preservingVoiceCapture: true)
+        }
         session.hands.stop()
     }
 

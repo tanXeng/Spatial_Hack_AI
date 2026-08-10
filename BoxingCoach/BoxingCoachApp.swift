@@ -9,14 +9,10 @@ enum BoxingCoachSceneID {
 
 @main
 struct BoxingCoachApp: App {
-    @State private var session: ReactiveStrikeSession
-    @State private var flow = TrainingFlowCoordinator()
-    @State private var competitionStore = CompetitionStore.live()
+    @State private var composition: BoxingCoachCompositionRoot
 
     init() {
-        _session = State(initialValue: ReactiveStrikeSession(
-            feedbackGenerator: FeedbackGenerator.production()
-        ))
+        _composition = State(initialValue: BoxingCoachCompositionRoot.live())
     }
 
     var body: some Scene {
@@ -25,16 +21,16 @@ struct BoxingCoachApp: App {
         // when both explicit and system-driven immersive cleanup restored the UI.
         Window("Boxing Coach", id: BoxingCoachSceneID.controlWindow) {
             BoxingCoachRootView()
-                .environment(session)
-                .environment(flow)
-                .environment(competitionStore)
+                .environment(composition.session)
+                .environment(composition.flow)
+                .environment(composition.competitionStore)
         }
 
         ImmersiveSpace(id: BoxingCoachSceneID.immersiveSpace) {
             BoxingCoachImmersiveView()
-                .environment(session)
-                .environment(flow)
-                .environment(competitionStore)
+                .environment(composition.session)
+                .environment(composition.flow)
+                .environment(composition.competitionStore)
         }
         .immersionStyle(selection: .constant(.mixed), in: .mixed)
     }

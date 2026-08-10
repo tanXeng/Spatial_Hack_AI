@@ -92,10 +92,12 @@ struct BoxingCoachRootView: View {
                     TrainingExperienceView(
                         selection: selection,
                         session: session,
+                        calibration: flow.calibration,
                         presentationError: flow.presentationError,
                         controlsDisabled: flow.controlsDisabled,
                         onStart: { start(selection) },
-                        onChangeSelection: { changeSelection(selection) }
+                        onChangeSelection: { changeSelection(selection) },
+                        onFinishCalibration: flow.finishCalibration
                     )
                 }
             }
@@ -224,7 +226,7 @@ struct BoxingCoachRootView: View {
     }
 
     private func openLandingCalibration() {
-        let selection = TrainingSelection.reachCalibration
+        let selection = TrainingSelection.calibration
         flow.navigate(to: .experience(selection))
         start(selection)
     }
@@ -389,9 +391,16 @@ struct BoxingCoachRootView: View {
                     drillPhase: nil,
                     techniqueName: technique.name
                 ))
-            case .reactive, .reachCalibration, .competitionCalibration, .competition:
+            case .reactive, .competitionCalibration, .competition:
                 session.voiceCoach.updateContext(CoachVoiceContext(
                     feature: .reactiveStrike,
+                    auraPhase: nil,
+                    drillPhase: session.phase,
+                    techniqueName: nil
+                ))
+            case .calibration:
+                session.voiceCoach.updateContext(CoachVoiceContext(
+                    feature: .anthropometry,
                     auraPhase: nil,
                     drillPhase: session.phase,
                     techniqueName: nil

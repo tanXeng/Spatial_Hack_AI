@@ -1,6 +1,9 @@
 import Foundation
 
 enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
+    // Kept through the target-fix merge, which dropped it. On that branch Anthropometry was still
+    // an inert "coming soon" card; here it is the calibration gate every other feature depends on.
+    case anthropometry
     case auraPunch
     case reactiveStrike
 
@@ -8,6 +11,7 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var title: String {
         switch self {
+        case .anthropometry: return "Anthropometry"
         case .auraPunch: return "Aura Punch"
         case .reactiveStrike: return "Reactive Strike"
         }
@@ -15,6 +19,7 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 
     var subtitle: String {
         switch self {
+        case .anthropometry: return "Calibrate your reach and guard"
         case .auraPunch: return "Follow a spatial punch guide"
         case .reactiveStrike: return "Hit floating targets on reaction"
         }
@@ -26,15 +31,18 @@ enum TrainingFeature: String, CaseIterable, Identifiable, Hashable, Sendable {
 enum TrainingSelection: Hashable, Sendable {
     case reactive(mode: ReactiveStrikeMode, combination: Combination?, stance: Stance)
     case aura(technique: Technique, stance: Stance)
-    case reachCalibration
+    /// The Anthropometry gate's own measurement run. Competition keeps separate cases because it
+    /// measures on behalf of a specific player record rather than the launch-wide calibration.
+    case calibration
     case competitionCalibration(playerID: UUID)
     case competition(playerID: UUID, mode: CompetitionMode, stance: Stance, reach: BilateralReach)
 
     var feature: TrainingFeature {
         switch self {
-        case .reactive, .reachCalibration, .competitionCalibration, .competition:
+        case .reactive, .competitionCalibration, .competition:
             return .reactiveStrike
         case .aura: return .auraPunch
+        case .calibration: return .anthropometry
         }
     }
 }
@@ -77,10 +85,22 @@ private enum ImmersiveSceneState: Sendable {
 @Observable
 @MainActor
 final class TrainingFlowCoordinator {
-    private(set) var route: TrainingFlowRoute = .features
+    private(set) var route: TrainingFlowRoute
     private(set) var transition: TrainingFlowTransition = .idle
     private(set) var presentationError: String?
     private(set) var draftStance: Stance = .orthodox
+
+    /// Anthropometry gates the app: an uncalibrated launch opens straight into it, and every other
+    /// feature is unreachable until it produces a measurement.
+    let calibration: BodyCalibration
+
+    // Defaulted to `nil` rather than to `BodyCalibration()`: a default argument expression is
+    // evaluated outside this initializer's actor isolation, and `BodyCalibration` is MainActor.
+    init(calibration: BodyCalibration? = nil) {
+        let calibration = calibration ?? BodyCalibration()
+        self.calibration = calibration
+        self.route = calibration.isCalibrated ? .features : .experience(.calibration)
+    }
 
     private var immersiveState: ImmersiveSceneState = .closed
     private var isControlWindowVisible = false
@@ -101,11 +121,20 @@ final class TrainingFlowCoordinator {
         guard transition == .idle else { return }
         presentationError = nil
 
+        // Anthropometry is always reachable — it is how the user recalibrates. Everything else
+        // needs a measurement first, which the app-entry gate normally guarantees.
+        guard feature == .anthropometry || calibration.isCalibrated else {
+            route = .experience(.calibration)
+            return
+        }
+
         switch feature {
         case .reactiveStrike:
             route = .reactiveSetup
         case .auraPunch:
             route = .auraSetup
+        case .anthropometry:
+            route = .experience(.calibration)
         }
     }
 
@@ -236,15 +265,18 @@ final class TrainingFlowCoordinator {
             session.startDrill()
 
         case .aura(let technique, let stance):
+            // Scoring normalizes by reach, so the silhouette and the Extension metric must both
+            // read the measured body rather than falling back to `averageAdult`.
+            session.auraPunch.measurements = calibration.measurements
             session.auraPunch.technique = technique
             session.auraPunch.stance = stance
             session.auraPunch.reset()
             session.auraPunch.start()
 
-        case .reachCalibration:
-            session.configureReachCalibration()
-            session.resetForNewRound(keepingCompetitionConfiguration: true)
-            session.startDrill()
+        case .calibration:
+            // The gate's own dedicated loop, not a zero-target drill: it measures and stores into
+            // the shared `BodyCalibration` without any competition evidence bookkeeping.
+            session.startCalibration()
 
         case .competitionCalibration:
             session.configureCompetitionCalibration()
@@ -343,7 +375,12 @@ final class TrainingFlowCoordinator {
             session.auraPunch.reset()
             route = .auraSetup
 
-        case .reachCalibration, .competitionCalibration:
+        case .calibration:
+            // Backing out of a *mandatory* calibration would strand the user on a menu they cannot
+            // use, so an unmeasured body stays on the calibration screen.
+            route = calibration.isCalibrated ? .features : .experience(.calibration)
+
+        case .competitionCalibration:
             session.resetForNewRound()
             route = .features
 
@@ -357,6 +394,13 @@ final class TrainingFlowCoordinator {
 
         presentationError = nil
         transition = .idle
+    }
+
+    /// Leaves a completed calibration for the feature menu.
+    func finishCalibration() {
+        guard transition == .idle, calibration.isCalibrated else { return }
+        presentationError = nil
+        route = .features
     }
 
     /// Called by the immersive RealityView only after its scene root has been attached.

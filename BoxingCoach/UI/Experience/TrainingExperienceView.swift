@@ -3,10 +3,12 @@ import SwiftUI
 struct TrainingExperienceView: View {
     let selection: TrainingSelection
     let session: ReactiveStrikeSession
+    let calibration: BodyCalibration
     let presentationError: String?
     let controlsDisabled: Bool
     let onStart: () -> Void
     let onChangeSelection: () -> Void
+    let onFinishCalibration: () -> Void
 
     var body: some View {
         switch selection {
@@ -19,8 +21,8 @@ struct TrainingExperienceView: View {
             )
         case .aura(let technique, let stance):
             auraExperience(technique: technique, stance: stance)
-        case .reachCalibration:
-            reachCalibrationExperience(backLabel: "Home")
+        case .calibration:
+            calibrationExperience
         case .competitionCalibration:
             reachCalibrationExperience(backLabel: "Competition")
         case .competition(_, let mode, let stance, _):
@@ -51,6 +53,89 @@ struct TrainingExperienceView: View {
                 .buttonStyle(.borderedProminent)
             }
         }
+    }
+
+    private var calibrationExperience: some View {
+        TrainingDetailScaffold(
+            backLabel: "Back to Features",
+            title: "Anthropometry",
+            subtitle: "Measure your reach and guard once for this session",
+            controlsDisabled: controlsDisabled,
+            // The first calibration of a launch is mandatory — there is nothing behind it to
+            // return to, and the feature menu is unusable without a measurement.
+            showsBack: calibration.isCalibrated,
+            onBack: onChangeSelection
+        ) {
+            VStack(spacing: 16) {
+                TrainingStatusCard(message: calibrationStatusLine)
+
+                if calibration.isCalibrated, let reach = calibration.measuredReach {
+                    calibrationResultsCard(reach: reach)
+                }
+
+                errorCards(engineError: session.errorMessage)
+
+                if calibration.isCalibrated {
+                    Button("Measure Again") {
+                        onStart()
+                    }
+                    .disabled(session.phase == .calibrating || controlsDisabled)
+                    .buttonStyle(.bordered)
+
+                    Button("Continue to Training") {
+                        onFinishCalibration()
+                    }
+                    .disabled(controlsDisabled)
+                    .buttonStyle(.borderedProminent)
+                } else {
+                    Button("Start Calibration") {
+                        onStart()
+                    }
+                    .disabled(session.phase == .calibrating || controlsDisabled)
+                    .buttonStyle(.borderedProminent)
+                }
+            }
+        }
+    }
+
+    private func calibrationResultsCard(reach: Float) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("Measured")
+                .font(.headline)
+
+            LabeledMetricRow(
+                title: "Forward reach",
+                value: String(format: "%.0f cm", reach * 100),
+                spokenValue: String(format: "%.0f centimeters", reach * 100)
+            )
+
+            ForEach([BodySide.left, .right], id: \.rawValue) { side in
+                if let sideReach = calibration.reaches[side] {
+                    LabeledMetricRow(
+                        title: "\(side.rawValue.capitalized) arm",
+                        value: String(format: "%.0f cm", sideReach * 100),
+                        spokenValue: String(format: "%.0f centimeters", sideReach * 100)
+                    )
+                }
+            }
+
+            Text("Targets are placed from the shorter arm so both hands can reach every one.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+        }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding()
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+    }
+
+    private var calibrationStatusLine: String {
+        if session.phase == .calibrating {
+            return session.lastFeedback
+        }
+        if calibration.isCalibrated {
+            return session.lastFeedback
+        }
+        return "Stand facing forward with room to punch, then tap Start Calibration"
     }
 
     private func reactiveExperience(

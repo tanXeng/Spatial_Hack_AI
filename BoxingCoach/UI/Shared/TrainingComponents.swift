@@ -5,19 +5,24 @@ struct TrainingDetailScaffold<Content: View>: View {
     let title: String
     let subtitle: String
     let controlsDisabled: Bool
+    /// Hidden only where there is genuinely nothing to go back to — the mandatory first
+    /// calibration. The row itself stays, so the content below never shifts between screens.
+    var showsBack: Bool = true
     let onBack: () -> Void
     @ViewBuilder let content: () -> Content
 
     var body: some View {
         VStack(spacing: 20) {
             HStack {
-                Button {
-                    onBack()
-                } label: {
-                    Label(backLabel, systemImage: "chevron.left")
+                if showsBack {
+                    Button {
+                        onBack()
+                    } label: {
+                        Label(backLabel, systemImage: "chevron.left")
+                    }
+                    .buttonStyle(.bordered)
+                    .disabled(controlsDisabled)
                 }
-                .buttonStyle(.bordered)
-                .disabled(controlsDisabled)
 
                 Spacer()
             }

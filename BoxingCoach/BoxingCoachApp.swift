@@ -9,9 +9,19 @@ enum BoxingCoachSceneID {
 
 @main
 struct BoxingCoachApp: App {
-    @State private var session = ReactiveStrikeSession()
-    @State private var flow = TrainingFlowCoordinator()
+    // One measurement per launch, shared by every feature. Created first so both the session and
+    // the coordinator observe the same instance.
+    @State private var calibration: BodyCalibration
+    @State private var session: ReactiveStrikeSession
+    @State private var flow: TrainingFlowCoordinator
     @State private var competitionStore = CompetitionStore.live()
+
+    init() {
+        let calibration = BodyCalibration()
+        _calibration = State(initialValue: calibration)
+        _session = State(initialValue: ReactiveStrikeSession(calibration: calibration))
+        _flow = State(initialValue: TrainingFlowCoordinator(calibration: calibration))
+    }
 
     var body: some Scene {
         // `Window` is intentionally single-instance. A named `WindowGroup` creates another

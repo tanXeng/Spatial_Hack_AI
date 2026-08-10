@@ -1,10 +1,80 @@
 import XCTest
+import simd
 @testable import BoxingCoach
 
 @MainActor
+extension BodyCalibration {
+    /// A body that has already been through Anthropometry, so tests can exercise the routes that
+    /// sit behind the app-entry calibration gate.
+    static var calibratedFixture: BodyCalibration {
+        let calibration = BodyCalibration()
+        calibration.store(
+            reaches: [.left: 0.66, .right: 0.64],
+            guardPositionsBody: [
+                .left: SIMD3(-0.14, -0.04, 0.20),
+                .right: SIMD3(0.14, -0.04, 0.20)
+            ]
+        )
+        return calibration
+    }
+}
+
+@MainActor
 final class TrainingFlowCoordinatorTests: XCTestCase {
-    func testAirRoutesDirectlyToExperienceWhileCombinationRoutesToSetup() {
+    func testAnUncalibratedLaunchOpensStraightIntoAnthropometry() {
         let flow = TrainingFlowCoordinator()
+
+        XCTAssertEqual(flow.route, .experience(.calibration))
+        XCTAssertFalse(flow.calibration.isCalibrated)
+
+        // Every other feature stays behind the gate until a measurement exists.
+        flow.chooseFeature(.reactiveStrike)
+        XCTAssertEqual(flow.route, .experience(.calibration))
+        flow.chooseFeature(.auraPunch)
+        XCTAssertEqual(flow.route, .experience(.calibration))
+    }
+
+    func testACalibratedLaunchStartsAtTheFeatureMenuAndCanRemeasure() {
+        let flow = TrainingFlowCoordinator(calibration: .calibratedFixture)
+
+        XCTAssertEqual(flow.route, .features)
+
+        flow.chooseFeature(.anthropometry)
+        XCTAssertEqual(flow.route, .experience(.calibration))
+
+        flow.finishCalibration()
+        XCTAssertEqual(flow.route, .features)
+    }
+
+    func testCalibrationIsSharedAcrossEveryReactiveModeInsteadOfPerMode() throws {
+        let calibration = BodyCalibration.calibratedFixture
+        let session = ReactiveStrikeSession(calibration: calibration)
+        let measuredReach = try XCTUnwrap(calibration.measuredReach)
+
+        // The shorter arm sets the volume for all three modes.
+        XCTAssertEqual(measuredReach, 0.64, accuracy: 1e-6)
+
+        var profilesByMode: [ReactiveStrikeMode: ReachProfile] = [:]
+        for mode in ReactiveStrikeMode.allCases {
+            session.configure(mode: mode, combination: .oneTwo, stance: .orthodox)
+            profilesByMode[mode] = session.reachProfile
+        }
+
+        for (mode, profile) in profilesByMode {
+            XCTAssertEqual(
+                profile.forwardMax,
+                0.64,
+                accuracy: 1e-6,
+                "\(mode) must reuse the one measurement rather than re-deriving its own"
+            )
+        }
+
+        // Switching modes never invalidates the measurement.
+        XCTAssertTrue(calibration.isCalibrated)
+    }
+
+    func testAirRoutesDirectlyToExperienceWhileCombinationRoutesToSetup() {
+        let flow = TrainingFlowCoordinator(calibration: .calibratedFixture)
 
         flow.chooseFeature(.reactiveStrike)
         XCTAssertEqual(flow.route, .reactiveSetup)
@@ -15,7 +85,7 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
             .experience(.reactive(mode: .air, combination: nil, stance: .orthodox))
         )
 
-        let combinationFlow = TrainingFlowCoordinator()
+        let combinationFlow = TrainingFlowCoordinator(calibration: .calibratedFixture)
         combinationFlow.chooseFeature(.reactiveStrike)
         combinationFlow.chooseReactiveMode(.combination)
 
@@ -23,7 +93,7 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
     }
 
     func testChoosingCombinationCommitsCombinationAndStanceToSelection() {
-        let flow = TrainingFlowCoordinator()
+        let flow = TrainingFlowCoordinator(calibration: .calibratedFixture)
         flow.chooseFeature(.reactiveStrike)
         flow.chooseReactiveMode(.combination)
         flow.setDraftStance(.southpaw)
@@ -41,7 +111,7 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
     }
 
     func testBackFromCombinationSetupReturnsToReactiveModeSelection() {
-        let flow = TrainingFlowCoordinator()
+        let flow = TrainingFlowCoordinator(calibration: .calibratedFixture)
         flow.chooseFeature(.reactiveStrike)
         flow.chooseReactiveMode(.combination)
         flow.setDraftStance(.southpaw)
@@ -101,8 +171,8 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
     }
 
     func testReturningFromCombinationExperienceRestoresStanceWithoutDismissingImmersion() async {
-        let flow = TrainingFlowCoordinator()
-        let session = ReactiveStrikeSession()
+        let flow = TrainingFlowCoordinator(calibration: .calibratedFixture)
+        let session = ReactiveStrikeSession(calibration: .calibratedFixture)
         flow.chooseFeature(.reactiveStrike)
         flow.chooseReactiveMode(.combination)
         flow.setDraftStance(.southpaw)
@@ -134,8 +204,8 @@ final class TrainingFlowCoordinatorTests: XCTestCase {
     }
 
     func testEndTrainingCancelsTheEngineBeforeDismissingImmersion() async {
-        let flow = TrainingFlowCoordinator()
-        let session = ReactiveStrikeSession()
+        let flow = TrainingFlowCoordinator(calibration: .calibratedFixture)
+        let session = ReactiveStrikeSession(calibration: .calibratedFixture)
         session.immersiveSpaceDidOpen()
         session.startDrill()
         XCTAssertEqual(session.phase, .calibrating)

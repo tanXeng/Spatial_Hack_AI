@@ -140,7 +140,7 @@ struct BoxingCoachImmersiveView: View {
     private var showsVoiceCoach: Bool {
         guard !flow.controlsDisabled else { return false }
         switch flow.route {
-        case .experience(.reachCalibration), .experience(.competitionCalibration),
+        case .experience(.calibration), .experience(.competitionCalibration),
              .experience(.competition):
             return false
         case .experience:
@@ -185,7 +185,7 @@ struct BoxingCoachImmersiveView: View {
 
     private var isReachCalibrationExperience: Bool {
         switch flow.route {
-        case .experience(.reachCalibration), .experience(.competitionCalibration):
+        case .experience(.calibration), .experience(.competitionCalibration):
             return true
         default:
             return false
@@ -194,7 +194,7 @@ struct BoxingCoachImmersiveView: View {
 
     private var isReactiveEngineExperience: Bool {
         switch flow.route {
-        case .experience(.reactive), .experience(.reachCalibration),
+        case .experience(.reactive), .experience(.calibration),
              .experience(.competitionCalibration), .experience(.competition):
             return true
         default:
@@ -327,6 +327,28 @@ struct BoxingCoachImmersiveView: View {
                     symbol: session.lastFeedback == "Drill stopped"
                         ? "stop.circle.fill"
                         : "checkmark.circle.fill"
+                )
+            }
+
+        case .experience(.calibration):
+            switch session.phase {
+            case .idle:
+                return ImmersiveInstruction(
+                    stage: "ANTHROPOMETRY",
+                    message: "Stand facing forward with room to punch",
+                    symbol: "ruler"
+                )
+            case .calibrating, .running:
+                return ImmersiveInstruction(
+                    stage: "MEASURING",
+                    message: session.lastFeedback,
+                    symbol: "ruler"
+                )
+            case .finished:
+                return ImmersiveInstruction(
+                    stage: "MEASURED",
+                    message: session.lastFeedback,
+                    symbol: "checkmark.circle.fill"
                 )
             }
 

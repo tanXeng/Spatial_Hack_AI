@@ -72,6 +72,8 @@ nonisolated struct CoachClipRouter {
             contextSummary = "Aura Punch tutorial, phase: \(context.auraPhase?.rawValue ?? "unknown"), technique: \(context.techniqueName ?? "unknown")"
         case .reactiveStrike:
             contextSummary = "Reactive Strike drill, phase: \(context.drillPhase?.rawValue ?? "unknown")"
+        case .anthropometry:
+            contextSummary = "Reach calibration, phase: \(context.drillPhase?.rawValue ?? "unknown")"
         }
 
         return [

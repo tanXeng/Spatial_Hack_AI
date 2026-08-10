@@ -23,6 +23,8 @@ struct BoxingCoachImmersiveView: View {
     @State private var voiceCommandRegistrationID: UUID?
     @State private var thermalProfile = ThermalPerformancePolicy.profile(for: .nominal)
     @State private var announcementGate = TrainingAccessibilityAnnouncementGate()
+    @AppStorage("BoxingCoach.prefersHeadAnchoredGuidance")
+    private var prefersHeadAnchoredGuidance = true
 
     private let controlsAttachmentID = "TrainingControls"
     private let voiceCoachAttachmentID = "VoiceCoachControl"
@@ -49,7 +51,14 @@ struct BoxingCoachImmersiveView: View {
             if let instructions = attachments.entity(for: instructionsAttachmentID) {
                 instructions.name = "TrainingInstructions"
                 instructions.position = SIMD3<Float>(0, 0.18, -1.15)
-                instructionAnchor.addChild(instructions)
+                switch TrainingAccessibility.anchor(
+                    prefersHeadAnchoredGuidance: prefersHeadAnchoredGuidance
+                ) {
+                case .headAnchored:
+                    instructionAnchor.addChild(instructions)
+                case .bodyRelative:
+                    audioBodyAnchor.addChild(instructions)
+                }
             }
 
             if let voiceCoach = attachments.entity(for: voiceCoachAttachmentID) {
@@ -71,8 +80,26 @@ struct BoxingCoachImmersiveView: View {
 
             session.attachSceneRoot(root, audioBodyAnchor: audioBodyAnchor)
             flow.immersiveSceneDidBecomeReady(session: session)
-        } update: { _, _ in
+        } update: { content, attachments in
             session.updateAudioBodyOrientation()
+            if let instructions = attachments.entity(for: instructionsAttachmentID) {
+                let destinationName: String
+                switch TrainingAccessibility.anchor(
+                    prefersHeadAnchoredGuidance: prefersHeadAnchoredGuidance
+                ) {
+                case .headAnchored:
+                    destinationName = "TrainingInstructionAnchor"
+                case .bodyRelative:
+                    destinationName = "BoxingCoachBodyAudioAnchor"
+                }
+                if let destination = content.entities.first(where: {
+                    $0.name == destinationName
+                }), instructions.parent !== destination {
+                    instructions.removeFromParent()
+                    destination.addChild(instructions)
+                    instructions.position = SIMD3<Float>(0, 0.18, -1.15)
+                }
+            }
         } attachments: {
             Attachment(id: instructionsAttachmentID) {
                 ImmersiveInstructionBanner(
@@ -106,6 +133,7 @@ struct BoxingCoachImmersiveView: View {
                         }
                     }
                     audioPresetMenu
+                    guidanceAnchorMenu
                     Text(session.voiceCoach.controlPresentation.visibleCaption)
                         .font(.caption)
                         .multilineTextAlignment(.center)
@@ -324,6 +352,20 @@ struct BoxingCoachImmersiveView: View {
         .accessibilityLabel("Training audio preset")
         .accessibilityValue(preset.title)
         .accessibilityHint(preset.accessibilityDescription)
+    }
+
+    private var guidanceAnchorMenu: some View {
+        Toggle(
+            "Keep guidance in view",
+            isOn: $prefersHeadAnchoredGuidance
+        )
+        .disabled(flow.controlsDisabled)
+        .accessibilityHint(
+            prefersHeadAnchoredGuidance
+                ? "Guidance follows your gaze. Turn this off for body-relative guidance."
+                : "Guidance stays aligned to your fitted body frame. Turn this on to follow your gaze."
+        )
+        .accessibilityInputLabels(["Keep guidance in view", "Guidance anchor"])
     }
 
     private func refreshVoiceCoachContext() {
